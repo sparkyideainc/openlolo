@@ -1,0 +1,26 @@
+name: Vouch - Manage by Issue
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  manage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit updates to .github/VOUCHED.td
+      issues: write # reply on the vouch request issue
+    if: >-
+      !github.event.issue.pull_request &&
+      (contains(github.event.comment.body, 'vouch') ||
+       contains(github.event.comment.body, 'denounce') ||
+       contains(github.event.comment.body, 'unvouch'))
+    steps:
+      - uses: mitchellh/vouch/action/manage-by-issue@d66fa29a64600490892131ad87597c30c91fcac4 # v1.5.0
+        with:
+          comment-id: ${{ github.event.comment.id }}
+          issue-id: ${{ github.event.issue.number }}
+        env:
+          GH_TOKEN: ${{ github.token }}

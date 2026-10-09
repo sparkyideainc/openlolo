@@ -1,0 +1,30 @@
+[Unit]
+Description=OpenLolo setup button (GPIO hold opens Wi-Fi setup mode)
+After=openlolo-api.service
+ConditionPathExists=/dev/gpiochip0
+
+[Service]
+Type=simple
+User=openlolo
+Group=openlolo
+SupplementaryGroups=gpio
+Environment=OPENLOLO_BUTTON_PIN=17
+# lgpio writes its notification pipe into the working directory; keep it on the writable runtime dir.
+Environment=GPIOZERO_PIN_FACTORY=lgpio
+WorkingDirectory=/run/openlolo
+ExecStart=/usr/bin/python3 /opt/openlolo/current/deploy/openlolo-button.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/openlolo
+DeviceAllow=/dev/gpiochip0 rw
+DeviceAllow=/dev/gpiomem rw
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=64M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target

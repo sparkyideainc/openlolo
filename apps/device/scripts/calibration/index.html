@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>OpenLolo pointer validation</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#10391b;color:white;font:15px -apple-system,sans-serif;user-select:none;-webkit-user-select:none;touch-action:none}
+header,footer{position:fixed;left:16px;right:16px;text-align:center;pointer-events:none}header{top:12px}footer{bottom:12px;font-size:12px;opacity:.8}h1{font-size:18px;margin:0 0 5px}#targets{position:fixed;inset:0}.target{position:absolute;width:44px;height:44px;box-sizing:border-box;border:2px solid #b6e3bf;border-radius:50%;transform:translate(-50%,-50%);display:grid;place-items:center}.target:before,.target:after{content:'';position:absolute;background:#b6e3bf}.target:before{width:8px;height:1px}.target:after{width:1px;height:8px}.target span{position:absolute;top:46px;font-size:12px}.target.hit{background:#227e39;border-color:#fff}#dot{position:fixed;width:8px;height:8px;border-radius:50%;background:#ffce50;transform:translate(-50%,-50%);pointer-events:none;display:none}
+</style>
+<div id="targets"></div><div id="dot"></div>
+<header><h1>OpenLolo pointer validation</h1><div id="status">Connecting…</div><div id="position">Waiting for pointer</div></header>
+<footer>Keep USB unplugged · portrait · do not touch during the test<br>Coordinates below are browser CSS pixels</footer>
+<script>
+// Adapted from imouse/imouse_driver/calib_page.html. No dongle driver needed.
+const token = location.pathname.split('/')[1];
+const session = Math.random().toString(36).slice(2);
+let seq=0, queue=[], sending=false, lastMove=0, targetCenters=[];
+const statusEl=document.getElementById('status'), posEl=document.getElementById('position');
+function geometry(){const v=visualViewport;return {screen:[screen.width,screen.height],inner:[innerWidth,innerHeight],dpr:devicePixelRatio,orientation:screen.orientation?.angle??window.orientation,viewport:v?{width:v.width,height:v.height,offsetLeft:v.offsetLeft,offsetTop:v.offsetTop,scale:v.scale}:null,targets:targetCenters};}
+function emit(data){queue.push({session,seq:++seq,phone_ms:Date.now(),...data});if(queue.length>500)queue.shift();}
+function layout(){const root=document.getElementById('targets');root.replaceChildren();targetCenters=[];let i=0;for(const y of [.25,.5,.75])for(const x of [.15,.5,.85]){const id=++i,cx=innerWidth*x,cy=innerHeight*y;targetCenters.push({id,cx,cy});const d=document.createElement('div');d.className='target';d.id='target'+id;d.style.left=cx+'px';d.style.top=cy+'px';d.innerHTML='<span>'+id+'</span>';root.append(d);}emit({type:'geometry',...geometry()});}
+function eventData(e,src,type){const cx=e.clientX,cy=e.clientY;let nearest=targetCenters.reduce((a,b)=>Math.hypot(b.cx-cx,b.cy-cy)<Math.hypot(a.cx-cx,a.cy-cy)?b:a);const error=Math.hypot(nearest.cx-cx,nearest.cy-cy);return {type,src,cx,cy,sx:e.screenX,sy:e.screenY,nearest:nearest.id,error_css_px:error};}
+function record(e,src,type){const p=eventData(e,src,type);emit(p);posEl.textContent=`${type}: ${p.cx.toFixed(1)}, ${p.cy.toFixed(1)} · target ${p.nearest}: ${p.error_css_px.toFixed(1)} px`;const dot=document.getElementById('dot');dot.style.display='block';dot.style.left=p.cx+'px';dot.style.top=p.cy+'px';if(type==='down'&&p.error_css_px<=22)document.getElementById('target'+p.nearest).classList.add('hit');}
+document.addEventListener('mousemove',e=>{if(performance.now()-lastMove>20){lastMove=performance.now();record(e,'mouse','move');}},{passive:true});
+document.addEventListener('mousedown',e=>{record(e,'mouse','down');e.preventDefault();});
+document.addEventListener('mouseup',e=>record(e,'mouse','up'));
+// AssistiveTouch may deliver synthesized touch events; preserve source to avoid double counting.
+for(const [event,type] of [['touchstart','down'],['touchmove','drag'],['touchend','up'],['touchcancel','cancel']])document.addEventListener(event,e=>{const t=e.changedTouches[0];if(t)record(t,'touch',type);e.preventDefault();},{passive:false});
+document.addEventListener('contextmenu',e=>e.preventDefault());
+window.addEventListener('resize',layout);visualViewport?.addEventListener('resize',layout);
+layout();emit({type:'hello',...geometry()});
+setInterval(()=>emit({type:'heartbeat',visibility:document.visibilityState}),2000);
+setInterval(async()=>{if(sending||!queue.length)return;sending=true;const batch=queue.splice(0,100);try{const r=await fetch('/'+token+'/events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(batch)});if(!r.ok)throw Error(r.status);statusEl.textContent=`Connected · ${screen.width} × ${screen.height} · ${devicePixelRatio}×`;}catch(e){statusEl.textContent='Connection lost — retrying';queue.unshift(...batch);}finally{sending=false;}},100);
+</script>
+</html>

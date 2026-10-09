@@ -1,0 +1,30 @@
+name: Vouch - Check PR
+
+on:
+  pull_request_target: # needed to comment on and close fork PRs; safe because only the default branch is checked out, never the PR head, so no fork-controlled code runs
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  check-vouch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # auto-close unvouched PRs
+      issues: read
+    steps:
+      - uses: actions/checkout@v4 # default branch only, for the comment template
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/vouch-unvouched-template.md
+          sparse-checkout-cone-mode: false
+      - uses: mitchellh/vouch/action/check-pr@d66fa29a64600490892131ad87597c30c91fcac4 # v1.5.0
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          auto-close: true
+          require-vouch: true
+          template-file: .github/vouch-unvouched-template.md
+        env:
+          GH_TOKEN: ${{ github.token }}

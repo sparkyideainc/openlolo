@@ -1,0 +1,74 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build outputs
+dist
+build
+*.tsbuildinfo
+
+# Generated files
+local.db
+local.db-*
+
+# Environment variables
+.env
+.env*.local
+
+# IDEs and editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs
+.evlog/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Turbo
+.turbo
+.nx
+
+# Better-T-Stack
+.alchemy
+.vercel
+
+# Python device app
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Testing
+coverage
+.nyc_output
+
+# Misc
+*.tgz
+.cache
+tmp
+temp
+.tmp/
+
+# Box page build (apps/portal), injected into the device package by package.sh
+apps/device/src/openlolo/web/portal/
+apps/portal/src/routeTree.gen.ts
+
+# Cloudflare Workers
+.dev.vars
+.wrangler/

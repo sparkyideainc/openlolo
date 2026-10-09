@@ -1,0 +1,20 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Rendered by scripts/install.sh; @PORT@, @ID@, @VER@ and @FP@ are substituted. The
+     fingerprint TXT record is informational: the app trusts only the fingerprint it scanned. -->
+<service-group>
+  <name replace-wildcards="yes">OpenLolo %h</name>
+  <service>
+    <type>_openlolo._tcp</type>
+    <port>@PORT@</port>
+    <txt-record>v=1</txt-record>
+    <txt-record>id=@ID@</txt-record>
+    <txt-record>ver=@VER@</txt-record>
+    <txt-record>fp=@FP@</txt-record>
+  </service>
+  <service>
+    <type>_http._tcp</type>
+    <port>80</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>

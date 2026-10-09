@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenLolo factory reset (back to first-time setup)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/openlolo/current/deploy/reset/openlolo-reset.sh
+TimeoutStartSec=120

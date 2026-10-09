@@ -1,0 +1,51 @@
+# Copy to /etc/openlolo/box.toml. The API never binds to a LAN address.
+backend = "hardware"
+state_dir = "/var/lib/openlolo"
+runtime_dir = "/run/openlolo"
+host = "127.0.0.1"
+port = 8080
+allowed_hosts = ["127.0.0.1:8080", "localhost:8080"]
+allowed_origins = ["http://127.0.0.1:8080", "http://localhost:8080"]
+lease_seconds = 60
+queue_size = 16
+capture_deadline = 20
+frame_ttl = 120
+# CoreDevice worker. The transport (auto, usb or wifi) is chosen per binding (owner setup), not here.
+switch_hold_seconds = 8     # Requests wait this long for the session during a transport switch or reconnect.
+auto_mount_ddi = true       # Mount the developer disk image automatically after a phone reboot.
+ddi_mount_deadline = 240    # Seconds allowed for download, personalization and mount.
+discovery_seconds = 3       # Bonjour browse window for Wi-Fi discovery.
+probe_interval = 10         # Seconds between liveness probes on the persistent session.
+reconnect_min_seconds = 1   # Exponential backoff between reconnect attempts...
+reconnect_max_seconds = 15  # ...capped here; owner-action states poll at this interval.
+hid_idle_seconds = 20       # Close the touch/keyboard session after this much inactivity.
+hid_refresh_seconds = 15    # Reopen the authentication media stream when older than this.
+hid_stream_sink = "drain"   # Where the authentication stream's video goes: drain, blackhole, device.
+hid_stop_before_capture = true  # false keeps the input stream up across screenshots (needs MemoryMax >= 1G).
+# Screenshot source: "png" = discrete lossless full-res PNG from the phone (~2.8s). "stream" =
+# decode the phone's mirroring H.265 on the Pi and serve the latest frame (~0.4s, slightly lossy,
+# needs PyAV; reuses the HID auth stream and idle-closes with hid_idle_seconds).
+screenshot_source = "stream"
+stream_jpeg_quality = 60
+tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in the worker unit.
+# Explicitly enable only while calibrating. This listener exposes no control API.
+# calibration_host = "192.168.4.47"
+# calibration_port = 8081
+# Remote MCP entry for AI clients. Set to the public HTTPS origin your tunnel serves
+# (see docs/runbooks/remote-access.md). Starts a second loopback listener on mcp_port;
+# point the tunnel at http://127.0.0.1:8090 only. Leave unset to keep SSH-only access.
+# public_url = "https://pi.tailnet.ts.net"
+# mcp_port = 8090
+# Optional LAN MCP entry. The setup page uses HTTP port 80 and does not depend on this TLS door.
+# lan_url = "https://openlolo-ab12.local:8443"
+# lan_bind = "0.0.0.0"          # Or a specific private address.
+# lan_extra_hosts = ["192.168.4.25"]  # Also accepted in Host, e.g. the LAN IP for clients without mDNS.
+# Setup access point name, derived from the board id by the installer.
+# setup_name = "OpenLolo-AB12"
+# HTTP port of the box page (setup and owner surface, ADR 0012); 0 disables it.
+# portal_port = 80
+provisioning = true
+setup_auto_pair = true
+setup_timeout_seconds = 600
+setup_grace_seconds = 120
+wifi_interface = "wlan0"

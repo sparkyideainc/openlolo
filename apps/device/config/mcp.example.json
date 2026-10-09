@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "openlolo": {
+      "command": "/absolute/path/to/uv",
+      "args": [
+        "--directory", "/absolute/path/to/openlolo",
+        "run", "--frozen", "--extra", "mcp", "openlolo-mcp",
+        "--session", "/absolute/path/to/.config/openlolo/mcp-session.json"
+      ]
+    }
+  }
+}

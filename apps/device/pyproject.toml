@@ -1,0 +1,59 @@
+[project]
+name = "openlolo"
+version = "0.0.1"
+description = "Open-source AI assistant for iOS devices"
+requires-python = ">=3.11,<3.15"
+license = "GPL-3.0-only"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+    "pydantic>=2.11,<3",
+    "starlette>=0.47,<2",
+    "uvicorn>=0.35,<1",
+    "pillow>=11,<13",
+    "httpx>=0.28,<1",
+]
+
+[project.scripts]
+openlolo = "openlolo.interfaces.cli:main"
+openlolo-device = "openlolo.coredevice.worker:main"
+openlolo-mcp = "openlolo.interfaces.mcp_server:main"
+
+[project.optional-dependencies]
+mcp = [
+    "mcp>=2,<3",
+    "qrcode>=8,<9",
+]
+# CoreDevice worker only (separate venv on the Pi). Exact pin: the tunnel, HID and screenshot
+# services rely on reverse-engineered wire formats that can change between releases.
+device = [
+    "pymobiledevice3==11.19.4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1", "ty>=0.0.84,<1", "pre-commit>=4,<5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--basetemp=.tmp/pytest"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+# pymobiledevice3 is installed only in the worker's venv (the `device` extra), so its imports
+# are unresolved on development machines and in CI.
+[[tool.ty.overrides]]
+include = ["src/openlolo/coredevice/*.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"

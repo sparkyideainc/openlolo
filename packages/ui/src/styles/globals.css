@@ -1,0 +1,178 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/figtree";
+@import "@fontsource-variable/outfit";
+@source "../../../apps/**/*.{ts,tsx}";
+@source "../**/*.{ts,tsx}";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * OpenLolo theme. Generated with ui.shadcn.com/create (preset b31KXnurZ2:
+ * Nova, Taupe, Orange, Outfit + Figtree, large radius), then the brand
+ * colors set by hand:
+ *   primary        clay  #c8632b  main actions
+ *   secondary      ink   #2b2521  dark actions (cream in dark mode)
+ *   complementary  rose  #d48276  highlights next to clay
+ * The rest of the palette (sand, line, stone, blush) maps onto background,
+ * border, muted and accent. All colors use oklch. To add a semantic color:
+ * 1. Define it in :root (light) and .dark (dark).
+ * 2. Register it in @theme inline as --color-<name>: var(--<name>).
+ */
+
+:root {
+	--radius: 0.875rem;
+	--background: oklch(0.959 0.007 80.7);
+	--foreground: oklch(0.27 0.012 55.8);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.27 0.012 55.8);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.27 0.012 55.8);
+	--primary: oklch(0.612 0.145 46.6);
+	--primary-foreground: oklch(1 0 0);
+	--secondary: oklch(0.27 0.012 55.8);
+	--secondary-foreground: oklch(0.959 0.007 80.7);
+	--complementary: oklch(0.69 0.104 29);
+	--complementary-foreground: oklch(0.264 0.026 42.8);
+	--muted: oklch(0.959 0.007 80.7);
+	--muted-foreground: oklch(0.502 0.016 60.3);
+	--accent: oklch(0.954 0.02 58.1);
+	--accent-foreground: oklch(0.612 0.145 46.6);
+	--destructive: oklch(0.578 0.206 29);
+	--destructive-foreground: oklch(1 0 0);
+	--border: oklch(0.909 0.013 75.4);
+	--input: oklch(0.909 0.013 75.4);
+	--ring: oklch(0.612 0.145 46.6);
+	--chart-1: oklch(0.868 0.007 39.5);
+	--chart-2: oklch(0.547 0.021 43.1);
+	--chart-3: oklch(0.438 0.017 39.3);
+	--chart-4: oklch(0.367 0.016 35.7);
+	--chart-5: oklch(0.268 0.011 36.5);
+	--sidebar: oklch(0.986 0.002 67.8);
+	--sidebar-foreground: oklch(0.147 0.004 49.3);
+	--sidebar-primary: oklch(0.612 0.145 46.6);
+	--sidebar-primary-foreground: oklch(1 0 0);
+	--sidebar-accent: oklch(0.96 0.002 17.2);
+	--sidebar-accent-foreground: oklch(0.214 0.009 43.1);
+	--sidebar-border: oklch(0.922 0.005 34.3);
+	--sidebar-ring: oklch(0.714 0.014 41.2);
+	--mascot-shadow: 0 20px 45px -20px oklch(0.27 0.012 55.8 / 0.25);
+	--field-shadow: 0 2px 10px oklch(0.27 0.012 55.8 / 0.035);
+}
+
+.dark {
+	--background: oklch(0.194 0.006 56);
+	--foreground: oklch(0.948 0.011 76.6);
+	--card: oklch(0.247 0.012 67.2);
+	--card-foreground: oklch(0.948 0.011 76.6);
+	--popover: oklch(0.247 0.012 67.2);
+	--popover-foreground: oklch(0.948 0.011 76.6);
+	--primary: oklch(0.686 0.144 47.8);
+	--primary-foreground: oklch(0.194 0.006 56);
+	--secondary: oklch(0.948 0.011 76.6);
+	--secondary-foreground: oklch(0.27 0.012 55.8);
+	--complementary: oklch(0.69 0.104 29);
+	--complementary-foreground: oklch(0.194 0.006 56);
+	--muted: oklch(0.217 0.009 59.2);
+	--muted-foreground: oklch(0.698 0.019 67.5);
+	--accent: oklch(0.287 0.039 52.3);
+	--accent-foreground: oklch(0.686 0.144 47.8);
+	--destructive: oklch(0.689 0.17 27.4);
+	--destructive-foreground: oklch(0.194 0.006 56);
+	--border: oklch(0.329 0.013 67.3);
+	--input: oklch(0.329 0.013 67.3);
+	--ring: oklch(0.686 0.144 47.8);
+	--chart-1: oklch(0.868 0.007 39.5);
+	--chart-2: oklch(0.547 0.021 43.1);
+	--chart-3: oklch(0.438 0.017 39.3);
+	--chart-4: oklch(0.367 0.016 35.7);
+	--chart-5: oklch(0.268 0.011 36.5);
+	--sidebar: oklch(0.214 0.009 43.1);
+	--sidebar-foreground: oklch(0.986 0.002 67.8);
+	--sidebar-primary: oklch(0.686 0.144 47.8);
+	--sidebar-primary-foreground: oklch(0.194 0.006 56);
+	--sidebar-accent: oklch(0.268 0.011 36.5);
+	--sidebar-accent-foreground: oklch(0.986 0.002 67.8);
+	--sidebar-border: oklch(1 0 0 / 10%);
+	--sidebar-ring: oklch(0.547 0.021 43.1);
+	--mascot-shadow: 0 20px 45px -20px oklch(0 0 0 / 0.6);
+	--field-shadow: 0 2px 10px oklch(0 0 0 / 0.2);
+}
+
+@theme inline {
+	--font-sans:
+		"Figtree Variable", -apple-system, BlinkMacSystemFont, "Segoe UI",
+		sans-serif;
+	--font-heading:
+		"Outfit Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--shadow-mascot: var(--mascot-shadow);
+	--shadow-field: var(--field-shadow);
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-complementary: var(--complementary);
+	--color-complementary-foreground: var(--complementary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-destructive-foreground: var(--destructive-foreground);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	--color-chart-1: var(--chart-1);
+	--color-chart-2: var(--chart-2);
+	--color-chart-3: var(--chart-3);
+	--color-chart-4: var(--chart-4);
+	--color-chart-5: var(--chart-5);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-ring: var(--sidebar-ring);
+	--radius-sm: calc(var(--radius) * 0.6);
+	--radius-md: calc(var(--radius) * 0.8);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) * 1.4);
+	--radius-2xl: calc(var(--radius) * 1.8);
+	--radius-3xl: calc(var(--radius) * 2.2);
+	--radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	html {
+		@apply font-sans;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+	body {
+		@apply font-sans bg-background text-foreground;
+	}
+	button:not(:disabled),
+	[role="button"]:not(:disabled) {
+		cursor: pointer;
+	}
+	:focus-visible {
+		outline: 2px solid var(--color-ring);
+		outline-offset: 2px;
+	}
+}
+
+@utility text-balance-tight {
+	text-wrap: balance;
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=OpenLolo setup access point (hostapd and dnsmasq on the setup network)
+After=NetworkManager.service
+Conflicts=hostapd.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /opt/openlolo/current/deploy/setup-ap/openlolo-setup-ap.sh start
+ExecStopPost=/bin/sh /opt/openlolo/current/deploy/setup-ap/openlolo-setup-ap.sh stop
+KillMode=mixed
+TimeoutStopSec=10

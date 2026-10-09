@@ -1,0 +1,3 @@
+{
+	"extends": "@openlolo/config/tsconfig.base.json"
+}

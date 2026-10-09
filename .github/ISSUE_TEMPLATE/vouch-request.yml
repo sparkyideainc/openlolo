@@ -1,0 +1,39 @@
+name: Vouch Request
+description: Request to be vouched as an OpenLolo contributor before opening a pull request
+labels: ["vouch-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Vouch Request
+
+        OpenLolo uses [vouch](https://github.com/mitchellh/vouch) to manage contributor trust.
+        Pull requests from unvouched users are closed automatically.
+
+        Fill out this form. A maintainer reviews the request and vouches for you by commenting on this issue.
+        Once vouched, you can open pull requests normally.
+  - type: textarea
+    id: context
+    attributes:
+      label: What would you like to contribute?
+      description: Tell us a bit about yourself and what you'd like to work on. Link the issue you plan to address if one exists.
+      placeholder: "I'd like to fix a bug I found in..."
+    validations:
+      required: true
+  - type: textarea
+    id: prior-work
+    attributes:
+      label: Prior contributions or relevant experience
+      description: Links to previous open source work, relevant projects, or anything that helps us understand your background.
+      placeholder: "https://github.com/..."
+    validations:
+      required: false
+  - type: checkboxes
+    id: agreements
+    attributes:
+      label: Agreements
+      options:
+        - label: I have read [CONTRIBUTING.md](https://github.com/sparkyideainc/openlolo/blob/main/CONTRIBUTING.md).
+          required: true
+        - label: I will keep each pull request focused on a single issue.
+          required: true

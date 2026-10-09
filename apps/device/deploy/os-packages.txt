@@ -1,0 +1,19 @@
+# Debian 13 ARM64 / Raspberry Pi OS 64-bit. Python application packages are in uv.lock.
+python3
+python3-venv
+usbmuxd
+libusb-1.0-0
+network-manager
+# Setup access point: hostapd owns the radio while the box is in setup mode (ADR 0011 amendment).
+hostapd
+dnsmasq-base
+iw
+build-essential
+python3-dev
+git
+curl
+ca-certificates
+# .local name of the box page and the LAN MCP entry (ADR 0005); openssl mints its certificate.
+avahi-daemon
+avahi-utils
+openssl

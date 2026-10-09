@@ -1,0 +1,71 @@
+name: Release artifacts
+# Builds the device release tarball. A `v*` tag publishes it to a GitHub Release, which
+# apps/device/install.sh installs from; a manual run only uploads workflow artifacts.
+# Releases come from main only: a manual run must be started on main, and a tag must point at
+# a commit that main already contains.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release name (default YYYYMMDD-<commit>)
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  device-package:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require the tagged commit to be on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; releases are built from main only"
+            exit 1
+          fi
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Build device tarball
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) release=${GITHUB_REF_NAME#v} ;;
+            *) release='${{ inputs.release }}' ;;
+          esac
+          sh apps/device/scripts/package.sh $release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openlolo-device
+          path: |
+            apps/device/dist/openlolo-device-*.tar.gz
+            apps/device/dist/openlolo-device-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [device-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd artifacts
+          ls -l
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "OpenLolo $TAG" --generate-notes \
+              --notes "Box: \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/apps/device/install.sh | sudo sh\`"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *

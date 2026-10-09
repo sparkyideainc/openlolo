@@ -1,0 +1,44 @@
+[Unit]
+Description=OpenLolo CoreDevice worker (USB or Wi-Fi transport)
+After=network-online.target usbmuxd.service
+Wants=network-online.target usbmuxd.service
+
+[Service]
+Type=simple
+User=openlolo-device
+Group=openlolo
+WorkingDirectory=/opt/openlolo/current
+# Pairing records, the developer disk image cache and the lockdown trust cache live under the
+# state directory, not in a home directory. Nothing here needs root or a kernel tunnel device.
+Environment=HOME=/var/lib/openlolo/device
+Environment=XDG_DATA_HOME=/var/lib/openlolo/device
+ExecStart=/opt/openlolo/current/.device-venv/bin/openlolo-device --config /etc/openlolo/box.toml
+Restart=on-failure
+RestartSec=3
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# tunnel_mode = "kernel" (default): the worker creates one utun interface for the phone. This
+# is the only privilege it holds. With tunnel_mode = "userspace" these four lines can go and
+# PrivateDevices=yes can return.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+ReadWritePaths=/var/lib/openlolo/device /run/openlolo
+# AF_UNIX: usbmuxd socket and the API socket. AF_INET6/AF_INET: the phone's RemotePairing service,
+# Bonjour discovery and the developer disk image download. AF_NETLINK: interface enumeration.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=1G
+TasksMax=64
+TimeoutStopSec=10
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=30
+
+[Install]
+WantedBy=multi-user.target

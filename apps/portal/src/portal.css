@@ -1,0 +1,85 @@
+/*
+ * Box page extras on top of the shared OpenLolo theme in @openlolo/ui/globals.css: a
+ * tighter radius and the semantic colors (good / warn / info and their tints).
+ * `.dark` is set on <html> from prefers-color-scheme in main.tsx.
+ */
+
+:root {
+	--radius: 0.75rem;
+	--chevron: #c7c0b8;
+	--good: #2e8b47;
+	--good-tint: #e6f4ea;
+	--warn: #b8540a;
+	--warn-tint: #fff1e3;
+	--destructive-tint: #fdecea;
+	--info: #2f7bd1;
+	--info-tint: #e4effb;
+	--dot-good: #34c759;
+	--dot-warn: #ff9f0a;
+	--dot-bad: #ff453a;
+	--dot-idle: #c7c0b8;
+	--icon-grey: #8a7f75;
+	--icon-dark: #6b625b;
+	--disabled-background: #e9e4dd;
+	--disabled-foreground: #a39b93;
+}
+
+.dark {
+	--chevron: #5c544c;
+	--good: #5bc27a;
+	--good-tint: #1b3323;
+	--warn: #f0a050;
+	--warn-tint: #3a2a14;
+	--destructive-tint: #3c1f1c;
+	--info: #5b9be6;
+	--info-tint: #16293d;
+	--dot-idle: #5c544c;
+	--icon-grey: #7a7068;
+	--icon-dark: #8a8078;
+	--disabled-background: #2e2924;
+	--disabled-foreground: #6e665e;
+}
+
+@theme inline {
+	--color-chevron: var(--chevron);
+	--color-good: var(--good);
+	--color-good-tint: var(--good-tint);
+	--color-warn: var(--warn);
+	--color-warn-tint: var(--warn-tint);
+	--color-destructive-tint: var(--destructive-tint);
+	--color-info: var(--info);
+	--color-info-tint: var(--info-tint);
+	--color-dot-good: var(--dot-good);
+	--color-dot-warn: var(--dot-warn);
+	--color-dot-bad: var(--dot-bad);
+	--color-dot-idle: var(--dot-idle);
+	--color-icon-grey: var(--icon-grey);
+	--color-icon-dark: var(--icon-dark);
+	--color-disabled: var(--disabled-background);
+	--color-disabled-foreground: var(--disabled-foreground);
+}
+
+@layer base {
+	html {
+		/* Keeps Safari from zooming into 16px fields and matches the app's system feel. */
+		-webkit-text-size-adjust: 100%;
+		-webkit-tap-highlight-color: transparent;
+	}
+	body {
+		min-height: 100dvh;
+		overscroll-behavior-y: none;
+	}
+}
+
+/* Launch screen progress bar (src/components/splash.tsx, mirrored in index.html). */
+@keyframes splash-slide {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(260%);
+	}
+}
+.splash-slide {
+	animation: splash-slide 1.1s ease-in-out infinite;
+}

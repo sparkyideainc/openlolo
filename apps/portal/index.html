@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#F4F1EC" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#171412" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="OpenLolo" />
+    <title>OpenLolo</title>
+    <!-- scope "/" keeps every route inside the Home Screen app; without it iOS infers the
+         scope from the page the icon was added on and opens other tabs in an in-app browser. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <style>
+      /* Launch screen, painted before any script runs: the same card React renders while the
+         router reaches the box (src/components/splash.tsx), so launch -> load is one picture. */
+      html, body { margin: 0; background: #f4f1ec; }
+      @media (prefers-color-scheme: dark) { html, body { background: #171412; } }
+      #app { min-height: 100dvh; }
+      .splash {
+        min-height: 100dvh; display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 18px; padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom);
+        box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #2b2521; text-align: center;
+      }
+      .splash img { width: 112px; height: 112px; border-radius: 26px; object-fit: cover; }
+      .splash h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+      .splash p { margin: 0; font-size: 15px; color: #6b625b; }
+      .splash .bar { width: 120px; height: 3px; border-radius: 3px; background: #e6e0d8; overflow: hidden; }
+      .splash .bar::after {
+        content: ""; display: block; width: 40%; height: 100%; border-radius: 3px; background: #c8632b;
+        animation: splash-slide 1.1s ease-in-out infinite;
+      }
+      @keyframes splash-slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+      @media (prefers-color-scheme: dark) {
+        .splash { color: #f2ede6; }
+        .splash p { color: #a69c92; }
+        .splash .bar { background: #3a342e; }
+        .splash .bar::after { background: #e07b43; }
+      }
+      @media (prefers-reduced-motion: reduce) { .splash .bar::after { animation: none; width: 100%; } }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="splash" role="status" aria-live="polite">
+        <img src="/icon-192.png" alt="" width="112" height="112" />
+        <h1>OpenLolo</h1>
+        <p>Starting…</p>
+        <div class="bar" aria-hidden="true"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenLolo Wi-Fi scan while the setup access point holds the radio
+Requisite=openlolo-setup-ap.service
+After=openlolo-setup-ap.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/openlolo/current/deploy/setup-ap/openlolo-setup-ap.sh scan
+TimeoutStartSec=30

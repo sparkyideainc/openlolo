@@ -1,0 +1,16 @@
+{
+	"name": "OpenLolo",
+	"short_name": "OpenLolo",
+	"description": "Set up and run your OpenLolo box from the iPhone it controls.",
+	"id": "/",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"orientation": "portrait",
+	"background_color": "#F4F1EC",
+	"theme_color": "#F4F1EC",
+	"icons": [
+		{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+		{ "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+	]
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "pymobiledevice3": {
+    "distribution": "pymobiledevice3",
+    "version": "11.19.4",
+    "source": "PyPI, resolved in ../uv.lock under the `device` extra",
+    "license": "GPL-3.0",
+    "role": "CoreDevice RemoteXPC services over the root-free userspace tunnel: screenshots, HID, buttons, app and device information"
+  },
+  "usbmuxd": {
+    "source": "Debian package usbmuxd (stock build; no fork, no drop-in)",
+    "role": "USB transport only: lockdown trust and the CoreDeviceProxy tunnel service"
+  },
+  "os_reference": "Debian 13 (trixie), aarch64, Python 3.13 (ssl PSK support is required by the tunnel)",
+  "application_lock": "../uv.lock"
+}
