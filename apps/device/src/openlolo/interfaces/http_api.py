@@ -138,8 +138,13 @@ def create_app(runtime, manage_lifespan=True):
         return JSONResponse(phone.capabilities())
 
     async def screenshot(request):
-        owner(request)
-        frame = await phone.screenshot(CaptureOptions.model_validate(await body(request)))
+        who = owner(request)
+        data = await body(request)
+        # Any owner session may capture; the control holder's token also counts as activity.
+        token = data.pop("lease_token", None)
+        frame = await phone.screenshot(CaptureOptions.model_validate(data))
+        if isinstance(token, str):
+            runtime.coordinator.accept(who, token)
         return JSONResponse(
             {"metadata": frame.metadata.model_dump(), "image": base64.b64encode(frame.image).decode()}
         )
@@ -227,7 +232,8 @@ def create_app(runtime, manage_lifespan=True):
             raise OpenLoloError("INVALID_REQUEST", "Cancellation requires a target operation ID", 400)
         coordinator = runtime.coordinator
         # Stop is always available to an authenticated local owner, including after lease loss.
-        if command not in {"acquire", "pause"}:
+        # Renew is a deprecated no-op that only reports status.
+        if command not in {"acquire", "pause", "renew"}:
             coordinator.check(who, token, allow_paused=True)
         if command not in {"acquire", "renew", "release", "pause", "resume", "cancel"}:
             raise OpenLoloError("UNKNOWN_OPERATION", status=404)

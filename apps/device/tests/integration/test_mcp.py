@@ -202,37 +202,70 @@ async def test_mcp_pause_bypasses_slow_screenshot(runtime):
         await capture
 
 
-async def test_bridge_renewal_does_not_reacquire_after_expiry(runtime):
-    runtime.coordinator.lease_seconds = 0.15
-    bridge = await bridge_for(runtime, renew_seconds=0.03)
-    await bridge.control("acquire", str(uuid4()))
-    await asyncio.sleep(0.2)
-    assert runtime.coordinator.lease is not None
-    await runtime.coordinator.drop_control()
-    await asyncio.sleep(0.07)
-    assert bridge.lease_error is not None
-    with pytest.raises(BridgeError, match="CONTROL_REQUIRED"):
-        await bridge.action(str(uuid4()), {"kind": "key", "key": "enter"}, False)
-    assert runtime.coordinator.lease is None
-    await bridge.close()
-
-
-async def test_first_action_acquires_control_and_idle_releases_it(runtime):
-    bridge = await bridge_for(runtime, renew_seconds=0.02, idle_seconds=0.08)
+async def test_lapsed_lease_is_rejected_once_then_reacquired(runtime):
+    runtime.coordinator.lease_seconds = 0.25
+    bridge = await bridge_for(runtime)
+    # No client-side timer of any kind.
+    assert not [value for value in vars(bridge).values() if isinstance(value, asyncio.Task)]
     async with Client(create_server(bridge)) as client:
         assert runtime.coordinator.lease is None
-        result = await client.call_tool("openlolo_key", {"key": "enter"})
+        result = await client.call_tool("openlolo_key", {"key": "enter", "settle": 0})
         assert not result.is_error, result
         assert result.structured_content["operation"]["state"] == "SUCCEEDED"
-        assert runtime.coordinator.lease is not None and bridge.lease is not None
+        first = bridge.lease
+        assert runtime.coordinator.lease is not None and first is not None
         status = await client.call_tool("openlolo_status", {})
         assert status.structured_content["control"]["owned"] is True
-        await asyncio.sleep(0.2)
-        # Idle release is not an interruption: no lease error, and the next action acquires again.
-        assert runtime.coordinator.lease is None and bridge.lease is None and bridge.lease_error is None
-        again = await client.call_tool("openlolo_key", {"key": "enter"})
+        assert "lease_renewal_error" not in status.structured_content["mcp"]
+        await asyncio.sleep(0.45)
+        # The box let the idle lease lapse; the bridge still holds the stale token.
+        assert runtime.coordinator.lease is None and bridge.lease == first
+        before = len(runtime.journal.list_operations())
+        rejected = await client.call_tool("openlolo_key", {"key": "enter", "settle": 0})
+        error = rejected.structured_content["error"]
+        assert rejected.is_error and error["code"] == "LEASE_EXPIRED" and error["dispatched"] is False
+        assert "screenshot" in error["instruction"] and bridge.lease is None
+        # Nothing was journaled or replayed for the rejected call.
+        assert len(runtime.journal.list_operations()) == before
+        again = await client.call_tool("openlolo_key", {"key": "enter", "settle": 0})
         assert not again.is_error, again
-        assert runtime.coordinator.lease is not None
+        assert bridge.lease not in {None, first} and runtime.coordinator.lease is not None
+
+
+async def test_bridge_screenshots_keep_control_and_release_hands_over(runtime):
+    runtime.coordinator.lease_seconds = 0.3
+    holder, other = await bridge_for(runtime), await bridge_for(runtime)
+    await holder.action(str(uuid4()), {"kind": "key", "key": "enter"}, False)
+    for _ in range(3):
+        await asyncio.sleep(0.2)
+        await holder.screenshot({"max_size": 200})
+    # 0.6 s since the action, kept alive by the holder's captures; another client's capture adds nothing.
+    assert runtime.coordinator.lease is not None
+    expires = runtime.coordinator.lease.expires
+    await other.screenshot({"max_size": 200})
+    assert runtime.coordinator.lease.expires == expires
+    with pytest.raises(BridgeError) as busy:
+        await other.action(str(uuid4()), {"kind": "key", "key": "enter"}, False)
+    assert busy.value.code == "CONTROL_BUSY" and busy.value.rejected
+    # Owner override from the client that does not hold control.
+    await other.control("pause", str(uuid4()))
+    assert runtime.coordinator.paused
+    with pytest.raises(BridgeError) as paused:
+        await holder.action(str(uuid4()), {"kind": "key", "key": "enter"}, False)
+    assert paused.value.code == "PAUSED"
+    await holder.control("resume", str(uuid4()))
+    # renew is a harmless no-op.
+    renewed = await holder.control("renew", str(uuid4()))
+    assert renewed["state"] == "SUCCEEDED" and runtime.coordinator.lease.expires >= expires
+    released = await holder.control("release", str(uuid4()))
+    assert released["state"] == "SUCCEEDED" and holder.lease is None and runtime.coordinator.lease is None
+    # Released twice, or after a lapse: already free, not an error.
+    assert (await holder.control("release", str(uuid4())))["released"] is True
+    await other.action(str(uuid4()), {"kind": "key", "key": "enter"}, False)
+    assert other.lease is not None and runtime.coordinator.lease is not None
+    await holder.close()
+    await other.close()
+    assert runtime.coordinator.lease is None
 
 
 async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):

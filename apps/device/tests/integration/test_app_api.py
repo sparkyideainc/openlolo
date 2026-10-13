@@ -235,6 +235,11 @@ async def test_setup_and_discover_routes(lan):
         assert polled.json()["state"] == "SUCCEEDED", polled.text
         assert polled.json()["result"]["trusted"] is True
         assert runtime.coordinator.lease is not None  # Setup auto-acquired the client's lease.
+        # The lease lapsed between page steps: setup takes control again instead of failing.
+        await runtime.coordinator.drop_control()
+        mounted = await c.post("/app/setup/mount_ddi", json={}, headers=headers)
+        assert mounted.status_code in {200, 202}, mounted.text
+        assert runtime.coordinator.lease is not None
 
         unconfirmed = await c.post(
             "/app/setup/pair", json={"payload": {"udid": "simulated-phone"}}, headers=headers

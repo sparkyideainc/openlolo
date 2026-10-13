@@ -19,18 +19,16 @@ import httpx
 # post-action observation. Touch coordinates are normalized, so a smaller image loses nothing
 # but transfer time; pass a larger max_size to openlolo_screenshot when small text matters.
 OBSERVATION_MAX_SIZE = 1536
-# Seconds without a mutation after which the bridge gives the lease back on its own, so a
-# finished or abandoned task does not keep the phone busy for other clients.
-IDLE_RELEASE_SECONDS = 90.0
-
 # Pre-dispatch refusals that are not argument mistakes, so the model does not "fix and resend".
 REJECTED_INSTRUCTIONS = {
     "CONTROL_BUSY": "Another client controls the phone right now; nothing ran. Wait for its lease to "
     "lapse (see status.control.remaining_seconds) and retry, or report it.",
-    "CONTROL_REQUIRED": "Control was lost after an interruption (status.mcp.lease_renewal_error); nothing "
-    "ran. Take a screenshot, then call openlolo_control acquire explicitly to continue.",
+    "LEASE_EXPIRED": "Control lapsed after a pause in activity; nothing ran. The screen may have changed: "
+    "take a fresh screenshot, then act again. The next action takes control if the phone is free.",
     "PAUSED": "Input is paused; nothing ran. Only resume through openlolo_control when the user intends it.",
 }
+# A token from before the lease lapsed while another client took the phone: same advice.
+REJECTED_INSTRUCTIONS["CONTROL_NOT_OWNED"] = REJECTED_INSTRUCTIONS["LEASE_EXPIRED"]
 
 
 class BridgeError(Exception):
@@ -104,30 +102,30 @@ def private_session(path: Path):
         os.close(fd)
 
 
+# The box no longer holds the lease under these: the bridge forgets its token and acquires anew.
+LOST_CONTROL = {"LEASE_EXPIRED", "CONTROL_NOT_OWNED"}
+
+
 class PhoneClient:
+    """Bridge to the Phone API. Holds the lease token only; the box keeps the lease alive while
+    this client acts or captures with it and lets it lapse after ``lease_seconds`` of quiet, so
+    there is no timer here."""
+
     def __init__(
         self,
         http: httpx.AsyncClient,
         *,
-        renew_seconds: float = 15,
         wait_seconds: float = 30,
-        idle_seconds: float = IDLE_RELEASE_SECONDS,
         transport: str = "stdio",
         observation: dict | None = None,
     ):
         self.http = http
         self.transport = transport
-        self.renew_seconds, self.wait_seconds = renew_seconds, wait_seconds
-        # Checked on each renewal tick, so release happens within one renew interval of the deadline.
-        self.idle_seconds = idle_seconds
-        self.last_mutation = time.monotonic()
-        self.in_flight = 0
+        self.wait_seconds = wait_seconds
         # Capture options for the post-action image. Bounded so a phone-resolution frame does not
         # ride every action result; models downscale beyond this anyway.
         self.observation = {"format": "jpeg", "max_size": OBSERVATION_MAX_SIZE, **(observation or {})}
         self.lease: str | None = None
-        self.lease_error: str | None = None
-        self.renew_task: asyncio.Task | None = None
         self.control_lock = asyncio.Lock()
 
     async def request(self, method: str, path: str, payload=None, *, timeout: float = 30) -> dict:
@@ -154,7 +152,7 @@ class PhoneClient:
         result = await self.request("GET", "status")
         # Keep the saved score useful without flooding the model with 1,000 trial rows.
         result.get("profile", {}).get("calibration", {}).pop("samples", None)
-        result["mcp"] = {"lease_renewal_error": self.lease_error, "transport": self.transport}
+        result["mcp"] = {"transport": self.transport}
         return result
 
     async def _control(self, command: str, operation_id: str, target: str | None = None):
@@ -163,65 +161,51 @@ class PhoneClient:
             payload["target"] = target
         return await self.request("POST", "control/" + command, payload, timeout=4)
 
-    def stop_renewing(self):
-        if self.renew_task and self.renew_task is not asyncio.current_task():
-            self.renew_task.cancel()
-        self.renew_task = None
+    def forget(self, exc: BridgeError):
+        if exc.code in LOST_CONTROL:
+            self.lease = None
 
-    def start_renewing(self):
-        self.stop_renewing()
-        self.renew_task = asyncio.create_task(self._renew())
+    async def _acquire(self):
+        result = await self._control("acquire", str(uuid4()))
+        self.lease = result.get("control", {}).get("lease_token")
+        if not self.lease:
+            raise BridgeError("INVALID_API_RESPONSE")
+        return result
 
-    async def _renew(self):
-        try:
-            while True:
-                await asyncio.sleep(self.renew_seconds)
-                async with self.control_lock:
-                    idle = time.monotonic() - self.last_mutation
-                    if self.idle_seconds and not self.in_flight and idle >= self.idle_seconds:
-                        # Idle release is not a loss of control: the next action acquires again.
-                        with contextlib.suppress(BridgeError):
-                            await self._control("release", str(uuid4()))
-                        self.lease = None
-                        self.renew_task = None
-                        return
-                    await self._control("renew", str(uuid4()))
-        except BridgeError as exc:
-            self.lease_error = exc.code
-            # Do not reacquire or resume automatically after expiry, revocation or API failure.
-            with contextlib.suppress(BridgeError):
-                await self._control("release", str(uuid4()))
-        except asyncio.CancelledError:
-            pass
+    async def ensure_control(self):
+        """Take the lease when this client holds none. CONTROL_BUSY comes back before any dispatch."""
+        async with self.control_lock:
+            if self.lease is None:
+                await self._acquire()
 
     async def control(self, command: str, operation_id: str, target: str | None = None):
         if command == "pause":
-            self.stop_renewing()
             return await self._control(command, operation_id)
         async with self.control_lock:
-            if command not in {"acquire", "release"} and (self.lease is None or self.lease_error):
-                raise BridgeError("CONTROL_REQUIRED")
-            result = await self._control(command, operation_id, target)
-            if command == "acquire":
-                self.lease = result.get("control", {}).get("lease_token")
-                if not self.lease:
-                    raise BridgeError("CONTROL_REQUIRED")
-                # An already-owned lease can have less than 15 seconds left.
-                await self._control("renew", str(uuid4()))
-                self.lease_error = None
-                if not result["control"].get("paused"):
-                    self.start_renewing()
-            elif command == "resume":
-                await self._control("renew", str(uuid4()))
-                self.start_renewing()
-            elif command == "release":
-                self.stop_renewing()
+            if command == "release" and self.lease is None:
+                # Nothing held here (never acquired, or it lapsed): already released.
+                return {"released": True, "control": (await self.request("GET", "status"))["control"]}
+            if command in {"resume", "cancel"} and self.lease is None:
+                await self._acquire()
+            try:
+                if command == "acquire":
+                    result = await self._acquire()
+                else:
+                    result = await self._control(command, operation_id, target)
+            except BridgeError as exc:
+                self.forget(exc)
+                if command == "release" and exc.code in LOST_CONTROL:
+                    return {"released": True, "control": (await self.request("GET", "status"))["control"]}
+                raise
+            if command == "release":
                 self.lease = None
             result.get("control", {}).pop("lease_token", None)
             return result
 
     async def screenshot(self, options=None):
-        return await self.request("POST", "screenshot", options or {})
+        # The token marks the capture as the holder's activity; a stale one is ignored by the box.
+        payload = {**(options or {}), **({"lease_token": self.lease} if self.lease else {})}
+        return await self.request("POST", "screenshot", payload)
 
     async def operation(self, operation_id: str):
         return await self.request("GET", "operations/" + operation_id)
@@ -270,19 +254,13 @@ class PhoneClient:
         went so slow calls can be attributed to the phone, the settle, the capture or the path
         outside this bridge. ``fetch`` replaces the observation with the operation's own result
         (a full-page capture's images); ``wait`` overrides the outcome deadline."""
-        if self.lease_error:
-            # Lost after an interruption (expiry, revocation, owner takeover): never continue silently.
-            raise BridgeError("CONTROL_REQUIRED", rejected=True)
-        if self.lease is None:
-            # First action of a task, or the first after an idle release: the box decides ownership.
-            # CONTROL_BUSY (another client holds the lease) comes back before anything is dispatched.
-            try:
-                await self.control("acquire", str(uuid4()))
-            except BridgeError as exc:
-                exc.rejected = True
-                raise
-        self.last_mutation = started = time.monotonic()
-        self.in_flight += 1
+        # First action of a task, or the first after the lease lapsed: the box decides ownership.
+        try:
+            await self.ensure_control()
+        except BridgeError as exc:
+            exc.rejected = True
+            raise
+        started = time.monotonic()
         try:
             try:
                 result = await self.request(
@@ -291,7 +269,9 @@ class PhoneClient:
             except BridgeError as exc:
                 if exc.status is not None and 400 <= exc.status < 500:
                     # The API answered with a validation or state error before journaling anything.
+                    # An expired token is dropped and never replayed; the next call acquires again.
                     exc.rejected = True
+                    self.forget(exc)
                 raise
             deadline = time.monotonic() + (self.wait_seconds if wait is None else wait)
             while result["state"] in {"QUEUED", "DISPATCHED"} and time.monotonic() < deadline:
@@ -329,17 +309,8 @@ class PhoneClient:
                 with contextlib.suppress(BridgeError):
                     await self._control("cancel", str(uuid4()), operation_id)
             raise
-        finally:
-            # Idle time counts from the end of the last mutation; never release one in flight.
-            self.in_flight -= 1
-            self.last_mutation = time.monotonic()
 
     async def close(self):
-        task = self.renew_task
-        self.stop_renewing()
-        if task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
         with anyio.CancelScope(shield=True), anyio.move_on_after(5):
             if self.lease:
                 with contextlib.suppress(BridgeError):

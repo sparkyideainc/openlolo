@@ -1,8 +1,10 @@
 import asyncio
+import time
 from uuid import uuid4
 
 import pytest
 
+from openlolo.application.coordinator import Coordinator
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Action
 
@@ -38,16 +40,140 @@ async def test_pause_bypasses_blocked_capture(runtime, lease):
     capture.cancel()
 
 
-async def test_lease_expiry_drops_queued_work(runtime, lease):
-    runtime.phone.device.delay = 0.3
-    screenshot = asyncio.create_task(runtime.phone.screenshot())
+def count_wakes(coordinator):
+    """The watcher clears its event once per loop turn, so each call is one wake-up."""
+    wakes = []
+    clear = coordinator.changed.clear
+    coordinator.changed.clear = lambda: (wakes.append(time.monotonic()), clear())[1]
+    return wakes
+
+
+async def test_watcher_never_wakes_without_a_lease(runtime):
+    wakes = count_wakes(runtime.coordinator)
+    await asyncio.sleep(0.3)
+    assert wakes == [] and not runtime.coordinator.watcher.done()
+
+
+async def test_idle_lease_expires_once_and_releases_input(runtime):
+    coordinator = runtime.coordinator
+    coordinator.lease_seconds = 0.2
+    lease = (await runtime.phone.acquire_control("owner"))["lease_token"]
+    before = runtime.phone.device.releases
+    await asyncio.sleep(0.1)
+    assert coordinator.lease is not None
+    await asyncio.sleep(0.25)
+    assert coordinator.lease is None and runtime.phone.device.releases == before + 1
+    # Back to waiting on the event alone: no more wake-ups and no second release.
+    wakes = count_wakes(coordinator)
+    await asyncio.sleep(0.3)
+    assert wakes == [] and runtime.phone.device.releases == before + 1
+    with pytest.raises(OpenLoloError) as expired:
+        runtime.phone.action(str(uuid4()), "owner", lease, Action(kind="key", key="enter"))
+    assert expired.value.code == "LEASE_EXPIRED"
+    assert not [row for row in runtime.journal.list_operations() if row["kind"] == "key"]
+
+
+async def test_actions_and_captures_move_the_deadline(runtime):
+    coordinator = runtime.coordinator
+    coordinator.lease_seconds = 0.3
+    lease = (await runtime.phone.acquire_control("owner"))["lease_token"]
+    await asyncio.sleep(0.2)
+    op = str(uuid4())
+    runtime.phone.action(op, "owner", lease, Action(kind="key", key="enter"))
+    assert (await terminal(runtime, op))["state"] == "SUCCEEDED"
+    await asyncio.sleep(0.2)  # Past the acquire deadline, inside the action's.
+    assert coordinator.lease is not None
+    await runtime.phone.screenshot()
+    coordinator.accept("owner", lease)
+    expires = coordinator.lease.expires
+    # A capture with someone else's token, or a wrong one, changes nothing.
+    coordinator.accept("other", lease)
+    coordinator.accept("owner", "stale")
+    assert coordinator.lease.expires == expires
+    await asyncio.sleep(0.2)  # Past the action's deadline, inside the capture's.
+    assert coordinator.lease is not None
+    await asyncio.sleep(0.3)
+    assert coordinator.lease is None
+
+
+async def test_in_flight_work_holds_the_lease(runtime):
+    coordinator = runtime.coordinator
+    coordinator.lease_seconds = 0.15
+    lease = (await runtime.phone.acquire_control("owner"))["lease_token"]
+    runtime.phone.device.delay = 0.5
+    capture = asyncio.create_task(runtime.phone.screenshot())
     await asyncio.sleep(0.01)
     op = str(uuid4())
     runtime.phone.action(op, "owner", lease, Action(kind="key", key="enter"))
-    runtime.coordinator.lease.expires = 0
-    await screenshot
-    assert (await terminal(runtime, op))["state"] == "CANCELLED"
-    assert not any(kind == "keyboard" and 40 in value for kind, value in runtime.phone.device.reports)
+    await asyncio.sleep(0.3)  # Deadline passed while the action waits behind the capture.
+    assert coordinator.lease is not None and coordinator.lease_status("owner")["owned"]
+    coordinator.check("owner", lease)
+    await capture
+    runtime.phone.device.delay = 0.05
+    assert (await terminal(runtime, op))["state"] == "SUCCEEDED"
+    # The deadline counts from the action's end.
+    await asyncio.sleep(0.05)
+    assert coordinator.lease is not None
+    await asyncio.sleep(0.3)
+    assert coordinator.lease is None
+
+
+async def test_release_frees_at_once_and_busy_until_then(runtime, lease):
+    with pytest.raises(OpenLoloError) as busy:
+        await runtime.phone.acquire_control("other")
+    assert busy.value.code == "CONTROL_BUSY"
+    assert runtime.coordinator.lease_status("other")["remaining_seconds"] > 80
+    await runtime.phone.release_control("owner", lease)
+    other = (await runtime.phone.acquire_control("other"))["lease_token"]
+    assert other != lease and runtime.coordinator.lease.owner == "other"
+
+
+async def test_renew_is_a_no_op(runtime, lease):
+    expires = runtime.coordinator.lease.expires
+    await asyncio.sleep(0.02)
+    status = runtime.phone.renew_control("owner", "anything")
+    assert status["owned"] and runtime.coordinator.lease.expires == expires
+
+
+async def test_pause_still_works_and_does_not_stop_expiry(runtime):
+    coordinator = runtime.coordinator
+    coordinator.lease_seconds = 0.2
+    await runtime.phone.acquire_control("owner")
+    await runtime.phone.pause()  # Owner override; needs no lease.
+    assert coordinator.paused and coordinator.lease is not None
+    await asyncio.sleep(0.35)
+    assert coordinator.lease is None and coordinator.paused
+
+
+async def test_failed_expiry_does_not_kill_the_watcher(runtime, monkeypatch):
+    coordinator = runtime.coordinator
+    coordinator.lease_seconds = 0.1
+    stop_input = coordinator.stop_input
+    calls = []
+
+    async def failing():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("release failed")
+        await stop_input()
+
+    monkeypatch.setattr(coordinator, "stop_input", failing)
+    await runtime.phone.acquire_control("owner")
+    await asyncio.sleep(0.25)
+    assert calls == [1] and coordinator.lease is None and not coordinator.watcher.done()
+    await runtime.phone.acquire_control("owner")
+    await asyncio.sleep(0.25)
+    assert calls == [1, 1] and coordinator.lease is None
+
+
+async def test_close_leaves_no_task_running(runtime):
+    coordinator = Coordinator(runtime.journal, runtime.phone.device, lease_seconds=60)
+    await coordinator.start()
+    await coordinator.acquire("owner")
+    await coordinator.close()
+    watcher, runner = coordinator.watcher, coordinator.runner
+    assert watcher is not None and runner is not None
+    assert watcher.done() and runner.done()
 
 
 async def test_cancel_dispatched_is_unknown(runtime, lease):

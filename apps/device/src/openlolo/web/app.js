@@ -45,7 +45,7 @@ async function status() {
 async function screenshot() {
   $('refresh').disabled = true;
   try {
-    const result = await api('screenshot', {}); frame = result.metadata;
+    const result = await api('screenshot', lease ? {lease_token: lease} : {}); frame = result.metadata;
     const bytes = Uint8Array.from(atob(result.image), c => c.charCodeAt(0));
     if (imageURL) URL.revokeObjectURL(imageURL);
     imageURL = URL.createObjectURL(new Blob([bytes], {type:frame.media_type}));
@@ -101,6 +101,5 @@ $('screen').onpointerup = e => {if(!down || !frame) return; const start=down; do
 bind('cal-start', async()=>{if(!frame) throw new Error('Capture a portrait screenshot first.'); calibration=await setup('calibration_start',{native_width:frame.native_width,native_height:frame.native_height,viewport_top:Number($('viewport-top').value)}); const link=document.createElement('a');link.href=calibration.url;link.textContent='Open on the iPhone: '+calibration.url;link.rel='noreferrer';$('cal-link').replaceChildren(link);});
 bind('cal-next', async()=>{await setup('calibration_next'); await screenshot();});
 bind('cal-finish', async()=>{if(!calibration) throw new Error('Start calibration first.'); const result=await setup('calibration_finish',{session:calibration.session});$('cal-result').textContent=JSON.stringify(result,null,2);});
-setInterval(()=>{if(lease) control('renew').catch(error=>{lease=null;message(error);});},15000);
 setInterval(()=>{if(!$('workspace').hidden) status().catch(message);},5000);
 status().catch(()=>showLogin());

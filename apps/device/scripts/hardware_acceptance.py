@@ -74,24 +74,16 @@ def main():
         def capture():
             nonlocal last_capture
             start = time.monotonic()
-            result = post("screenshot", {})
+            # The token makes each capture count as activity, so the lease stays alive between taps.
+            result = post("screenshot", {"lease_token": lease})
             result.pop("image")
             timings.append(time.monotonic() - start)
             last_capture = time.monotonic()
             return result["metadata"]
 
         lease = control("acquire")["control"]["lease_token"]
-        # Acquiring an already-owned lease does not extend its remaining lifetime.
-        control("renew")
         control("resume")
         started = time.monotonic()
-        last_renew = started
-
-        def renew():
-            nonlocal last_renew
-            if time.monotonic() - last_renew > 15:
-                control("renew")
-                last_renew = time.monotonic()
 
         report = {
             "started_epoch": time.time(),
@@ -119,7 +111,8 @@ def main():
             print("Waiting up to 120 seconds for page geometry.", flush=True)
             deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
-                renew()
+                if time.monotonic() - last_capture > 30:
+                    frame = capture()
                 state = c.get("/api/calibration").json()
                 if state.get("geometry"):
                     break
@@ -127,7 +120,6 @@ def main():
             else:
                 raise RuntimeError("Calibration page not opened")
             for i in range(14 + args.trials):
-                renew()
                 # Keep the frame reference fresh even when feedback/network is slow.
                 if time.monotonic() - last_capture > 30:
                     frame = capture()
@@ -157,7 +149,6 @@ def main():
                     print(f"{i + 1}/{14 + args.trials} trials", flush=True)
             report["calibration"] = setup("calibration_finish", {"session": calibration["session"]})
             while time.monotonic() - started < args.minutes * 60:
-                renew()
                 frame = capture()
                 health = c.get("/api/status").json()
                 log.write(
