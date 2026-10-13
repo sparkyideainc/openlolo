@@ -42,6 +42,7 @@ class Journal:
                 family TEXT NOT NULL, value TEXT NOT NULL, expires REAL NOT NULL,
                 revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS owner_labels (owner TEXT PRIMARY KEY, label TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS portal_sessions (digest TEXT PRIMARY KEY, expires_at REAL NOT NULL);
         """)
         self._migrate()
         # Changes on every write and never repeats, across restarts too: seeded from the clock but

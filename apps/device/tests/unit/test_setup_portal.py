@@ -162,6 +162,15 @@ async def test_session_expires(portal, runtime, clock):
         assert (await c.get("/setup/status")).json()["session"] is False
 
 
+async def test_session_survives_portal_restart(portal, runtime, web, clock):
+    async with browser(portal) as c:
+        cookie = (await c.post("/setup/session", headers=WRITE)).cookies[SESSION_COOKIE]
+    restarted = create_setup_portal(runtime, web=web, clock=clock)  # Same database, new listener
+    async with browser(restarted) as c:
+        c.cookies.set(SESSION_COOKIE, cookie)
+        assert (await c.get("/setup/status")).json()["session"] is True
+
+
 async def test_setup_ap_clients_need_only_the_cable(portal, runtime):
     await runtime.provisioning.enter(reason="test")
     async with ap(portal) as c:

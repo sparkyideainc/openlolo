@@ -31,6 +31,7 @@ WEB = Path(__file__).resolve().parents[1] / "web" / "portal"
 AP_NET = ipaddress.ip_network("192.168.4.0/24")
 SESSION_COOKIE = "openlolo_portal"
 SESSION_SECONDS = 86_400
+SESSION_LIMIT = 64  # Stored box-page sessions; issuing past it drops the oldest.
 CLIENT_HEADER = "x-openlolo-client"
 PORTAL_CLIENT = "portal"
 PORTAL_IDENTITY = "Box page"  # Journal owner label for operations started from the page.
@@ -55,28 +56,43 @@ def _digest(token: str) -> str:
 
 
 class PortalSessions:
-    """In-memory sessions for the box page; a restart signs everyone out."""
+    """Box-page sessions in the journal database, so a restart or reboot keeps the owner signed in.
 
-    def __init__(self, clock=time.time):
+    Only the SHA-256 digest of a token is stored. A factory reset deletes the database, and
+    with it every session."""
+
+    def __init__(self, db, clock=time.time):
+        self.db = db
         self.clock = clock
-        self.sessions: dict[str, float] = {}
 
     def issue(self) -> str:
         now = self.clock()
-        self.sessions = {k: v for k, v in self.sessions.items() if v > now}
         token = secrets.token_urlsafe(32)
-        self.sessions[_digest(token)] = now + SESSION_SECONDS
+        with self.db:
+            self.db.execute("DELETE FROM portal_sessions WHERE expires_at<=?", (now,))
+            self.db.execute(
+                "INSERT INTO portal_sessions VALUES (?,?)", (_digest(token), now + SESSION_SECONDS)
+            )
+            # Every session lasts SESSION_SECONDS, so the latest expiries are the newest sessions.
+            self.db.execute(
+                "DELETE FROM portal_sessions WHERE digest NOT IN "
+                "(SELECT digest FROM portal_sessions ORDER BY expires_at DESC LIMIT ?)",
+                (SESSION_LIMIT,),
+            )
         return token
 
     def check(self, token: str | None) -> bool:
         if not token:
             return False
-        expiry = self.sessions.get(_digest(token))
-        return expiry is not None and expiry > self.clock()
+        row = self.db.execute(
+            "SELECT 1 FROM portal_sessions WHERE digest=? AND expires_at>?", (_digest(token), self.clock())
+        ).fetchone()
+        return row is not None
 
     def revoke(self, token: str | None) -> None:
         if token:
-            self.sessions.pop(_digest(token), None)
+            with self.db:
+                self.db.execute("DELETE FROM portal_sessions WHERE digest=?", (_digest(token),))
 
 
 def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp:
@@ -87,7 +103,7 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
     from openlolo.interfaces.app_api import app_routes
     from openlolo.interfaces.mcp_server import ALL_SCOPES
 
-    sessions = PortalSessions(clock)
+    sessions = PortalSessions(runtime.journal.db, clock)
     index = web / "index.html"
 
     # -- page -------------------------------------------------------------------------
