@@ -141,7 +141,29 @@ def test_journal_revision_changes_on_every_write_and_after_restart(tmp_path):
     revision = j.journal_revision()
     j.close()
     j = Journal(path)
-    assert j.journal_revision() != revision  # Seeded from the clock, so a restart is a change too.
+    assert j.journal_revision() > revision  # A restart is a change too.
+    j.close()
+
+
+def test_journal_revision_never_repeats_after_restart_with_a_slow_clock(tmp_path, monkeypatch):
+    path = tmp_path / "journal.sqlite3"
+    clock = [1_000.0]
+    monkeypatch.setattr("openlolo.adapters.storage.sqlite.time.time", lambda: clock[0])
+    j = Journal(path)
+    for _ in range(3):
+        j.label_owner("owner", "Claude")
+    revision = j.journal_revision()
+    j.close()
+    # Reopening exactly one millisecond per write later used to reseed to the same revision.
+    clock[0] += 0.003
+    j = Journal(path)
+    assert j.journal_revision() > revision
+    reopened = j.journal_revision()
+    j.close()
+    # Clock unchanged or stepped back, no writes in between: still strictly newer.
+    clock[0] -= 60
+    j = Journal(path)
+    assert j.journal_revision() > reopened
     j.close()
 
 
