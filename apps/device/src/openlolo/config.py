@@ -33,7 +33,11 @@ class Config(StrictModel):
     # CoreDevice worker tuning. Transport (USB or Wi-Fi) is part of the owner binding, not config.
     auto_mount_ddi: bool = True
     ddi_mount_deadline: float = Field(default=240, ge=10, le=900)
-    discovery_seconds: float = Field(default=3, ge=0.5, le=15)
+    discovery_seconds: float = Field(default=3, ge=0.5, le=15)  # One Bonjour browse.
+    # The worker looks for the phone only inside bounded windows opened by events (boot, cable
+    # pulled, Wi-Fi session lost, top button, a request that needs the phone); never in the
+    # background. A connection that starts inside the window may finish after it.
+    search_window_seconds: float = Field(default=10, ge=1, le=60)
     probe_interval: float = Field(default=10, ge=1, le=120)
     reconnect_min_seconds: float = Field(default=1, ge=0.01, le=60)
     reconnect_max_seconds: float = Field(default=15, ge=0.01, le=300)

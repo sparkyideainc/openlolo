@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import time
 
 import pytest
 from support import raises_code
@@ -136,8 +137,94 @@ class FakeSession:
         return {"product_type": "iPhone14,5"}
 
 
+class Clock:
+    """Monotonic time plus a jump offset: fake browses and the 30-minute idle advance it."""
+
+    def __init__(self):
+        self.offset = 0.0
+
+    def __call__(self):
+        return time.monotonic() + self.offset
+
+    def advance(self, seconds):
+        self.offset += seconds
+
+
+class FakeUsb(FakeTransport):
+    """USB with usbmuxd-style events: ``plug`` changes presence and pushes an attach/detach."""
+
+    def __init__(self, present=True, error=None, listen=True):
+        super().__init__(present, error)
+        self.listen = listen
+        self.events: asyncio.Queue = asyncio.Queue()
+        self.checks = 0
+        self.polls = 0
+        self.watching = 0
+
+    async def present(self, udid):
+        self.checks += 1
+        return self.is_present
+
+    async def serials(self):
+        self.polls += 1
+        return {BINDING.udid} if self.is_present else set()
+
+    async def watch(self):
+        if not self.listen:
+            raise ConnectionError("Listen refused")
+        self.watching += 1
+        try:
+            yield await self.serials()
+            while True:
+                yield await self.events.get()
+        finally:
+            self.watching -= 1
+
+    def plug(self, present=True):
+        self.is_present = present
+        self.events.put_nowait({BINDING.udid} if present else set())
+
+
+class FakeWifi(FakeTransport):
+    """Bonjour browse that takes ``seconds`` of fake time; ``hang`` blocks it until cancelled."""
+
+    def __init__(self, clock, present=False, paired=True, seconds=3.0):
+        super().__init__(present)
+        self.clock, self.seconds = clock, seconds
+        self.is_paired = paired
+        self.browses = 0
+        self.hang = False
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.forgotten = 0
+
+    def paired(self, udid):
+        return self.is_paired
+
+    def forget(self, udid=None):
+        self.forgotten += 1
+
+    async def present(self, udid):
+        self.browses += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if self.hang:
+                await asyncio.Event().wait()
+            await asyncio.sleep(0)
+            self.clock.advance(self.seconds)
+            return self.is_present
+        finally:
+            self.in_flight -= 1
+
+
 @pytest.fixture
-def manager(tmp_path):
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def manager(tmp_path, clock):
     FakeTunnel.instances.clear()
     FakeSession.instances.clear()
     FakeSession.prepare_results.clear()
@@ -150,14 +237,21 @@ def manager(tmp_path):
         reconnect_max_seconds=0.05,
         recover_wait_seconds=1,
     )
-    transports = {"usb": FakeTransport(), "wifi": FakeTransport(present=False)}
-    return CoreDeviceManager(config, transports, FakeTunnel, FakeSession)
+    transports = {"usb": FakeUsb(), "wifi": FakeWifi(clock)}
+    return CoreDeviceManager(config, transports, FakeTunnel, FakeSession, clock=clock)
 
 
 async def wait_state(manager, state, timeout=2):
     async with asyncio.timeout(timeout):
         while manager.connection.state != state.value:
             await asyncio.sleep(0.005)
+
+
+async def settle(manager, rounds=50):
+    """Let every pending callback run; the worker has no timers when idle, so this is enough."""
+    for _ in range(rounds):
+        await asyncio.sleep(0)
+    await asyncio.sleep(0.02)
 
 
 async def test_connect_capture_input_and_transport_loss_recovery(manager):
@@ -187,13 +281,13 @@ async def test_connect_capture_input_and_transport_loss_recovery(manager):
         with raises_code("INPUT_INTERRUPTED"):
             await manager.report(generation, "keyboard", [])
         # USB unplug: the tunnel transport closes, the supervisor waits and then reconnects.
-        manager.transports["usb"].is_present = False
+        manager.transports["usb"].plug(False)
         FakeTunnel.instances[-1].closed.set()
         await wait_state(manager, State.WAITING_FOR_DEVICE)
         assert session.closed
         with raises_code("DEVICE_DISCONNECTED"):
             await manager.capture(BINDING, CaptureOptions())
-        manager.transports["usb"].is_present = True
+        manager.transports["usb"].plug(True)
         await wait_state(manager, State.CONNECTED)
         assert manager.transports["usb"].opened == 2 and manager.connection.attempts == 0
         assert (await manager.list_apps(BINDING))[0]["bundle_id"] == "com.apple.Preferences"
@@ -215,8 +309,10 @@ async def test_owner_action_states_and_identity(manager):
         manager.transports["usb"].error = None
         FakeSession.prepare_results.append(OpenLoloError("DEVELOPER_MODE_REQUIRED"))
         manager.wake.set()
+        manager._pulse()
         await wait_state(manager, State.DEVELOPER_MODE_REQUIRED)
         manager.wake.set()
+        manager._pulse()
         await wait_state(manager, State.CONNECTED)
         other = BINDING.model_copy(update={"udid": "00008110-BBBBBBBBBBBBBBBB"})
         with raises_code("IDENTITY_MISMATCH"):
@@ -271,6 +367,7 @@ async def test_switching_transport_restarts_supervision(manager):
         with raises_code("IDENTITY_MISMATCH"):
             await manager.capture(BINDING, CaptureOptions())
         manager.transports["wifi"].is_present = True
+        await manager.find()  # The top button opens a window.
         await wait_state(manager, State.CONNECTED)
         assert manager.transports["wifi"].opened == 1
     finally:
@@ -287,36 +384,23 @@ async def wait_transport(manager, transport, timeout=2):
             await asyncio.sleep(0.005)
 
 
-class PairedFakeTransport(FakeTransport):
-    def __init__(self, present=True, paired=True):
-        super().__init__(present)
-        self.is_paired = paired
-        self.forgotten = 0
-
-    def paired(self, udid):
-        return self.is_paired
-
-    def forget(self, udid=None):
-        self.forgotten += 1
-
-
 async def test_auto_moves_to_wifi_on_unplug_and_back_to_usb_when_idle(manager):
-    usb, wifi = manager.transports["usb"], PairedFakeTransport(present=False)
-    manager.transports["wifi"] = wifi
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
     await manager.start()
     try:
         await manager.connect(AUTO)
         await wait_state(manager, State.CONNECTED)
         assert manager.connection.transport == "usb" and usb.opened == 1
         # Cable pulled while the phone is on the LAN: the next attempt finds it over Wi-Fi.
-        usb.is_present, wifi.is_present = False, True
+        wifi.is_present = True
+        usb.plug(False)
         FakeTunnel.instances[-1].closed.set()
         await wait_transport(manager, "wifi")
         assert wifi.opened == 1
         assert (await manager.device_info(AUTO))["transport"] == "wifi"
         # Cable back while an input generation is open: the move waits for the idle moment.
         generation = await manager.begin(AUTO)
-        usb.is_present = True
+        usb.plug(True)
         await asyncio.sleep(0.15)
         assert manager.connection.transport == "wifi" and usb.opened == 1
         await manager.report(generation, "touch", ["contact", 1, 1])
@@ -330,14 +414,14 @@ async def test_auto_moves_to_wifi_on_unplug_and_back_to_usb_when_idle(manager):
 
 
 async def test_auto_requests_wait_through_a_switch(manager):
-    usb, wifi = manager.transports["usb"], PairedFakeTransport(present=True)
-    manager.transports["wifi"] = wifi
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    wifi.is_present = True
     manager.config.switch_hold_seconds = 2
     await manager.start()
     try:
         await manager.connect(AUTO)
         await wait_state(manager, State.CONNECTED)
-        usb.is_present = False
+        usb.plug(False)
         FakeTunnel.instances[-1].closed.set()
         await wait_state(manager, State.RECONNECTING)
         # Issued right after the loss: held until the Wi-Fi session is up, then served.
@@ -355,8 +439,8 @@ async def test_auto_requests_wait_through_a_switch(manager):
 
 
 async def test_auto_skips_unpaired_wifi_and_reports_it(manager):
-    usb, wifi = manager.transports["usb"], PairedFakeTransport(present=False, paired=False)
-    manager.transports["wifi"] = wifi
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    wifi.is_paired = False
     usb.is_present = False
     await manager.start()
     try:
@@ -366,7 +450,7 @@ async def test_auto_skips_unpaired_wifi_and_reports_it(manager):
         assert manager.connection.wifi_paired is False and wifi.opened == 0
         with raises_code("DEVICE_DISCONNECTED"):
             await manager.verify(AUTO)
-        usb.is_present = True
+        usb.plug(True)
         assert (await manager.verify(AUTO))["transport"] == "usb"
         await wait_state(manager, State.CONNECTED)
         assert manager.connection.transport == "usb"
@@ -379,8 +463,8 @@ async def test_auto_skips_unpaired_wifi_and_reports_it(manager):
 
 
 async def test_auto_falls_back_to_wifi_when_the_usb_session_fails(manager):
-    usb, wifi = manager.transports["usb"], PairedFakeTransport(present=True)
-    manager.transports["wifi"] = wifi
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    wifi.is_present = True
     usb.error = OpenLoloError("TRUST_REQUIRED", "pair first")
     await manager.start()
     try:
@@ -394,10 +478,204 @@ async def test_auto_falls_back_to_wifi_when_the_usb_session_fails(manager):
         await asyncio.sleep(0.2)
         assert manager.connection.transport == "wifi" and wifi.opened == 1
         # Only once the phone has been off the cable is the move to USB attempted again.
-        usb.is_present = False
+        usb.plug(False)
         await asyncio.sleep(0.05)
-        usb.is_present = True
+        usb.plug(True)
         await wait_transport(manager, "usb")
         assert usb.opened == 1
+    finally:
+        await manager.close()
+
+
+# ----- search windows (no background discovery) ------------------------------------------
+
+
+async def boot_without_phone(manager, transport="auto"):
+    manager.transports["usb"].is_present = False
+    await manager.start()
+    await manager.connect(BINDING.model_copy(update={"transport": transport}))
+    await wait_state(manager, State.WAITING_FOR_DEVICE)
+    async with asyncio.timeout(2):
+        while manager.window is None or not manager.window.done():
+            await asyncio.sleep(0.005)
+    await settle(manager)
+
+
+def window_browses(manager):
+    """Browses one window may run: never one that ends more than 1 s past the deadline."""
+    return int((manager.config.search_window_seconds + 1) // manager.config.discovery_seconds)
+
+
+async def test_no_phone_for_30_minutes_is_one_boot_window_then_idle(manager, clock):
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    try:
+        await boot_without_phone(manager)
+        assert manager.windows == 1 and 1 <= wifi.browses <= window_browses(manager)
+        assert manager.connection.searching is False
+        assert manager.status()["connection"]["message"] == "Press the top button or plug in the phone"
+        browses, checks = wifi.browses, usb.checks
+        clock.advance(30 * 60)
+        await settle(manager, 200)
+        assert manager.windows == 1 and wifi.browses == browses and usb.checks == checks
+        assert usb.polls == 1 and usb.watching == 1  # One Listen, no presence polling.
+    finally:
+        await manager.close()
+    assert usb.watching == 0  # Teardown closes the Listen connection.
+
+
+async def test_search_coalesces_and_is_bounded(manager):
+    wifi = manager.transports["wifi"]
+    try:
+        await boot_without_phone(manager)
+        before = wifi.browses
+        wifi.hang = True
+        windows = [manager.search() for _ in range(5)]
+        assert manager.windows == 2 and all(w is windows[0] for w in windows)
+        await settle(manager)
+        assert wifi.max_in_flight == 1
+        wifi.hang = False
+        windows[0].cancel()
+        await settle(manager)
+        manager.search()
+        await manager._await_window(manager.window)
+        assert manager.windows == 3 and wifi.browses - before <= 1 + window_browses(manager)
+        await settle(manager)
+        assert manager.connection.state == State.WAITING_FOR_DEVICE.value
+    finally:
+        await manager.close()
+
+
+async def test_requests_while_disconnected_share_one_window_then_fail_with_hint(manager):
+    wifi = manager.transports["wifi"]
+    try:
+        await boot_without_phone(manager)
+        results = await asyncio.gather(
+            manager.capture(AUTO, CaptureOptions()),
+            manager.list_apps(AUTO),
+            return_exceptions=True,
+        )
+        assert manager.windows == 2
+        for result in results:
+            assert isinstance(result, OpenLoloError) and result.code == "DEVICE_DISCONNECTED"
+            assert result.message == "Press the top button or plug in the phone"
+        browses = wifi.browses
+        await settle(manager, 100)
+        assert wifi.browses == browses and manager.windows == 2
+    finally:
+        await manager.close()
+
+
+async def test_request_finds_the_phone_inside_its_window(manager):
+    wifi = manager.transports["wifi"]
+    try:
+        await boot_without_phone(manager)
+        wifi.is_present = True
+        frame = await manager.capture(AUTO, CaptureOptions())
+        assert frame.image == b"\x89PNG" and manager.connection.transport == "wifi"
+        assert manager.windows == 2
+    finally:
+        await manager.close()
+
+
+async def test_attach_connects_over_usb_without_browsing(manager):
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    try:
+        await boot_without_phone(manager)
+        browses, windows = wifi.browses, manager.windows
+        usb.plug(True)
+        await wait_transport(manager, "usb")
+        assert wifi.browses == browses and manager.windows == windows
+    finally:
+        await manager.close()
+
+
+async def test_detach_opens_one_window_then_idles(manager):
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    await manager.start()
+    try:
+        await manager.connect(AUTO)
+        await wait_transport(manager, "usb")
+        assert manager.windows == 0 and wifi.browses == 0  # The cable was found first: no browse.
+        usb.plug(False)
+        FakeTunnel.instances[-1].closed.set()
+        await wait_state(manager, State.WAITING_FOR_DEVICE)
+        await manager._await_window(manager.window)
+        await settle(manager, 100)
+        assert manager.windows == 1 and 1 <= wifi.browses <= window_browses(manager)
+        browses = wifi.browses
+        await settle(manager, 100)
+        assert wifi.browses == browses and manager.connection.state == State.WAITING_FOR_DEVICE.value
+    finally:
+        await manager.close()
+
+
+async def test_wifi_session_loss_opens_one_window_then_idles(manager):
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    try:
+        await boot_without_phone(manager)
+        wifi.is_present = True
+        await manager.find()
+        await wait_transport(manager, "wifi")
+        windows, browses = manager.windows, wifi.browses
+        wifi.is_present = False
+        FakeTunnel.instances[-1].closed.set()
+        await wait_state(manager, State.WAITING_FOR_DEVICE)
+        await manager._await_window(manager.window)
+        await settle(manager, 100)
+        assert manager.windows == windows + 1
+        assert 1 <= wifi.browses - browses <= window_browses(manager)
+        browses = wifi.browses
+        await settle(manager, 100)
+        assert wifi.browses == browses and usb.polls == 1
+    finally:
+        await manager.close()
+
+
+async def test_listen_failure_polls_presence_only_and_never_browses(manager):
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    usb.listen = False
+    usb.is_present = False
+    await manager.start()
+    try:
+        await manager.connect(BINDING)  # USB binding: windows check the cable, never browse.
+        await asyncio.sleep(0.1)
+        assert usb.polls >= 2 and wifi.browses == 0 and not manager.listening
+        usb.is_present = True  # No event: the fallback poll sees the attach.
+        await wait_state(manager, State.CONNECTED)
+        assert wifi.browses == 0
+    finally:
+        await manager.close()
+
+
+async def test_cancellation_during_a_browse_leaves_no_task(manager):
+    wifi = manager.transports["wifi"]
+    wifi.hang = True
+    before = set(asyncio.all_tasks())
+    manager.transports["usb"].is_present = False
+    await manager.start()
+    await manager.connect(AUTO)
+    async with asyncio.timeout(2):
+        while wifi.in_flight == 0:
+            await asyncio.sleep(0.005)
+    await manager.close()
+    await settle(manager)
+    assert wifi.in_flight == 0 and manager.window is None
+    assert set(asyncio.all_tasks()) - before == set()
+
+
+async def test_owner_state_waits_for_an_event_not_a_timer(manager):
+    usb = manager.transports["usb"]
+    usb.error = OpenLoloError("TRUST_REQUIRED", "pair first")
+    await manager.start()
+    try:
+        await manager.connect(BINDING)
+        await wait_state(manager, State.TRUST_REQUIRED)
+        await settle(manager, 100)
+        attempts = manager.connection.attempts
+        await asyncio.sleep(0.2)
+        assert manager.connection.attempts == attempts  # No polling retry.
+        usb.error = None
+        await manager.find()  # Top button after tapping Trust.
+        await wait_state(manager, State.CONNECTED)
     finally:
         await manager.close()

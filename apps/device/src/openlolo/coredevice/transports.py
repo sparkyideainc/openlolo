@@ -6,6 +6,7 @@ implicitly; ``autopair`` is only enabled by the explicit owner setup in ``setup.
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from openlolo.domain.errors import OpenLoloError
@@ -32,6 +33,39 @@ class UsbTransport:
 
     async def present(self, udid: str) -> bool:
         return any(device.is_usb and same_udid(device.serial, udid) for device in await self.devices())
+
+    async def serials(self) -> set[str]:
+        """Serials of the phones on the cable right now (one usbmuxd ListDevices)."""
+        return {device.serial for device in await self.devices() if device.is_usb}
+
+    async def watch(self) -> AsyncGenerator[set[str]]:
+        """Serials on the cable, yielded at once and again after every usbmuxd attach or detach.
+
+        One Listen connection is held open and usbmuxd pushes the events, so nothing is polled.
+        The first set comes from a ListDevices taken after Listen is accepted; each event is then
+        applied to it as a delta, so the replayed Attached messages for phones already on the
+        cable change nothing. Raises when usbmuxd refuses Listen or drops the connection; the
+        caller falls back to ``serials`` polling. The connection is closed on exit.
+        """
+        from pymobiledevice3 import usbmux
+
+        mux = await asyncio.wait_for(usbmux.create_mux(), 3)
+        try:
+            await asyncio.wait_for(mux.listen(), 3)
+            current = await self.serials()
+            yield set(current)
+            while True:
+                before = {device.devid: device for device in mux.devices}
+                await mux.receive_device_state_update()
+                after = {device.devid: device for device in mux.devices}
+                for devid in before.keys() - after.keys():
+                    current.discard(before[devid].serial)
+                for devid in after.keys() - before.keys():
+                    if after[devid].is_usb:
+                        current.add(after[devid].serial)
+                yield set(current)
+        finally:
+            await mux.close()
 
     async def lockdown(self, udid: str, autopair: bool = False, pair_timeout: float | None = None):
         from pymobiledevice3.lockdown import create_using_usbmux
@@ -86,9 +120,11 @@ class UsbTransport:
 class WifiTransport:
     name = "wifi"
 
-    def __init__(self, browse_seconds: float = 3.0, poll_seconds: float = 5.0):
+    def __init__(self, browse_seconds: float = 3.0):
         self.browse_seconds = browse_seconds
-        self.poll_seconds = poll_seconds
+        # One Bonjour browse at a time: the search window, the box page's address lookup and
+        # the Wi-Fi tunnel open all share the radio's mDNS traffic.
+        self.browse_lock = asyncio.Lock()
 
     def records(self, udid: str) -> list[dict]:
         from pymobiledevice3.pair_records import iter_remote_pair_records_by_identifier
@@ -119,7 +155,8 @@ class WifiTransport:
         if not irks:
             return False
         try:
-            answers = await browse_remotepairing(timeout=self.browse_seconds)
+            async with self.browse_lock:
+                answers = await browse_remotepairing(timeout=self.browse_seconds)
         except Exception:
             return False
         for answer in answers:
@@ -139,7 +176,8 @@ class WifiTransport:
         if not irks:
             return []
         try:
-            answers = await browse_remotepairing(timeout=self.browse_seconds)
+            async with self.browse_lock:
+                answers = await browse_remotepairing(timeout=self.browse_seconds)
         except Exception:
             return []
         found: list[str] = []
@@ -157,7 +195,10 @@ class WifiTransport:
             raise OpenLoloError(
                 "WIFI_PAIRING_REQUIRED", "Run explicit owner pairing over USB once before using Wi-Fi mode"
             )
-        services = await get_remote_pairing_tunnel_services(bonjour_timeout=self.browse_seconds, udid=udid)
+        async with self.browse_lock:
+            services = await get_remote_pairing_tunnel_services(
+                bonjour_timeout=self.browse_seconds, udid=udid
+            )
         if not services:
             raise OpenLoloError("DEVICE_DISCONNECTED", "The paired phone is not reachable over Wi-Fi")
         service, *extra = services

@@ -27,8 +27,9 @@ class State(str, Enum):
     SWITCHING = "switching"
 
 
-# Errors the owner must resolve on the phone or through explicit setup. The supervisor keeps
-# polling slowly in these states so a fix in Settings is picked up without a restart.
+# Errors the owner must resolve on the phone or through explicit setup. The supervisor does not
+# poll in these states: the next attempt follows a cable attach, a search window (top button or
+# a request) or an explicit recover.
 OWNER_STATES = {
     "TRUST_REQUIRED": State.TRUST_REQUIRED,
     "WIFI_PAIRING_REQUIRED": State.WIFI_PAIRING_REQUIRED,
@@ -41,7 +42,7 @@ OWNER_STATES = {
 
 STATE_MESSAGES = {
     State.DISCONNECTED: "No phone is connected",
-    State.WAITING_FOR_DEVICE: "Waiting for the bound phone to become reachable",
+    State.WAITING_FOR_DEVICE: "Press the top button or plug in the phone",
     State.TRUST_REQUIRED: "Unlock the bound phone and run explicit owner pairing",
     State.WIFI_PAIRING_REQUIRED: "Run explicit owner pairing over USB once before using Wi-Fi mode",
     State.DEVELOPER_MODE_REQUIRED: "Enable Developer Mode on the phone (Settings > Privacy & Security)",
@@ -67,6 +68,7 @@ class Connection:
     hid_active: bool = False
     product_version: str | None = None
     wifi_paired: bool | None = None
+    searching: bool = False  # A search window is open.
 
     def set(self, state: State, **changes):
         if self.state != state.value:

@@ -47,6 +47,15 @@ class DeviceBackend(Protocol):
         """Phones on the cable: udid, product_type, product_version (None when unreadable)."""
         ...
 
+    async def search(self) -> dict:
+        """Open one bounded search window for the bound phone (top button); returns at once."""
+        ...
+
+    async def usb_events(self, since: int | None, timeout: float) -> dict:
+        """Cable long poll: {"changes", "serials"} once the change counter differs from
+        ``since`` (at once when None), or after ``timeout`` seconds."""
+        ...
+
     async def wifi_addresses(self, udid: str) -> list[str]:
         """IP addresses the paired phone advertises on the LAN right now; empty when unknown."""
         return []

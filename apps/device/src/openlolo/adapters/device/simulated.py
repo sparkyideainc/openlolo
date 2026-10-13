@@ -219,6 +219,15 @@ class SimulatedDevice:
             "simulated": True,
         }
 
+    async def search(self):
+        return await self.health()
+
+    async def usb_events(self, since, timeout):
+        # The simulated cable never changes, so a poll for news simply runs out.
+        if since is not None:
+            await asyncio.sleep(timeout)
+        return {"changes": 0, "serials": [p["udid"] for p in self.cabled], "listening": True}
+
     async def usb_phones(self):
         await asyncio.sleep(self.delay)
         return list(self.cabled)

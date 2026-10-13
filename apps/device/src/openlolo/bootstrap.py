@@ -40,7 +40,11 @@ class Runtime:
             self.network = manager
         self.auth = Auth(self.journal)
         self.provisioning = Provisioning(
-            config, self.network, button_flag=config.runtime_dir / "setup-button"
+            config,
+            self.network,
+            button_flag=config.runtime_dir / "setup-button",
+            pair_flag=config.runtime_dir / "pair-button",
+            search=device.search,
         )
         self.profiles = ProfileStore(config.state_dir / "apps")
         self.phone = Phone(

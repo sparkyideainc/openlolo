@@ -248,6 +248,14 @@ class Phone:
         self._usb_cache = (now, phones)
         return phones
 
+    async def search(self) -> dict:
+        """Open one bounded search window for the bound phone (the top button)."""
+        return await self.device.search()
+
+    async def usb_events(self, since: int | None, timeout: float) -> dict:
+        """Cable long poll from the worker: serials on the cable once they change."""
+        return await self.device.usb_events(since, timeout)
+
     async def cable_present(self) -> bool:
         """Exactly one phone on the box's USB port (the ADR 0012 access proof)."""
         return len(await self.usb_phones()) == 1

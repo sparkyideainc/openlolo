@@ -1,8 +1,10 @@
 """Transports never pair implicitly and only ever address the explicitly bound phone."""
 
+import asyncio
 import sys
 import types
 
+import pytest
 from support import raises_code
 
 from openlolo.coredevice.state import classify, transport_lost
@@ -128,3 +130,80 @@ def test_error_classification_is_payload_free():
     wrapped.__cause__ = ConnectionResetError()
     assert transport_lost(wrapped) and not transport_lost(ValueError())
     assert same_udid("00008110-AAAA", "00008110aaaa")
+
+
+async def test_usb_watch_applies_listen_events_as_deltas_and_closes(monkeypatch, tmp_path):
+    def device(devid, serial, kind="USB"):
+        return types.SimpleNamespace(devid=devid, serial=serial, is_usb=kind == "USB")
+
+    events = [
+        [device(1, "A")],  # Replayed Attached for the phone already on the cable: no change.
+        [device(1, "A"), device(2, "B")],
+        [device(1, "A"), device(2, "B"), device(3, "C", "Network")],  # Wi-Fi sync entry: ignored.
+        [device(2, "B"), device(3, "C", "Network")],
+    ]
+    closed = []
+
+    class Mux:
+        devices: list = []
+
+        async def listen(self):
+            pass
+
+        async def receive_device_state_update(self):
+            if not events:
+                raise ConnectionError("usbmuxd went away")
+            self.devices = events.pop(0)
+
+        async def close(self):
+            closed.append(True)
+
+    async def create_mux():
+        return Mux()
+
+    async def list_devices():
+        return [device(1, "A")]
+
+    install(
+        monkeypatch,
+        **{"pymobiledevice3.usbmux": types.SimpleNamespace(create_mux=create_mux, list_devices=list_devices)},
+    )
+    monkeypatch.setattr(
+        sys.modules["pymobiledevice3"], "usbmux", sys.modules["pymobiledevice3.usbmux"], raising=False
+    )
+    usb = UsbTransport(tmp_path)
+    seen = []
+    with pytest.raises(ConnectionError):
+        async for serials in usb.watch():
+            seen.append(serials)
+    assert seen == [{"A"}, {"A"}, {"A", "B"}, {"A", "B"}, {"B"}]
+    assert closed == [True]
+
+
+async def test_wifi_browses_are_serialized(monkeypatch):
+    records = [("00008110-AAAAAAAAAAAAAAAA", None, {"peer_alt_irk": b"irk"})]
+    active, peak = [0], [0]
+
+    async def browse(timeout):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.01)
+        active[0] -= 1
+        return []
+
+    install(
+        monkeypatch,
+        **{
+            "pymobiledevice3.pair_records": types.SimpleNamespace(
+                iter_remote_pair_records_by_identifier=lambda: iter(records)
+            ),
+            "pymobiledevice3.bonjour": types.SimpleNamespace(browse_remotepairing=browse),
+            "pymobiledevice3.remote": types.ModuleType("pymobiledevice3.remote"),
+            "pymobiledevice3.remote.siphash": types.SimpleNamespace(validate_auth_tag=lambda *a: False),
+            "pymobiledevice3.remote.tunnel_service": types.SimpleNamespace(PEER_ALT_IRK_KEY="peer_alt_irk"),
+        },
+    )
+    wifi = WifiTransport(browse_seconds=0.01)
+    udid = records[0][0]
+    await asyncio.gather(wifi.present(udid), wifi.addresses(udid), wifi.present(udid))
+    assert peak[0] == 1
