@@ -225,6 +225,16 @@ if [ "$board" = radxa-zero3w ]; then
   # restart, not --now: re-apply after an upgrade even though the oneshot is already active.
   systemctl enable openlolo-board.service
   systemctl restart openlolo-board.service
+  # Armbian hands Wi-Fi to netplan/networkd; OpenLolo needs NetworkManager to own wlan0. The move
+  # runs detached (it may change the box's address) and rolls back if Wi-Fi does not come up.
+  if grep -qsE '^[[:space:]]*wifis:' /etc/netplan/*.yaml; then
+    systemctl reset-failed openlolo-netplan-to-nm.service 2>/dev/null || true
+    systemctl stop openlolo-api.service   # the script starts it again when it finishes
+    systemd-run --unit=openlolo-netplan-to-nm --collect \
+      /bin/sh "$root/current/deploy/radxa-zero3w/netplan-to-nm.sh" >/dev/null
+    printf 'Moving Wi-Fi from netplan to NetworkManager in the background; the box may get a new address.\n'
+    printf 'Progress: journalctl -u openlolo-netplan-to-nm\n'
+  fi
 fi
 if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
   printf 'Memory cgroup controller absent: MemoryMax is configured but not enforced on this boot. See installation runbook.\n' >&2
