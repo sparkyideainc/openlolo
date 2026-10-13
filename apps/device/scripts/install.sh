@@ -13,18 +13,20 @@ case "${ID:-}:${VERSION_CODENAME:-}" in
   debian:trixie|raspios:trixie|raspbian:trixie) ;;
   *) echo "Supported systems are Debian 13 ARM64 and Raspberry Pi OS 64-bit (trixie); found ${PRETTY_NAME:-unknown}." >&2; exit 1 ;;
 esac
-usage='Usage: install.sh [source-directory] [--remote tailscale|cloudflare | --no-remote] [--auth-key KEY] [--hostname HOST] [--tunnel-token TOKEN] [--wifi-country CC]'
+usage='Usage: install.sh [source-directory] [--remote tailscale|cloudflare | --no-remote] [--auth-key KEY] [--hostname HOST] [--tunnel-token TOKEN] [--wifi-country CC] [--debug]'
 source_dir=
 remote=tailscale   # Remote MCP entry (ADR 0003) is part of the standard install; --no-remote for LAN-only.
 auth_key=${TS_AUTHKEY:-}           # Tailscale auth key (unattended tailnet join).
 hostname=${OPENLOLO_HOSTNAME:-}   # Cloudflare only (--remote cloudflare): public DNS name; default openlolo-<board id>.<zone>.
 tunnel_token=${TUNNEL_TOKEN:-}     # Cloudflare only: dashboard-managed tunnel token (unattended).
 wifi_country=${WIFI_COUNTRY:-US}
+debug=   # --debug: keep the journal across power loss (bench boxes; adds storage writes).
 while [ $# -gt 0 ]; do
   case "$1" in
     --wifi-country) wifi_country=${2:?--wifi-country needs a two-letter code}; shift 2 ;;
     --remote) remote=${2:?--remote needs a provider (tailscale or cloudflare)}; shift 2 ;;
     --no-remote) remote=; shift ;;
+    --debug) debug=1; shift ;;
     --hostname) hostname=${2:?--hostname needs a value}; shift 2 ;;
     --tunnel-token) tunnel_token=${2:?--tunnel-token needs a value}; shift 2 ;;
     --auth-key) auth_key=${2:?--auth-key needs a value}; shift 2 ;;
@@ -236,11 +238,37 @@ if [ "$board" = radxa-zero3w ]; then
     printf 'Progress: journalctl -u openlolo-netplan-to-nm\n'
   fi
 fi
+# Debug logging. Armbian keeps /var/log in RAM (armbian-ramlog) and copies it to storage only daily
+# and at a clean shutdown, so a sudden reset loses the log that would explain it. --debug writes the
+# journal to storage instead; a later install without --debug puts the defaults back.
+journal_conf=/etc/systemd/journald.conf.d/openlolo-debug.conf
+ramlog=/etc/default/armbian-ramlog
+debug_reboot=
+if [ -n "$debug" ]; then
+  install -d -m 0755 /etc/systemd/journald.conf.d
+  printf '[Journal]\nStorage=persistent\nSyncIntervalSec=10s\n' > "$journal_conf"
+  if [ -f "$ramlog" ] && grep -q '^ENABLED=true' "$ramlog"; then
+    sed -i 's/^ENABLED=true/ENABLED=false/' "$ramlog"
+    touch /etc/openlolo/ramlog-disabled-by-debug
+    debug_reboot=1
+  fi
+  install -d -m 2755 -g systemd-journal /var/log/journal
+  systemctl restart systemd-journald
+elif [ -e "$journal_conf" ] || [ -e /etc/openlolo/ramlog-disabled-by-debug ]; then
+  rm -f "$journal_conf"
+  if [ -e /etc/openlolo/ramlog-disabled-by-debug ]; then
+    sed -i 's/^ENABLED=false/ENABLED=true/' "$ramlog"
+    rm -f /etc/openlolo/ramlog-disabled-by-debug
+    debug_reboot=1
+  fi
+  systemctl restart systemd-journald
+fi
 if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
   printf 'Memory cgroup controller absent: MemoryMax is configured but not enforced on this boot. See installation runbook.\n' >&2
 fi
 printf 'Installed %s. LAN entry %s (sha256:%s)\n' "$release" "$lan_url" "$fingerprint"
 [ -z "$reboot_needed" ] || printf 'Boot configuration changed (%s): reboot the box to enable the PiSugar3 I2C bus.\n' "$env"
+[ -z "$debug_reboot" ] || printf 'Debug logging changed (%s): reboot the box to apply it.\n' "$ramlog"
 # Remote MCP entry (ADR 0003): Tailscale Funnel (default) or Cloudflare Tunnel in front of the
 # loopback gateway. Tailscale: a login URL and QR code, the owner approves the box in their
 # tailnet. Cloudflare: a browser login where the owner picks their domain; the box then takes

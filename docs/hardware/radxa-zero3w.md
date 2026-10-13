@@ -78,6 +78,8 @@ Flash Armbian (Debian 13 trixie, `current` kernel) and run the standard installe
 | polkit | `polkitd` (in `deploy/os-packages.txt`) applies `50-openlolo.rules`; Armbian minimal does not ship it, so starting `openlolo-setup-ap.service` failed with `Access denied`. |
 | Bluetooth | Disables `aic-bluetooth.service` and `bluetooth.service` (the BLE channel was removed). `aic-bluetooth.service` requires `bluetooth.service`, so disabling only the latter does not keep it off. |
 
+`--debug` (any board, for bench boxes) keeps the journal across power loss: `Storage=persistent` in `/etc/systemd/journald.conf.d/openlolo-debug.conf` and, on Armbian, `ENABLED=false` in `/etc/default/armbian-ramlog`, which otherwise holds `/var/log` in RAM and loses it at a sudden reset. It adds storage writes. A later install without `--debug` restores both; a reboot applies the ramlog change.
+
 On every board the installer also writes `/etc/modprobe.d/openlolo-usbmux.conf` (`blacklist apple_mfi_fastcharge`) and unloads the module if it is loaded; replug the iPhone afterwards. The module is not in the initramfs, so `update-initramfs` is not needed.
 
 Every step is safe to run again. Check after the reboot (the box must run on PiSugar power for the I2C check):
