@@ -1,6 +1,6 @@
 # Lolo Pocket: buttons and phone search
 
-Decided behaviour for the Lolo Pocket (Radxa ZERO 3W + PiSugar3), agreed on 2026-10-13. Register details are in `pisugar3.md`; board details are in `radxa-zero3w.md`.
+**Status: planned, not implemented.** Button and power handling land with the PiSugar3 work; phone search windows land separately. This page records the behaviour agreed on 2026-10-13 for the Lolo Pocket (Radxa ZERO 3W + PiSugar3). Register details are in `pisugar3.md`; board details are in `radxa-zero3w.md`.
 
 ## Buttons
 
