@@ -44,9 +44,12 @@ class Journal:
             CREATE TABLE IF NOT EXISTS owner_labels (owner TEXT PRIMARY KEY, label TEXT NOT NULL);
         """)
         self._migrate()
-        # Changes on every write, survives a restart (seeded from the clock) and never repeats
-        # on timestamp collisions; the box page watches it in the status digest to refetch history.
-        self.revision = int(time.time() * 1000)
+        # Changes on every write and never repeats, across restarts too: seeded from the clock but
+        # always past the last persisted value. The box page watches it in the status digest to
+        # refetch history.
+        persisted = self.db.execute("SELECT value FROM secrets WHERE name='revision'").fetchone()
+        self.revision = max(int(time.time() * 1000), int(persisted[0]) + 1 if persisted else 0)
+        self._persist_revision()
         self.db.execute("INSERT OR IGNORE INTO secrets VALUES ('fingerprint', ?)", (secrets.token_hex(32),))
         self.secret = bytes.fromhex(
             self.db.execute("SELECT value FROM secrets WHERE name='fingerprint'").fetchone()[0]
@@ -64,8 +67,13 @@ class Journal:
         self.db.execute("DELETE FROM secrets WHERE name IN ('setup_code', 'setup')")
         self.db.commit()
 
+    def _persist_revision(self) -> None:
+        self.db.execute("INSERT OR REPLACE INTO secrets VALUES ('revision', ?)", (str(self.revision),))
+
     def _bump(self) -> None:
+        """Call before the write's commit so the new revision is persisted with it."""
         self.revision += 1
+        self._persist_revision()
 
     def journal_revision(self) -> int:
         return self.revision
@@ -73,8 +81,8 @@ class Journal:
     def recover_interrupted(self):
         self.db.execute("UPDATE operations SET state='OUTCOME_UNKNOWN' WHERE state='DISPATCHED'")
         self.db.execute("UPDATE operations SET state='CANCELLED' WHERE state='QUEUED'")
-        self.db.commit()
         self._bump()
+        self.db.commit()
 
     def existing(self, operation_id, owner, kind, payload):
         row = self.db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
@@ -105,8 +113,8 @@ class Journal:
             "INSERT INTO operations VALUES (?,?,?,?,?,?,?,?)",
             (operation_id, owner, kind, fingerprint, "QUEUED", None, now, now),
         )
-        self.db.commit()
         self._bump()
+        self.db.commit()
         return self.get(operation_id, owner), True
 
     @staticmethod
@@ -195,16 +203,16 @@ class Journal:
 
     def label_owner(self, owner, label):
         self.db.execute("INSERT OR REPLACE INTO owner_labels VALUES (?,?)", (owner, label))
-        self.db.commit()
         self._bump()
+        self.db.commit()
 
     def update(self, operation_id, state, result=None):
         self.db.execute(
             "UPDATE operations SET state=?,result=?,updated=? WHERE id=?",
             (state, json.dumps(result) if result is not None else None, time.time(), operation_id),
         )
-        self.db.commit()
         self._bump()
+        self.db.commit()
         return self._public(
             self.db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
         )
