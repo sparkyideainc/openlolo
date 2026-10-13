@@ -104,7 +104,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
             fingerprint = tls.fingerprint(config.lan_cert)
         return {
             "version": __version__,
-            "board": config.board,
+            "board": config.box_id,
             "entry": entry,
             "issuer": provider.issuer,
             "fingerprint": fingerprint,

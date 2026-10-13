@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenLolo board tuning (Radxa ZERO 3W: schedutil governor, heartbeat LED off)
+# Armbian restores LED triggers at boot; run after it so this setting wins. Armbian sets the
+# governor in a background job that can outlast its unit, so the installer also sets GOVERNOR in
+# /etc/default/cpufrequtils.
+After=armbian-hardware-optimize.service armbian-led-state.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /opt/openlolo/current/deploy/radxa-zero3w/openlolo-board.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -17,6 +17,9 @@ LEGACY_KEYS = {"media_python", "cleanup_deadline", "setup_ssid", "bluetooth_adap
 
 class Config(StrictModel):
     backend: Literal["simulated", "hardware"] = "hardware"
+    # Hardware profile written by the installer: "radxa-zero3w" is the Lolo Pocket (Radxa ZERO 3W +
+    # PiSugar3). "auto" covers every other box, including Raspberry Pi, detected at runtime.
+    board: Literal["auto", "radxa-zero3w"] = "auto"
     state_dir: Path = Path("/var/lib/openlolo")
     runtime_dir: Path = Path("/run/openlolo")
     host: str = "127.0.0.1"
@@ -140,7 +143,7 @@ class Config(StrictModel):
         return self
 
     @property
-    def board(self) -> str | None:
+    def box_id(self) -> str | None:
         """Short box id ("ab12"): the suffix of setup_name, else of the lan_url host."""
         for name in (self.setup_name, urlsplit(self.lan_url or "").hostname):
             if name and "-" in name:

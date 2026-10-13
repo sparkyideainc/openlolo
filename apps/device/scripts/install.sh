@@ -48,6 +48,25 @@ awk '!/^#/ && NF' "$source_dir/deploy/os-packages.txt" | xargs apt-get install -
 if grep -qi 'Raspberry Pi' /proc/device-tree/model 2>/dev/null; then
   apt-get install -y python3-gpiozero python3-lgpio
 fi
+# Board profile. The Lolo Pocket (Radxa ZERO 3W + PiSugar3 on I2C) needs the extra OS setup below;
+# every other box keeps board = "auto" in box.toml.
+board=auto
+case "$( { tr -d '\0' < /proc/device-tree/model; } 2>/dev/null || true)" in
+  *'Radxa ZERO 3'*) board=radxa-zero3w ;;
+esac
+if [ "$board" = radxa-zero3w ]; then
+  # python3-smbus2 talks to the PiSugar3; i2c-tools (i2cdetect/i2cget) is kept for support and
+  # ships the udev rule that gives the i2c group access to /dev/i2c-*.
+  apt-get install -y i2c-tools python3-smbus2
+  getent group i2c >/dev/null || groupadd --system i2c
+fi
+# usbmuxd needs the iPhone's multiplexing USB configuration, which apple_mfi_fastcharge undoes
+# (see the file). The module is not in the initramfs, so no update-initramfs is needed.
+cmp -s "$source_dir/deploy/modprobe/openlolo-usbmux.conf" /etc/modprobe.d/openlolo-usbmux.conf ||
+  install -m 0644 "$source_dir/deploy/modprobe/openlolo-usbmux.conf" /etc/modprobe.d/openlolo-usbmux.conf
+if grep -q '^apple_mfi_fastcharge ' /proc/modules; then
+  rmmod apple_mfi_fastcharge && printf 'Unloaded apple_mfi_fastcharge; unplug and replug the iPhone.\n' || true
+fi
 getent group openlolo >/dev/null || groupadd --system openlolo
 for account in openlolo openlolo-device; do
   id "$account" >/dev/null 2>&1 || useradd --system --gid openlolo --home-dir /var/lib/openlolo --shell /usr/sbin/nologin "$account"
@@ -77,6 +96,9 @@ UV_PROJECT_ENVIRONMENT="$release_dir/.device-venv" "$uv_bin" sync --frozen --no-
 .venv/bin/python -c 'import openlolo.interfaces.cli'
 .device-venv/bin/python -c 'import openlolo.coredevice.worker; import pymobiledevice3.remote.core_device.hid_service, pymobiledevice3.remote.userspace_tunnel'
 [ -e /etc/openlolo/box.toml ] || install -m 0644 "$source_dir/config/box.example.toml" /etc/openlolo/box.toml
+if [ "$board" != auto ] && ! grep -qE '^[[:space:]]*board[[:space:]]*=' /etc/openlolo/box.toml; then
+  printf '\n# Hardware profile detected by the installer.\nboard = "%s"\n' "$board" >> /etc/openlolo/box.toml
+fi
 install -m 0644 deploy/systemd/openlolo-*.service /etc/systemd/system/
 
 # Wi-Fi access-point setup and station mode need a configured regulatory country.
@@ -130,6 +152,41 @@ install -d -m 0755 /etc/polkit-1/rules.d
 install -m 0644 deploy/polkit/50-openlolo.rules /etc/polkit-1/rules.d/50-openlolo.rules
 systemctl enable --now avahi-daemon
 systemctl restart avahi-daemon
+reboot_needed=
+if [ "$board" = radxa-zero3w ]; then
+  # The PiSugar3 sits on header pins 3/5 (I2C3_M0, /dev/i2c-3). armbianEnv sets overlay_prefix=rk35xx
+  # and only rockchip-rk3566-i2c3-m0.dtbo exists, so the short name i2c3-m0 is not found at boot.
+  # Append to the existing overlays= line: a second line would replace the first.
+  env=/boot/armbianEnv.txt
+  overlay=rockchip-rk3566-i2c3-m0
+  if [ -f "$env" ] && ! grep -qE '^overlays=(.*[[:space:]])?'"$overlay"'([[:space:]]|$)' "$env"; then
+    [ -e "$env.bak-$(date +%Y%m%d)" ] || cp -p "$env" "$env.bak-$(date +%Y%m%d)"
+    if grep -q '^overlays=' "$env"; then
+      awk -v o="$overlay" '!done && /^overlays=/ {
+        v = substr($0, 10); sub(/[[:space:]]+$/, "", v); $0 = "overlays=" (v == "" ? o : v " " o); done = 1
+      } { print }' "$env" > "$env.openlolo"
+      chmod --reference="$env" "$env.openlolo"
+      mv "$env.openlolo" "$env"
+    else
+      [ -z "$(tail -c 1 "$env")" ] || echo >> "$env"
+      printf 'overlays=%s\n' "$overlay" >> "$env"
+    fi
+    reboot_needed=1
+  fi
+  [ -e "/boot/dtb/rockchip/overlay/$overlay.dtbo" ] ||
+    printf 'Overlay %s.dtbo not found under /boot/dtb/rockchip/overlay; the PiSugar3 will not be reachable.\n' "$overlay" >&2
+  # armbian-hardware-optimize applies GOVERNOR from this file in a background job that can finish
+  # after openlolo-board.service, so set schedutil at the source too.
+  cpufreq=/etc/default/cpufrequtils
+  if [ -f "$cpufreq" ] && grep -q '^GOVERNOR=' "$cpufreq" && ! grep -qx 'GOVERNOR=schedutil' "$cpufreq"; then
+    sed -i 's/^GOVERNOR=.*/GOVERNOR=schedutil/' "$cpufreq"
+  fi
+  # Bluetooth is unused since the BLE channel was removed. Armbian's aic-bluetooth.service
+  # requires bluetooth.service and would start it again at boot.
+  for unit in aic-bluetooth.service bluetooth.service; do
+    systemctl disable --now "$unit" 2>/dev/null || true
+  done
+fi
 # Remove the pre-CoreDevice units and the patched-usbmuxd drop-in if a previous release installed them.
 for old in openlolo-hid openlolo-media; do
   systemctl disable --now "$old.service" 2>/dev/null || true
@@ -154,16 +211,26 @@ if ! "$root/current/.venv/bin/openlolo" --help >/dev/null 2>&1 \
 fi
 # The pre-0.6 layout kept every release under releases/ behind a current symlink; drop it.
 rm -rf "$root/current.old" "$root/releases" "$root/previous-release"
+# Radxa boot tuning (schedutil governor, heartbeat LED off); kept out of deploy/systemd so other
+# boards do not get the unit.
+[ "$board" != radxa-zero3w ] ||
+  install -m 0644 "$root/current/deploy/radxa-zero3w/openlolo-board.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl restart usbmuxd
 systemctl enable --now openlolo-device openlolo-api
 if grep -qi 'Raspberry Pi' /proc/device-tree/model 2>/dev/null && [ -e /dev/gpiochip0 ]; then
   systemctl enable --now openlolo-button || true
 fi
+if [ "$board" = radxa-zero3w ]; then
+  # restart, not --now: re-apply after an upgrade even though the oneshot is already active.
+  systemctl enable openlolo-board.service
+  systemctl restart openlolo-board.service
+fi
 if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
   printf 'Memory cgroup controller absent: MemoryMax is configured but not enforced on this boot. See installation runbook.\n' >&2
 fi
 printf 'Installed %s. LAN entry %s (sha256:%s)\n' "$release" "$lan_url" "$fingerprint"
+[ -z "$reboot_needed" ] || printf 'Boot configuration changed (%s): reboot the box to enable the PiSugar3 I2C bus.\n' "$env"
 # Remote MCP entry (ADR 0003): Tailscale Funnel (default) or Cloudflare Tunnel in front of the
 # loopback gateway. Tailscale: a login URL and QR code, the owner approves the box in their
 # tailnet. Cloudflare: a browser login where the owner picks their domain; the box then takes
