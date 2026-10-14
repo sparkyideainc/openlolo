@@ -14,8 +14,8 @@ from support import (
     LAN_CERT,
     PUBLIC,
     app_token,
-    consent_form,
     lan_config,
+    owner_approve,
     register,
     running,
     start_authorization,
@@ -29,7 +29,6 @@ from openlolo.interfaces import tls
 from openlolo.interfaces.auth import digest
 from openlolo.interfaces.mcp_http import (
     ADMIN_CALLS_PER_MINUTE,
-    PIN_SECONDS,
     REFRESH_SECONDS,
     SCOPE_WORDS,
     STATUS_PATH,
@@ -73,12 +72,6 @@ async def status_of(pc, request_id):
     return polled.json()
 
 
-async def pin_form(pc, request_id, pin):
-    """The browser's consent form submitted with a PIN from the box page (same-origin POST)."""
-    form = {"request": request_id, "decision": "pin", "pin": pin}
-    return await pc.post(CONSENT_PATH, data=form, headers={"Origin": PUBLIC})
-
-
 def refresh_window(provider, client_id):
     [row] = [r for r in provider.list_clients() if r["client_id"] == client_id]
     return row["active_until"]["refresh"] - time.time()
@@ -101,25 +94,23 @@ async def test_admin_registration_consent_and_admin_window(lan):
         started, request_id, verifier = await start_authorization(c, LAN, client_id)
         assert started.status_code == 302 and request_id
         page = await c.get(started.headers["location"])
-        assert page.status_code == 200 and "name='admin'" in page.text and "30d" in page.text
+        assert page.status_code == 200 and SCOPE_WORDS["owner:admin"] in page.text
 
         # JSON bodies are not a consent: the page is a same-origin form.
-        as_json = await c.post(
-            "/oauth/consent", json={"request": request_id, "decision": "allow", "credential": "x"}
-        )
+        as_json = await c.post("/oauth/consent", json={"request": request_id, "decision": "deny"})
         assert as_json.status_code == 403 and "Cross-site" in as_json.text
-        cross = await consent_form(c, "https://evil.test", request_id, "x")
+        cross = await c.post(
+            CONSENT_PATH,
+            data={"request": request_id, "decision": "deny"},
+            headers={"Origin": "https://evil.test"},
+        )
         assert cross.status_code == 403 and "Cross-site" in cross.text
-        wrong = await consent_form(c, LAN, request_id, "not-a-credential")
-        assert wrong.status_code == 401 and "Not accepted." in wrong.text
 
-        consented = await consent_form(c, LAN, request_id, runtime.auth.issue())
-        assert consented.status_code == 302, consented.text
-        redirect = consented.headers["location"]
+        redirect = owner_approve(runtime, request_id)
         assert redirect.startswith(APP_CALLBACK + "?")
         query = parse_qs(urlsplit(redirect).query)
         assert query["state"] == ["abc"] and query["code"]
-        assert (await consent_form(c, LAN, request_id, runtime.auth.issue())).status_code == 400  # Consumed.
+        assert (await c.get(CONSENT_PATH, params={"request": request_id})).status_code == 400  # Consumed.
 
         issued = await tokens(c, LAN, client_id, query["code"][0], verifier)
         assert issued.status_code == 200, issued.text
@@ -137,11 +128,9 @@ async def test_admin_registration_consent_and_admin_window(lan):
         plain = await register(c, scope="phone:read phone:control", name="Reader")
         plain_id = plain.json()["client_id"]
         _, request_id, verifier = await start_authorization(c, LAN, plain_id)
-        refused = await consent_form(c, LAN, request_id, runtime.auth.issue(), window="8h")
-        assert refused.status_code == 401 and "Not accepted." in refused.text
-        consented = await consent_form(c, LAN, request_id, runtime.auth.issue(), admin=True, window="24h")
-        assert consented.status_code == 302, consented.text
-        code = parse_qs(urlsplit(consented.headers["location"]).query)["code"][0]
+        code = parse_qs(urlsplit(owner_approve(runtime, request_id, admin=True, window="24h")).query)["code"][
+            0
+        ]
         issued = (await tokens(c, LAN, plain_id, code, verifier)).json()
         assert issued["scope"] == "phone:read phone:control"
         [row] = [r for r in app.provider.list_clients() if r["client_id"] == plain_id]
@@ -149,7 +138,7 @@ async def test_admin_registration_consent_and_admin_window(lan):
         assert row["renewed_while_used"] is False and row["never_expires"] is False
         assert row["last_used"] is not None
 
-        # Deny returns the client an access_denied redirect without needing a credential.
+        # Cancel on the consent page returns the client an access_denied redirect.
         _, request_id, _ = await start_authorization(c, LAN, plain_id)
         denied = await c.post(
             "/oauth/consent", data={"request": request_id, "decision": "deny"}, headers={"Origin": LAN}
@@ -448,7 +437,6 @@ async def test_owner_decides_pending_consents_of_the_remote_entry(lan):
         for bad in (handle, "nope", digest("nope")):
             gone = await c.post(f"/app/consents/{bad}", json=choice, headers=headers)
             assert gone.status_code == 404 and gone.json()["error"]["code"] == "CONSENT_EXPIRED", bad
-            assert (await c.post(f"/app/consents/{bad}/pin", json={}, headers=headers)).status_code == 404
 
         # Only the owner's admin scope may see or decide consents.
         _, _, _ = await public_request(pc, name="Waiting")
@@ -457,7 +445,6 @@ async def test_owner_decides_pending_consents_of_the_remote_entry(lan):
         for method, path in (
             ("GET", "/app/consents"),
             ("POST", f"/app/consents/{waiting['handle']}"),
-            ("POST", f"/app/consents/{waiting['handle']}/pin"),
         ):
             refused = await c.request(method, path, json=choice, headers=bearer(reader))
             assert refused.status_code == 403 and refused.json()["error"]["code"] == "SCOPE_REQUIRED", path
@@ -465,93 +452,6 @@ async def test_owner_decides_pending_consents_of_the_remote_entry(lan):
         assert [r["handle"] for r in (await c.get("/app/consents", headers=headers)).json()["consents"]] == [
             waiting["handle"]
         ]
-
-
-async def test_pin_from_the_box_page_completes_one_request(lan, monkeypatch):
-    runtime, app = lan
-    public = create_gateway_app(runtime)
-    async with running(public), web(app, LAN) as c, web(public, PUBLIC) as pc:
-        _, issued = await app_token(c, runtime)
-        headers = bearer(issued)
-        client_id, request_id, verifier = await public_request(pc)
-        handle = digest(request_id)
-        minted = await c.post(
-            f"/app/consents/{handle}/pin", json={"control": True, "window": "24h"}, headers=headers
-        )
-        assert minted.status_code == 200, minted.text
-        pin = minted.json()["pin"]
-        assert re.fullmatch(r"[0-9]{6}", pin) and minted.json()["expires_in"] == PIN_SECONDS == 30
-        assert set(minted.json()) == {"pin", "expires_in"}
-
-        # Wrong PINs: four refusals on the page, the fifth kills the request.
-        wrong = f"{(int(pin) + 1) % 10**6:06d}"
-        for _ in range(4):
-            refused = await pin_form(pc, request_id, wrong)
-            assert refused.status_code == 401 and "Not accepted." in refused.text, refused.text
-            assert await status_of(pc, request_id) == {"state": "pending"}
-        killed = await pin_form(pc, request_id, wrong)
-        assert killed.status_code == 400 and "Request expired" in killed.text
-        assert await status_of(pc, request_id) == {"state": "gone"}
-        assert (await c.get("/app/consents", headers=headers)).json() == {"consents": []}
-        assert (await pin_form(pc, request_id, pin)).status_code == 400  # The right PIN died with it.
-        assert (await pc.get(CONSENT_PATH, params={"request": request_id})).status_code == 400
-
-        # A fresh request with a fresh PIN. The PIN is bound to its request and is not a credential.
-        client_id, request_id, verifier = await public_request(pc)
-        handle = digest(request_id)
-        _, other_request, _ = await public_request(pc, name="Other agent")
-        bad = await c.post(f"/app/consents/{handle}/pin", json={"window": "8h"}, headers=headers)
-        assert bad.status_code == 422 and bad.json()["error"]["code"] == "INVALID_WINDOW"
-        other = await c.post(
-            f"/app/consents/{digest(other_request)}/pin", json={"window": "24h"}, headers=headers
-        )
-        pin = (
-            await c.post(
-                f"/app/consents/{handle}/pin", json={"control": True, "window": "24h"}, headers=headers
-            )
-        ).json()["pin"]
-        crossed = await pin_form(pc, request_id, other.json()["pin"])
-        assert crossed.status_code == 401 and "Not accepted." in crossed.text
-        as_credential = await consent_form(pc, PUBLIC, request_id, pin, admin=False, window="24h")
-        assert as_credential.status_code == 401 and "Not accepted." in as_credential.text
-        malformed = await pin_form(pc, request_id, "12345")
-        assert malformed.status_code == 401
-        assert await status_of(pc, request_id) == {"state": "pending"}
-
-        approved = await pin_form(pc, request_id, pin)
-        assert approved.status_code == 302, approved.text
-        query = parse_qs(urlsplit(approved.headers["location"]).query)
-        assert approved.headers["location"].startswith(PUBLIC_CALLBACK) and query["state"] == ["abc"]
-        assert (await pin_form(pc, request_id, pin)).status_code == 400  # Consumed with the request.
-        still = (await c.get("/app/consents", headers=headers)).json()["consents"]
-        assert [r["handle"] for r in still] == [digest(other_request)]  # Only the untouched one remains.
-        exchanged = await tokens(pc, PUBLIC, client_id, query["code"][0], verifier, callback=PUBLIC_CALLBACK)
-        assert exchanged.status_code == 200, exchanged.text
-        assert exchanged.json()["scope"] == "phone:read phone:control"  # The owner's choice, not the form's.
-        assert abs(refresh_window(public.provider, client_id) - 24 * 3600) < 60
-
-        # A PIN older than 30 seconds is refused; re-minting replaces it.
-        client_id, request_id, verifier = await public_request(pc, name="Late")
-        handle = digest(request_id)
-        pin = (await c.post(f"/app/consents/{handle}/pin", json={"window": "24h"}, headers=headers)).json()[
-            "pin"
-        ]
-        real = time.time
-        monkeypatch.setattr(time, "time", lambda: real() + PIN_SECONDS + 1)
-        late = await pin_form(pc, request_id, pin)
-        assert late.status_code == 401 and "Not accepted." in late.text
-        again = (
-            await c.post(
-                f"/app/consents/{handle}/pin", json={"admin": True, "window": "24h"}, headers=headers
-            )
-        ).json()["pin"]
-        assert (await pin_form(pc, request_id, pin)).status_code == 401  # The old PIN stays dead.
-        approved = await pin_form(pc, request_id, again)
-        assert approved.status_code == 302, approved.text
-        code = parse_qs(urlsplit(approved.headers["location"]).query)["code"][0]
-        exchanged = await tokens(pc, PUBLIC, client_id, code, verifier, callback=PUBLIC_CALLBACK)
-        # Admin is not offered on the remote entry; control always comes with approval.
-        assert exchanged.json()["scope"] == "phone:read phone:control"
 
 
 async def test_consent_page_offers_box_page_approval(lan):
@@ -566,10 +466,11 @@ async def test_consent_page_offers_box_page_approval(lan):
         assert (
             f"http://openlolo-test.local/access?r={digest(request_id)}" in text
         )  # Box page link (ADR 0012).
-        assert "<svg" in text and "name='pin'" in text and "value='pin'" in text
-        assert "name='credential'" in text and "<details>" in text  # Credential proof stays, folded away.
+        assert "<svg" in text and "value='deny'" in text
+        # The box page is the only way to approve: no PIN, no credential, no duration on this page.
+        assert "name='pin'" not in text and "name='credential'" not in text and "name='window'" not in text
         assert all(words in text for words in SCOPE_WORDS.values())
-        assert STATUS_PATH in text and "name='admin'" in text
+        assert STATUS_PATH in text
 
         csp = page.headers["content-security-policy"]
         assert "script-src 'nonce-" in csp and "connect-src 'self'" in csp and "default-src 'none'" in csp

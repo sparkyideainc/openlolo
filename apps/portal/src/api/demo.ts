@@ -319,14 +319,6 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			consents = consents.filter((c) => c.handle !== handle);
 			return { decided: allow ? "allow" : "deny" };
 		},
-		async pin() {
-			requireSession();
-			await delay();
-			return {
-				pin: String(Math.floor(100000 + Math.random() * 900000)),
-				expires_in: 30,
-			};
-		},
 		async revoke(clientId) {
 			requireSession();
 			await delay();

@@ -1,15 +1,9 @@
-"""Loopback HTTP bridge. Hardware, identity, leases and journaling stay on the Pi."""
+"""In-process HTTP bridge from the MCP gateway to the Phone API. Hardware, identity, leases and journaling stay on the Pi."""
 
 import asyncio
 import contextlib
-import fcntl
-import json
-import os
-import stat
 import time
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 import anyio
@@ -63,45 +57,6 @@ class BridgeError(Exception):
         return result
 
 
-def endpoint(value: str) -> str:
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-        or parsed.port is None
-    ):
-        raise ValueError("Use a literal loopback HTTP endpoint through an SSH tunnel")
-    return f"http://{parsed.hostname}:{parsed.port}"
-
-
-@contextlib.contextmanager
-def private_session(path: Path):
-    """Lock the dedicated session inode for this stdio process; never expose its cookie."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("MCP session must be an owner-only regular file (chmod 600)")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError("This session is already in use by another MCP process") from None
-        with os.fdopen(os.dup(fd)) as handle:
-            data = json.load(handle)
-        url = endpoint(data["url"])
-        cookie = data["session"]
-        if not isinstance(cookie, str) or not 1 <= len(cookie) <= 256:
-            raise ValueError("Invalid local session")
-        yield url, cookie
-    finally:
-        os.close(fd)
-
-
 # The box no longer holds the lease under these: the bridge forgets its token and acquires anew.
 LOST_CONTROL = {"LEASE_EXPIRED", "CONTROL_NOT_OWNED"}
 
@@ -116,7 +71,7 @@ class PhoneClient:
         http: httpx.AsyncClient,
         *,
         wait_seconds: float = 30,
-        transport: str = "stdio",
+        transport: str = "streamable-http",
         observation: dict | None = None,
     ):
         self.http = http

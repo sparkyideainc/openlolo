@@ -14,7 +14,7 @@ Hardware dependency, installed only in the worker's separate virtual environment
 
 Application dependencies include Pydantic (MIT), Starlette (BSD-3-Clause), Uvicorn
 (BSD-3-Clause), HTTPX (BSD-3-Clause), and Pillow (MIT-CMU), plus the optional official
-MCP Python SDK and mcp-types (MIT) for the local stdio adapter. Exact Python resolutions
+MCP Python SDK and mcp-types (MIT) for the MCP entries. Exact Python resolutions
 are in `uv.lock`; `deploy/versions.lock.json` records the pins in prose. Installed
 distributions retain their license files. Preserve upstream notices and source availability
 when redistributing binary releases; this file is an inventory, not a relicensing of those

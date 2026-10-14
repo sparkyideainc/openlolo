@@ -16,7 +16,6 @@ dependencies = [
 [project.scripts]
 openlolo = "openlolo.interfaces.cli:main"
 openlolo-device = "openlolo.coredevice.worker:main"
-openlolo-mcp = "openlolo.interfaces.mcp_server:main"
 
 [project.optional-dependencies]
 mcp = [

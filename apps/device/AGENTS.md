@@ -7,7 +7,7 @@ for environment-variable prefixes.
 The current implementation is a Python local-control prototype in `apps/device`: an owner-bound iPhone
 observed and driven through Apple CoreDevice services (screenshots, touch, keyboard,
 hardware buttons, app and device information) over either a USB or a Wi-Fi transport,
-a browser UI over an SSH tunnel, and stdio/remote MCP adapters. The device layer lives
+a browser UI over an SSH tunnel, and a remote MCP entry. The device layer lives
 in `src/openlolo/coredevice` and runs as a separate worker process. The broader AI
 assistant vision does not mean cloud orchestration is implemented. The owner surface is the
 box page (`apps/portal`), served by the device over the setup access point and the LAN; it

@@ -14,6 +14,7 @@ from support import (
     LAN_KEY,
     PUBLIC,
     lan_config,
+    owner_approve,
     register,
     running,
     start_authorization,
@@ -59,7 +60,7 @@ async def test_lan_listener_pins_every_configured_host(entries):
 async def test_issuers_do_not_accept_each_others_grants(entries):
     runtime, public, lan = entries
     async with web(public, PUBLIC) as pc, web(lan, LAN) as lc:
-        # Approve a browser client on the remote entry with the HTML consent form.
+        # Approve a browser client on the remote entry from the box page.
         registered = await register(
             pc, callback=PUBLIC_CALLBACK, scope="phone:read phone:control", name="Claude"
         )
@@ -69,15 +70,9 @@ async def test_issuers_do_not_accept_each_others_grants(entries):
             pc, PUBLIC, public_client, callback=PUBLIC_CALLBACK, scope="phone:read"
         )
         assert started.status_code == 302 and request_id
-        form = {
-            "request": request_id,
-            "credential": runtime.auth.issue(),
-            "decision": "allow",
-            "window": "24h",
-        }
-        consented = await pc.post("/oauth/consent", data=form, headers={"Origin": PUBLIC})
-        assert consented.status_code == 302, consented.text
-        code = parse_qs(urlsplit(consented.headers["location"]).query)["code"][0]
+        code = parse_qs(urlsplit(owner_approve(runtime, request_id, admin=False, window="24h")).query)[
+            "code"
+        ][0]
         issued = await tokens(pc, PUBLIC, public_client, code, verifier, callback=PUBLIC_CALLBACK)
         assert issued.status_code == 200, issued.text
         access = issued.json()["access_token"]

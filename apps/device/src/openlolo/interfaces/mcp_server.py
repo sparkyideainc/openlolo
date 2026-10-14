@@ -1,15 +1,11 @@
-"""Local stdio MCP tools backed exclusively by the authenticated OpenLolo HTTP API."""
+"""MCP tools backed exclusively by the authenticated OpenLolo HTTP API; served by the OAuth gateway."""
 
-import argparse
 import json
-import sys
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated, Literal, Protocol
 from uuid import UUID, uuid4
 
-import httpx
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
@@ -19,7 +15,6 @@ from openlolo.interfaces.mcp_client import (
     OBSERVATION_MAX_SIZE,
     BridgeError,
     PhoneClient,
-    private_session,
 )
 
 Coordinate = Annotated[float, Field(ge=0, le=1)]
@@ -94,37 +89,21 @@ async def tool_result(work: Awaitable[dict]) -> CallToolResult:
 
 def create_server(
     bridge: PhoneClient | None = None,
-    session_path: Path | None = None,
     *,
     resolver: BridgeResolver | None = None,
     **server_options,
 ) -> MCPServer:
     @asynccontextmanager
     async def lifespan(_):
-        nonlocal bridge
         if resolver is not None:
             # The gateway owns bridge lifecycles; the HTTP app lifespan closes them.
             yield
-        elif bridge is not None:
+        else:
+            assert bridge is not None
             try:
                 yield
             finally:
                 await bridge.close()
-        else:
-            assert session_path is not None
-            with private_session(session_path) as (url, cookie):
-                http = httpx.AsyncClient(
-                    base_url=url,
-                    headers={"X-OpenLolo-Client": "cli"},
-                    cookies={"openlolo_session": cookie},
-                    trust_env=False,
-                    follow_redirects=False,
-                )
-                bridge = PhoneClient(http)
-                try:
-                    yield
-                finally:
-                    await bridge.close()
 
     server = MCPServer(
         "OpenLolo",
@@ -463,23 +442,3 @@ def create_server(
         return await action(operation_id, "open_url", observe, settle, url=url, bundle_id=bundle_id)
 
     return server
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="OpenLolo local stdio MCP server; use a dedicated CLI login."
-    )
-    parser.add_argument("--session", type=Path, default=Path.home() / ".config/openlolo/mcp-session.json")
-    args = parser.parse_args()
-    try:
-        create_server(session_path=args.session).run(transport="stdio")
-    except (OSError, ValueError, KeyError):
-        print(
-            "OpenLolo MCP startup failed: check the private session file and loopback tunnel.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1) from None
-
-
-if __name__ == "__main__":
-    main()

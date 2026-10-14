@@ -103,9 +103,7 @@ def build_door(runtime):
 
     config = runtime.config
     issuer = config.public_url or config.lan_url or "https://openlolo.invalid"
-    provider = OAuthProvider(
-        runtime.journal, runtime.auth, issuer, scopes=ALL_SCOPES, legacy_issuer=config.public_url
-    )
+    provider = OAuthProvider(runtime.journal, issuer, scopes=ALL_SCOPES, legacy_issuer=config.public_url)
     return provider, Gateway(runtime, provider)
 
 

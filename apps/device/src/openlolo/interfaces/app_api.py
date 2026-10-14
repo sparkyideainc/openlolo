@@ -198,14 +198,6 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         provider.decide_handle(handle, granted, seconds)
         return {"decided": "allow", "scopes": granted, "window": seconds}
 
-    @add("/consents/{handle}/pin", ["POST"])
-    async def consent_pin(request: Request):
-        """Six-digit, 30-second PIN that completes exactly this request with the choice made here."""
-        require(ADMIN_SCOPE)
-        data = await body(request)
-        choice = {"admin": data.get("admin") is True, "window": str(data.get("window", ""))}
-        return provider.issue_pin(request.path_params["handle"], choice)
-
     @add("/discover", ["GET"])
     async def discover(request: Request):
         client = await gateway.bridge(ADMIN_SCOPE)

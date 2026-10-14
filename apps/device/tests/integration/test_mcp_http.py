@@ -11,11 +11,11 @@ import httpx2
 import pytest
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
-from support import narrow
+from support import narrow, owner_approve
 
 from openlolo.bootstrap import Runtime
 from openlolo.config import Config
-from openlolo.interfaces.mcp_http import CONSENT_PATH, TIMING_LOG, create_gateway_app
+from openlolo.interfaces.mcp_http import CONSENT_PATH, STATUS_PATH, TIMING_LOG, create_gateway_app
 
 PUBLIC = "https://pi.tailnet.ts.net"
 CALLBACK = "https://claude.ai/api/mcp/auth_callback"
@@ -102,13 +102,14 @@ async def authorize(c, runtime, client_id, *, window="24h", scope="phone:read ph
     page = await c.get(consent)
     assert page.status_code == 200 and "Claude" in page.text and "claude.ai" in page.text
     request_id = parse_qs(urlsplit(consent).query)["request"][0]
-    assert "name='control'" not in page.text and "name='window'" in page.text
-    assert "<option value='30d' selected>" in page.text  # 30 days is preselected.
-    form = {"request": request_id, "credential": runtime.auth.issue(), "decision": "allow", "window": window}
-    r = await c.post(CONSENT_PATH, data=form, headers={"Origin": PUBLIC})
-    assert r.status_code == 302, r.text
-    query = parse_qs(urlsplit(r.headers["location"]).query)
-    assert r.headers["location"].startswith(CALLBACK) and query["state"] == ["abc"]
+    assert "name='control'" not in page.text and "name='window'" not in page.text
+    redirect = owner_approve(runtime, request_id, admin=False, window=window)
+    assert (await c.get(STATUS_PATH, params={"request": request_id})).json() == {
+        "state": "decided",
+        "redirect": redirect,
+    }
+    query = parse_qs(urlsplit(redirect).query)
+    assert redirect.startswith(CALLBACK) and query["state"] == ["abc"]
     return query["code"][0], verifier
 
 
@@ -284,7 +285,7 @@ async def test_no_scope_request_offers_registered_scopes(remote):
             },
         )
         page = await c.get(started.headers["location"])
-        assert "touch, type and press buttons" in page.text and "name='window'" in page.text
+        assert "touch, type and press buttons" in page.text and "name='window'" not in page.text
         # A client registered for read only (Claude copies the 401 challenge's scope) is still
         # offered control; the owner decides.
         read_only = await register(c, scope="phone:read")
@@ -342,16 +343,18 @@ async def test_consent_rejections_and_pkce_downgrade(remote):
         request_id = parse_qs(urlsplit(started.headers["location"]).query)["request"][0]
         cross_site = await c.post(
             CONSENT_PATH,
-            data={"request": request_id, "credential": "x", "decision": "allow"},
+            data={"request": request_id, "decision": "deny"},
             headers={"Origin": "https://evil.test"},
         )
         assert cross_site.status_code == 403
-        bad = await c.post(
-            CONSENT_PATH,
-            data={"request": request_id, "credential": "not-a-credential", "decision": "allow"},
-            headers={"Origin": PUBLIC},
-        )
-        assert bad.status_code == 401 and "Not accepted." in bad.text
+        # The page cannot approve: only the box page can. Old credential forms are refused.
+        for form in (
+            {"request": request_id, "credential": "x", "decision": "allow"},
+            {"request": request_id, "pin": "123456", "decision": "pin"},
+        ):
+            refused = await c.post(CONSENT_PATH, data=form, headers={"Origin": PUBLIC})
+            assert refused.status_code == 400 and "Approve this request on the box page." in refused.text
+        assert (await c.get(STATUS_PATH, params={"request": request_id})).json() == {"state": "pending"}
         denied = await c.post(
             CONSENT_PATH, data={"request": request_id, "decision": "deny"}, headers={"Origin": PUBLIC}
         )

@@ -116,11 +116,6 @@ export interface BoxApi {
 		admin: boolean,
 		window: ConsentWindow,
 	): Promise<{ decided: string }>;
-	pin(
-		handle: string,
-		admin: boolean,
-		window: ConsentWindow,
-	): Promise<{ pin: string; expires_in: number }>;
 	revoke(clientId: string): Promise<void>;
 	discover(): Promise<DiscoveredPhone[]>;
 	setup(
@@ -171,11 +166,6 @@ export const liveApi: BoxApi = {
 	decide: (handle, allow, admin, window) =>
 		request("POST", `/app/consents/${encodeURIComponent(handle)}`, {
 			decision: allow ? "allow" : "deny",
-			admin,
-			window,
-		}),
-	pin: (handle, admin, window) =>
-		request("POST", `/app/consents/${encodeURIComponent(handle)}/pin`, {
 			admin,
 			window,
 		}),

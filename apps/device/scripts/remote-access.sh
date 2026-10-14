@@ -255,5 +255,4 @@ tailscale)
   ;;
 esac
 
-echo "Approve clients from the OpenLolo app (AI clients tab, QR on the consent page, or a PIN)."
-echo "Fallback without the app: sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo credential"
+echo "Approve clients on the box page (Access, or scan the QR on the consent page)."

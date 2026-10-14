@@ -88,12 +88,17 @@ async def start_authorization(c, origin, client_id, *, callback=APP_CALLBACK, sc
     return r, request_id, verifier
 
 
-async def consent_form(c, origin, request_id, credential, *, admin=True, window="30d", headers=None):
-    """The browser consent form submitted with a single-use credential (same-origin POST)."""
-    form = {"request": request_id, "decision": "allow", "window": window, "credential": credential}
-    if admin:
-        form["admin"] = "1"
-    return await c.post(CONSENT_PATH, data=form, headers={"Origin": origin, **(headers or {})})
+def owner_approve(runtime, request_id, *, admin=True, window="30d") -> str:
+    """The owner taps Approve on the box page; return the client redirect the consent page polls for."""
+    from openlolo.interfaces.auth import digest
+    from openlolo.interfaces.mcp_http import grant_from_choice
+
+    # Like /app/consents/{handle}: any entry's request, addressed by its handle.
+    provider, handle = runtime.door_provider, digest(request_id)
+    pending = provider.pending_by_handle(handle)
+    assert pending is not None, "request expired"
+    granted, seconds = grant_from_choice(pending[1]["scopes"], admin, window)
+    return provider.decide_handle(handle, granted, seconds)
 
 
 async def tokens(c, origin, client_id, code, verifier, *, callback=APP_CALLBACK):
@@ -117,9 +122,8 @@ async def app_token(c, runtime, *, control=True, admin=True, window="30d", name=
     client_id = registered.json()["client_id"]
     _, request_id, verifier = await start_authorization(c, LAN, client_id)
     assert request_id
-    consented = await consent_form(c, LAN, request_id, runtime.auth.issue(), admin=admin, window=window)
-    assert consented.status_code == 302, consented.text
-    code = parse_qs(urlsplit(consented.headers["location"]).query)["code"][0]
+    redirect = owner_approve(runtime, request_id, admin=admin, window=window)
+    code = parse_qs(urlsplit(redirect).query)["code"][0]
     issued = await tokens(c, LAN, client_id, code, verifier)
     assert issued.status_code == 200, issued.text
     if not control:

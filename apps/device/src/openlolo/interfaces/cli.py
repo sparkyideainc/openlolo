@@ -274,8 +274,7 @@ def main():
         state_dir = args.state_dir or load_config(args.config).state_dir
         journal = Journal(state_dir / "openlolo.sqlite3")
         try:
-            auth = Auth(journal)
-            provider = OAuthProvider(journal, auth, "https://unused.invalid")
+            provider = OAuthProvider(journal, "https://unused.invalid")
             if args.action == "list":
                 clients = provider.list_clients(every_issuer=True)
                 print(json.dumps({"clients": clients}, indent=2))
