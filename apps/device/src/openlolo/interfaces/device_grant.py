@@ -44,6 +44,7 @@ DEVICE_PENDING = 5  # Pending device requests on this box at once.
 POLLS = 150  # Polls one device code may make; enough for its lifetime at the base interval.
 FAILED_POLLS_PER_MINUTE = 60  # Unknown or mismatched device codes, box-wide.
 FORM_LIMIT = 4096
+FORM_FIELDS = 16
 CODE_MAX = 256
 NAME_MAX = 64
 # RFC 8628 §6.1: consonants only, so no word can form and no character looks like another.
@@ -62,8 +63,12 @@ def oauth_error(error: str, description: str | None = None, status: int = 400) -
     return JSONResponse(body, status_code=status, headers={"Pragma": "no-cache"})
 
 
-def parse_form(data: bytes) -> dict[str, str]:
-    parsed = parse_qs(data.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=16)
+def parse_form(data: bytes) -> dict[str, str] | None:
+    """A small urlencoded form, or None when it has more than FORM_FIELDS fields."""
+    try:
+        parsed = parse_qs(data.decode("utf-8", "replace"), keep_blank_values=True, max_num_fields=FORM_FIELDS)
+    except ValueError:
+        return None
     return {key: values[0] for key, values in parsed.items()}
 
 
@@ -209,12 +214,9 @@ class DeviceGrant:
         provider = self.provider
         now = time.time()
         self._prune(now)
-        if len(self.failed) >= FAILED_POLLS_PER_MINUTE:
-            return oauth_error("slow_down", "too many failed polls; retry later", 429)
         device_code, client_id = form.get("device_code", ""), form.get("client_id", "")
         if not device_code or len(device_code) > CODE_MAX or not client_id:
-            self.failed.append(now)
-            return oauth_error("invalid_request", "device_code and client_id are required")
+            return self._failed(now, oauth_error("invalid_request", "device_code and client_id are required"))
         handle = digest(device_code)
         state = self.polls.get(handle)
         key = digest("device:" + handle)
@@ -241,10 +243,9 @@ class DeviceGrant:
             return JSONResponse(issued.model_dump(exclude_none=True), headers={"Pragma": "no-cache"})
         pending = provider.pending_request(device_code)
         if pending is None or pending[0].client_id != client_id or not pending[1].get("device"):
-            self.failed.append(now)
             if state is not None:
-                return oauth_error("expired_token", "the request expired; start again")
-            return oauth_error("invalid_grant", "unknown device code")
+                return self._failed(now, oauth_error("expired_token", "the request expired; start again"))
+            return self._failed(now, oauth_error("invalid_grant", "unknown device code"))
         if state is None:  # The box restarted while the request was pending.
             state = self.polls[handle] = [0.0, INTERVAL, 0]
         last, interval, polls = state
@@ -257,6 +258,14 @@ class DeviceGrant:
             state[1] = min(interval + 5, MAX_INTERVAL)
             return oauth_error("slow_down", f"poll at most every {int(state[1])} seconds")
         return oauth_error("authorization_pending", "waiting for the owner on the box page")
+
+    def _failed(self, now: float, response: JSONResponse) -> JSONResponse:
+        """Unknown, malformed or mismatched codes share a box-wide budget. Approved and pending
+        codes are answered before it, so junk cannot block a real script's decision."""
+        if len(self.failed) >= FAILED_POLLS_PER_MINUTE:
+            return oauth_error("slow_down", "too many failed polls; retry later", 429)
+        self.failed.append(now)
+        return response
 
 
 class DeviceGrantRoutes:
@@ -271,16 +280,21 @@ class DeviceGrantRoutes:
         path, method = scope.get("path"), scope.get("method")
         if path == DEVICE_PATH and method == "POST":
             data = await self._body(receive)
+            form = parse_form(data) if data is not None else None
             if data is None:
                 response = oauth_error("invalid_request", "request too large", 413)
+            elif form is None:
+                response = oauth_error("invalid_request", "too many form fields")
             else:
-                response = await self.grant.authorize(parse_form(data))
+                response = await self.grant.authorize(form)
             return await response(scope, receive, send)
         if path == TOKEN_PATH and method == "POST":
             data = await self._body(receive)
             if data is None:
                 return await oauth_error("invalid_request", "request too large", 413)(scope, receive, send)
             form = parse_form(data)
+            if form is None:
+                return await oauth_error("invalid_request", "too many form fields")(scope, receive, send)
             if form.get("grant_type") == DEVICE_GRANT:
                 return await (await self.grant.token(form))(scope, receive, send)
             return await self.app(scope, self._replay(data, receive), send)

@@ -209,12 +209,23 @@ async def test_device_request_bounds(entries):
         assert (await poll(c, capped)).json()["error"] == "expired_token"
         assert all(r["client_id"] != capped["client_id"] for r in runtime.door_provider.list_pending())
 
-        # Garbage device codes spend a box-wide budget, then everything slows down.
-        grant.failed = [time.time()] * 59
-        bad = await c.post("/token", data={"grant_type": DEVICE_GRANT, "device_code": "x", "client_id": "y"})
-        assert bad.json()["error"] == "invalid_grant"
-        blocked = await poll(c, started[2])
-        assert blocked.status_code == 429 and blocked.json()["error"] == "slow_down"
+        # Garbage device codes spend a box-wide budget; once it is gone, junk is refused, but real
+        # scripts still get their answer: pending ones keep polling, approved ones get tokens.
+        junk = {"grant_type": DEVICE_GRANT, "device_code": "x", "client_id": "y"}
+        grant.failed = []  # Earlier mismatches above spent some of it.
+        for _ in range(device_grant.FAILED_POLLS_PER_MINUTE):
+            assert (await c.post("/token", data=junk)).json()["error"] == "invalid_grant"
+        flooded = await c.post("/token", data=junk)
+        assert flooded.status_code == 429 and flooded.json()["error"] == "slow_down"
+        assert (await poll(c, started[2])).json()["error"] == "authorization_pending"
+        approve(runtime, pending_row(runtime, started[3])["handle"])
+        assert (await poll(c, started[3])).status_code == 200
+
+        # More than 16 form fields is a bad request on both endpoints, not a server error.
+        many = {f"f{i}": "x" for i in range(17)}
+        for path in ("/token", "/oauth/device_authorization"):
+            r = await c.post(path, data={"grant_type": DEVICE_GRANT, **many})
+            assert r.status_code == 400 and r.json()["error"] == "invalid_request", (path, r.text)
 
 
 async def test_sliding_window_lapses_and_never_does_not(entries, monkeypatch):
