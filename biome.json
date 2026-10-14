@@ -31,7 +31,6 @@
 			"!**/web/portal",
 			"!apps/device/src/openlolo/web",
 			"!**/.tmp",
-			"!apps/device/scripts/calibration",
 			"!apps/device/config",
 			"!apps/device/deploy"
 		]

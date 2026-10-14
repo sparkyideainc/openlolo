@@ -563,7 +563,7 @@ class Gateway:
     def __init__(self, runtime, provider: OAuthProvider):
         self.runtime = runtime
         self.provider = provider
-        self.api = create_app(runtime, False)
+        self.api = create_app(runtime)
         self.base_url = "http://" + runtime.config.allowed_hosts[0]
         self.bridges: dict[str, tuple[str, PhoneClient]] = {}
         self.calls: dict[str, list[float]] = {}
@@ -592,7 +592,7 @@ class Gateway:
                     return entry[1]
                 except OpenLoloError:
                     await self._drop(token.client_id)
-            session = self.runtime.auth.login(self.runtime.auth.issue())
+            session = self.runtime.auth.open_session()
             client_info = await self.provider.get_client(token.client_id)
             label = (client_info.client_name if client_info and client_info.client_name else token.client_id)[
                 :64
@@ -601,8 +601,7 @@ class Gateway:
             http = httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=self.api),
                 base_url=self.base_url,
-                headers={"X-OpenLolo-Client": "cli"},
-                cookies={"openlolo_session": session},
+                headers={"Authorization": f"Bearer {session}"},
             )
             client = PhoneClient(http, transport="streamable-http")
             self.bridges[token.client_id] = (session, client)

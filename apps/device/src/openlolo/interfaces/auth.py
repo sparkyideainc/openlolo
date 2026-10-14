@@ -1,8 +1,18 @@
+"""Sessions of the internal Phone API.
+
+The API has no login of its own: it is reached only in-process, by the MCP gateway's per-client
+bridges and the box page, each of which opens a session here after authenticating its caller
+(OAuth bearer, box-page cookie). The session token is the owner identity for leases and the
+journal; only its digest is stored.
+"""
+
 import hashlib
 import secrets
 import time
 
 from openlolo.domain.errors import OpenLoloError
+
+SESSION_SECONDS = 8 * 3600  # A bridge opens a new one when its session lapses.
 
 
 def digest(token):
@@ -12,38 +22,12 @@ def digest(token):
 class Auth:
     def __init__(self, journal):
         self.db = journal.db
-        self.failures = []
 
-    def issue(self):
-        token = secrets.token_urlsafe(32)
-        self.db.execute("DELETE FROM logins WHERE expires<?", (time.time(),))
-        self.db.execute("INSERT INTO logins VALUES (?,?)", (digest(token), time.time() + 300))
-        self.db.commit()
-        return token
-
-    def verify(self, token):
-        """Consume a single-use credential as proof of owner presence without opening a session."""
-        now = time.time()
-        self.failures = [t for t in self.failures if t > now - 60]
-        if len(self.failures) >= 10:
-            raise OpenLoloError("LOGIN_RATE_LIMIT", status=429)
-        if not isinstance(token, str) or not 1 <= len(token) <= 256:
-            self.failures.append(now)
-            raise OpenLoloError("INVALID_CREDENTIAL", status=401)
-        with self.db:
-            row = self.db.execute(
-                "DELETE FROM logins WHERE digest=? AND expires>? RETURNING digest", (digest(token), now)
-            ).fetchone()
-        if not row:
-            self.failures.append(now)
-            raise OpenLoloError("INVALID_CREDENTIAL", status=401)
-
-    def login(self, token):
-        self.verify(token)
+    def open_session(self) -> str:
         now = time.time()
         session = secrets.token_urlsafe(32)
         self.db.execute("DELETE FROM sessions WHERE expires<?", (now,))
-        self.db.execute("INSERT INTO sessions VALUES (?,?)", (digest(session), now + 8 * 3600))
+        self.db.execute("INSERT INTO sessions VALUES (?,?)", (digest(session), now + SESSION_SECONDS))
         self.db.commit()
         return session
 

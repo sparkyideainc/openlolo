@@ -9,7 +9,6 @@ from openlolo.adapters.system.fake import FakeNetwork
 from openlolo.adapters.system.network import NetworkManager, SystemHealth
 from openlolo.adapters.system.setup_ap import ensure_setup_identity
 from openlolo.application.autopair import AutoPair
-from openlolo.application.calibration import Calibration
 from openlolo.application.coordinator import Coordinator
 from openlolo.application.phone import Phone
 from openlolo.application.provisioning import Provisioning
@@ -31,7 +30,6 @@ class Runtime:
                 Binding(udid="simulated-phone", transport="usb", owner_confirmed=True, portrait_locked=True)
             )
         self.coordinator = Coordinator(self.journal, device, config.queue_size, config.lease_seconds)
-        self.calibration = Calibration(config, self.journal)
         if config.backend == "simulated":
             self.network: FakeNetwork | NetworkManager = FakeNetwork(["home"])
         else:
@@ -54,7 +52,6 @@ class Runtime:
             self.journal,
             self.bindings,
             self.coordinator,
-            self.calibration,
             provisioning=self.provisioning,
             profiles=self.profiles,
         )

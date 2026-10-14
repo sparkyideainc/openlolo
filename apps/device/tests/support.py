@@ -38,7 +38,6 @@ def lan_config(tmp_path, **overrides):
         state_dir=tmp_path / "state",
         runtime_dir=tmp_path / "run",
         allowed_hosts=["testserver"],
-        allowed_origins=["http://testserver"],
         public_url=PUBLIC,
         lan_url=LAN,
         lan_cert=LAN_CERT,

@@ -22,7 +22,17 @@ from openlolo.interfaces.mcp_client import LOST_CONTROL, BridgeError
 from openlolo.interfaces.mcp_server import ADMIN_SCOPE, ALL_SCOPES, CONTROL_SCOPE, READ_SCOPE
 
 APP_PREFIX = "/app"
-SETUP_KINDS = {"bind", "transport", "recover", "pair", "developer_mode", "mount_ddi", "unbind"}
+# validate_shortcut records the owner's evidence that a shortcut works on this phone.
+SETUP_KINDS = {
+    "bind",
+    "transport",
+    "recover",
+    "pair",
+    "developer_mode",
+    "mount_ddi",
+    "unbind",
+    "validate_shortcut",
+}
 NETWORK_COMMANDS = {"scan", "connect", "forget", "setup_mode"}
 RESET_UNIT = "openlolo-reset.service"  # Root unit: deploy/reset/openlolo-reset.sh
 

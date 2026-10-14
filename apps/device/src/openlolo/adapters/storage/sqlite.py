@@ -32,7 +32,6 @@ class Journal:
                 fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT,
                 created REAL NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS profiles (device TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS logins (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS oauth_clients (
                 client_id TEXT PRIMARY KEY, value TEXT NOT NULL, approved INTEGER NOT NULL,
@@ -66,6 +65,8 @@ class Journal:
         # The Bluetooth companion-app channel is gone: its per-phone keys and label-code secret with it.
         self.db.execute("DROP TABLE IF EXISTS app_keys")
         self.db.execute("DELETE FROM secrets WHERE name IN ('setup_code', 'setup')")
+        # Single-use shell credentials (`openlolo credential`) are gone; owners approve on the box page.
+        self.db.execute("DROP TABLE IF EXISTS logins")
         self.db.commit()
 
     def _persist_revision(self) -> None:

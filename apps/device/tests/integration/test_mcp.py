@@ -14,12 +14,11 @@ from openlolo.interfaces.mcp_server import create_server
 
 
 async def bridge_for(runtime, **kwargs):
-    cookie = runtime.auth.login(runtime.auth.issue())
+    session = runtime.auth.open_session()
     http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(runtime, False)),
+        transport=httpx.ASGITransport(app=create_app(runtime)),
         base_url="http://testserver",
-        headers={"X-OpenLolo-Client": "cli"},
-        cookies={"openlolo_session": cookie},
+        headers={"Authorization": f"Bearer {session}"},
     )
     return PhoneClient(http, **kwargs)
 
@@ -289,7 +288,7 @@ async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):
 
 
 async def test_lost_action_response_is_not_replayed(runtime):
-    asgi = httpx.ASGITransport(app=create_app(runtime, False))
+    asgi = httpx.ASGITransport(app=create_app(runtime))
     submissions = []
 
     class LoseResponse(httpx.AsyncBaseTransport):
@@ -300,12 +299,11 @@ async def test_lost_action_response_is_not_replayed(runtime):
                 raise httpx.ReadError("Response lost after dispatch")
             return response
 
-    cookie = runtime.auth.login(runtime.auth.issue())
+    session = runtime.auth.open_session()
     http = httpx.AsyncClient(
         transport=LoseResponse(),
         base_url="http://testserver",
-        headers={"X-OpenLolo-Client": "cli"},
-        cookies={"openlolo_session": cookie},
+        headers={"Authorization": f"Bearer {session}"},
     )
     bridge = PhoneClient(http)
     await bridge.control("acquire", str(uuid4()))
@@ -319,7 +317,7 @@ async def test_lost_action_response_is_not_replayed(runtime):
             break
         await asyncio.sleep(0.01)
     assert state == "SUCCEEDED" and len(submissions) == 1
-    runtime.auth.logout(cookie)
+    runtime.auth.logout(session)
     with pytest.raises(BridgeError, match="LOGIN_REQUIRED"):
         await bridge.status()
     await bridge.close()

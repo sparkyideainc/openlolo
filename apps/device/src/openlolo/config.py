@@ -12,7 +12,18 @@ from openlolo.domain.models import StrictModel
 # Keys from earlier releases; ignored so an existing /etc/openlolo/box.toml keeps loading.
 # setup_ssid named the older SoftAP hotspot; bluetooth_adapter and setup_requires_usb belonged to
 # the removed Bluetooth companion-app channel and its label-code pairing gate.
-LEGACY_KEYS = {"media_python", "cleanup_deadline", "setup_ssid", "bluetooth_adapter", "setup_requires_usb"}
+LEGACY_KEYS = {
+    "media_python",
+    "cleanup_deadline",
+    "setup_ssid",
+    "bluetooth_adapter",
+    "setup_requires_usb",
+    # The Safari calibration grid and its listener were retired with the control desk.
+    "calibration_host",
+    "calibration_port",
+    # Browser origins of the retired control desk; the Phone API is only called in-process.
+    "allowed_origins",
+}
 
 
 class Config(StrictModel):
@@ -22,10 +33,11 @@ class Config(StrictModel):
     board: Literal["auto", "radxa-zero3w"] = "auto"
     state_dir: Path = Path("/var/lib/openlolo")
     runtime_dir: Path = Path("/run/openlolo")
+    # The Phone API is called in-process only (MCP gateway bridges, the box page); these name the
+    # Host those in-process requests carry. No socket listens on them.
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1024, le=65535)
     allowed_hosts: list[str] = ["127.0.0.1:8080", "localhost:8080"]
-    allowed_origins: list[str] = ["http://127.0.0.1:8080", "http://localhost:8080"]
     # Seconds without owner activity after which the control lease lapses and held input is released.
     lease_seconds: float = Field(default=90, ge=1, le=600)
     queue_size: int = Field(default=16, ge=1, le=64)
@@ -76,8 +88,6 @@ class Config(StrictModel):
     # Linux kernel; needs CAP_NET_ADMIN and /dev/net/tun in the worker unit, but keeps the
     # media stream's packets out of the Python process.
     tunnel_mode: Literal["userspace", "kernel"] = "userspace"
-    calibration_host: str | None = None
-    calibration_port: int = Field(default=8081, ge=1024, le=65535)
     # Public HTTPS origin of the remote MCP entry, e.g. "https://pi.tailnet.ts.net". Unset = disabled.
     public_url: str | None = None
     mcp_port: int = Field(default=8090, ge=1024, le=65535)
@@ -113,33 +123,22 @@ class Config(StrictModel):
     def local(self):
         if self.backend == "simulated" and "portal_port" not in self.model_fields_set:
             self.portal_port = 0
-        taken = {self.port}
-        if self.calibration_host:
-            taken.add(self.calibration_port)
-        if self.public_url:
-            taken.add(self.mcp_port)
-        if self.portal_port and self.portal_port in taken:
-            raise ValueError("portal_port must differ from the control, calibration and MCP ports")
+        if self.public_url and self.portal_port == self.mcp_port:
+            raise ValueError("portal_port must differ from mcp_port")
         if not ipaddress.ip_address(self.host).is_loopback:
             raise ValueError("Control API must bind to loopback; use an SSH tunnel")
-        if self.calibration_host:
-            address = ipaddress.ip_address(self.calibration_host)
-            if address.is_unspecified or not address.is_private:
-                raise ValueError("Calibration listener must bind a specific private LAN address")
         if self.reconnect_max_seconds < self.reconnect_min_seconds:
             raise ValueError("reconnect_max_seconds must be at least reconnect_min_seconds")
         if self.public_url is not None:
             self.public_url = public_origin(self.public_url)
-            if self.mcp_port == self.port or self.mcp_port == self.calibration_port:
-                raise ValueError("mcp_port must differ from the control and calibration ports")
         if self.lan_url is not None:
             self.lan_url = public_origin(self.lan_url)
             bind = ipaddress.ip_address(self.lan_bind)
             if not (bind.is_unspecified or bind.is_private):
                 raise ValueError("lan_bind must be unspecified (0.0.0.0) or a private LAN address")
-            taken = {self.port, self.calibration_port} | ({self.mcp_port} if self.public_url else set())
+            taken = {self.portal_port} | ({self.mcp_port} if self.public_url else set())
             if self.lan_port in taken:
-                raise ValueError("lan_url port must differ from the control, calibration and MCP ports")
+                raise ValueError("lan_url port must differ from the box page and MCP ports")
             if self.lan_cert is None:
                 self.lan_cert = self.state_dir / "tls" / "lan.crt"
             if self.lan_key is None:

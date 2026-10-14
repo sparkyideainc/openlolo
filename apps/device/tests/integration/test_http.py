@@ -5,48 +5,53 @@ from uuid import uuid4
 
 import httpx
 
-from openlolo.interfaces.http_api import calibration_app, create_app
+from openlolo.interfaces.http_api import create_app
 
 
 async def client(runtime):
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(runtime, False)),
+        transport=httpx.ASGITransport(app=create_app(runtime)),
         base_url="http://testserver",
-        headers={"Origin": "http://testserver"},
     )
 
 
-async def login(c, runtime):
-    credential = runtime.auth.issue()
-    r = await c.post("/api/login", json={"credential": credential})
-    assert r.status_code == 200
-    return credential
+def login(c, runtime) -> str:
+    """What a gateway bridge or the box page does: open an in-process session, send it as a bearer."""
+    session = runtime.auth.open_session()
+    c.headers["Authorization"] = f"Bearer {session}"
+    return session
 
 
-async def test_auth_origin_host_cookie_and_single_use(runtime):
+async def test_session_origin_host_and_content_type(runtime):
     async with await client(runtime) as c:
         assert (await c.get("/api/status")).status_code == 401
-        credential = await login(c, runtime)
-        assert (await c.get("/api/status")).status_code == 200
-        assert (await c.post("/api/login", json={"credential": credential})).status_code == 401
+        session = runtime.auth.open_session()
+        # The retired browser cookie is not a credential any more.
         assert (
-            await c.post("/api/screenshot", json={}, headers={"Origin": "http://evil.test"})
-        ).status_code == 403
+            await c.get("/api/status", headers={"Cookie": f"openlolo_session={session}"})
+        ).status_code == 401
+        assert (await c.get("/api/status", headers={"Authorization": session})).status_code == 401
+        login(c, runtime)
+        assert (await c.get("/api/status")).status_code == 200
+        # No browser ever reaches this API: any Origin is refused, even the box's own.
+        for origin in ("http://evil.test", "http://testserver"):
+            assert (await c.post("/api/screenshot", json={}, headers={"Origin": origin})).status_code == 403
         assert (await c.get("/api/status", headers={"Host": "evil.test"})).status_code == 403
         assert (
             await c.post("/api/screenshot", content="{}", headers={"Content-Type": "text/plain"})
         ).status_code == 415
-        assert (await c.get("/")).headers["cache-control"] == "no-store"
-        assert (await c.post("/api/logout", json={})).status_code == 200
+        assert (await c.get("/api/status")).headers["cache-control"] == "no-store"
+        # No login, logout or console: the API has no way in except an in-process session.
+        for path in ("/", "/app.js", "/api/calibration"):
+            assert (await c.get(path)).status_code == 404
+        assert (await c.post("/api/login", json={"credential": "x"})).status_code in {404, 405}
+        runtime.auth.logout(c.headers["Authorization"].removeprefix("Bearer "))
         assert (await c.get("/api/status")).status_code == 401
 
 
 async def test_screenshot_and_control_flow(runtime):
     async with await client(runtime) as c:
-        credential = runtime.auth.issue()
-        r = await c.post("/api/login", json={"credential": credential})
-        cookie = r.headers["set-cookie"]
-        assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+        login(c, runtime)
         op = str(uuid4())
         acquire = (await c.post("/api/control/acquire", json={"operation_id": op})).json()
         token = acquire["control"]["lease_token"]
@@ -72,32 +77,6 @@ async def test_screenshot_and_control_flow(runtime):
         assert "secret" not in (await c.post("/api/actions", json={"action": {"kind": "INVALID"}})).text
 
 
-async def test_calibration_listener_exposes_no_control(runtime):
-    runtime.config.calibration_host = "192.168.1.2"
-    session = runtime.calibration.start(
-        runtime.phone.binding(), {"native_width": 390, "native_height": 844, "viewport_top": 130}
-    )
-    token = session["session"]
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=calibration_app(runtime)), base_url="http://192.168.1.2:8081"
-    ) as c:
-        assert (await c.get("/api/status")).status_code == 404
-        assert (await c.get(f"/{token}/")).status_code == 200
-        assert (await c.get("/wrong/")).status_code == 404
-        assert (
-            await c.post(
-                f"/{token}/events", json={"type": "geometry", "width": 390, "height": 616, "scale": 1}
-            )
-        ).status_code == 403
-        assert (
-            await c.post(
-                f"/{token}/events",
-                headers={"Origin": "http://192.168.1.2:8081"},
-                json={"type": "geometry", "width": 390, "height": 616, "scale": 1},
-            )
-        ).status_code == 204
-
-
 async def wait_for(c, op, seconds=2.0):
     for _ in range(int(seconds / 0.01)):
         record = (await c.get(f"/api/operations/{op}")).json()
@@ -110,7 +89,7 @@ async def wait_for(c, op, seconds=2.0):
 async def test_discover_and_onboarding_setup_kinds(runtime):
     async with await client(runtime) as c:
         assert (await c.get("/api/discover")).status_code == 401
-        await login(c, runtime)
+        login(c, runtime)
         discovered = (await c.get("/api/discover")).json()
         assert discovered["usb"] == [{"udid": "simulated-phone", "connection": "USB"}]
         assert discovered["wifi_paired"] == [] and discovered["simulated"] is True
@@ -154,13 +133,10 @@ async def test_discover_and_onboarding_setup_kinds(runtime):
         assert r.status_code == 202
         assert (await wait_for(c, r.json()["id"]))["result"]["mounted"] is True
 
-        # Owner sessions opened through the browser are labelled for the journal.
-        assert runtime.journal.list_operations(limit=1)[0]["client"] == "browser"
-
 
 async def test_full_page_scrolls_joins_and_serves_images_once(runtime):
     async with await client(runtime) as c:
-        await login(c, runtime)
+        login(c, runtime)
         acquire = (await c.post("/api/control/acquire", json={"operation_id": str(uuid4())})).json()
         token = acquire["control"]["lease_token"]
         op = str(uuid4())
@@ -223,5 +199,5 @@ async def test_full_page_scrolls_joins_and_serves_images_once(runtime):
         assert refused.status_code == 403 and refused.json()["error"]["code"] == "CONTROL_NOT_OWNED"
         # Another session cannot read the images.
         async with await client(runtime) as other:
-            await login(other, runtime)
+            login(other, runtime)
             assert (await other.get(f"/api/full_page/{op}")).status_code == 404

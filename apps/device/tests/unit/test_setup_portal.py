@@ -214,3 +214,20 @@ async def test_setup_ap_clients_need_only_the_cable(portal, runtime):
     async with ap(portal) as c:
         refused = await c.post("/setup/session", headers=WRITE)
         assert refused.status_code == 403 and refused.json()["error"]["code"] == "CABLE_REQUIRED"
+
+
+async def test_simulator_trusts_the_developer_machine_only(portal, runtime):
+    # backend=simulated: loopback stands in for the cable and the paired phone, so a developer can
+    # approve clients on the box page; any other address is still refused.
+    async with browser(portal, client=("127.0.0.1", 50000)) as c:
+        assert (await c.get("/setup/status")).json()["access"]["allowed"] is True
+        assert (await c.post("/setup/session", headers=WRITE)).status_code == 200
+        assert (await c.get("/app/consents")).status_code == 200
+    async with browser(portal, client=LAPTOP) as c:
+        assert (await c.post("/setup/session", headers=WRITE)).status_code == 403
+    runtime.config.backend = "hardware"
+    try:
+        async with browser(portal, client=("127.0.0.1", 50000)) as c:
+            assert (await c.get("/setup/status")).json()["access"]["allowed"] is False
+    finally:
+        runtime.config.backend = "simulated"

@@ -4,6 +4,7 @@ from collections import OrderedDict
 
 from openlolo.adapters.storage.binding import device_tag
 from openlolo.application import actions, fullpage, recovery
+from openlolo.application.shortcuts import validate_shortcut
 from openlolo.domain.apps import match_apps
 from openlolo.domain.capabilities import capabilities
 from openlolo.domain.errors import OpenLoloError
@@ -26,14 +27,13 @@ class Phone:
         journal,
         bindings,
         coordinator,
-        calibration,
         provisioning=None,
         profiles=None,
         autopair=None,
     ):
         self.config, self.device = config, device
         self.system, self.journal, self.bindings = system, journal, bindings
-        self.coordinator, self.calibration = coordinator, calibration
+        self.coordinator = coordinator
         self.provisioning = provisioning
         self.autopair = autopair
         self.profiles = profiles or ProfileStore()
@@ -454,37 +454,8 @@ class Phone:
                 self.frame = None
                 binding = self.binding()
                 return await recovery.recover({"device": self.device}, binding)
-            if kind == "calibration_start":
-                if (
-                    self.frame is None
-                    or payload.get("native_width") != self.frame.native_width
-                    or payload.get("native_height") != self.frame.native_height
-                ):
-                    raise OpenLoloError("FRAME_EXPIRED", "Use current screenshot dimensions for calibration")
-                return self.calibration.start(self.binding(), payload)
-            if kind == "calibration_next":
-                if self.frame is None:
-                    raise OpenLoloError("FRAME_EXPIRED")
-                x, y = self.calibration.target(self.binding())
-                action = Action(
-                    kind="tap",
-                    x=x,
-                    y=y,
-                    frame_id=self.frame.frame_id,
-                    geometry_epoch=self.frame.geometry_epoch,
-                )
-                self.validate_frame(action)
-                result = await actions.execute(
-                    self.device,
-                    self.binding(),
-                    actions.plan(action),
-                    lambda: self.coordinator.check(owner, token),
-                )
-                return {**result, "trial": self.calibration.current()["next"]}
-            if kind == "calibration_finish":
-                return self.calibration.finish(self.binding(), payload)
             if kind == "validate_shortcut":
-                return self.calibration.validate_shortcut(self.binding(), payload)
+                return validate_shortcut(self.journal, self.binding(), payload)
             raise OpenLoloError("UNKNOWN_SETUP_ACTION", status=400)
 
         return self.coordinator.submit(operation_id, owner, token, kind, payload, run)
