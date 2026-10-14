@@ -565,7 +565,9 @@ class Gateway:
         self.provider = provider
         self.api = create_app(runtime)
         self.base_url = "http://" + runtime.config.allowed_hosts[0]
-        self.bridges: dict[str, tuple[str, PhoneClient]] = {}
+        # client_id -> (session, bridge, oauth). The box page's identity is not an OAuth client,
+        # so the revocation sweep must leave it alone.
+        self.bridges: dict[str, tuple[str, PhoneClient, bool]] = {}
         self.calls: dict[str, list[float]] = {}
         self.lock = asyncio.Lock()
         self.sweeper: asyncio.Task | None = None
@@ -604,14 +606,15 @@ class Gateway:
                 headers={"Authorization": f"Bearer {session}"},
             )
             client = PhoneClient(http, transport="streamable-http")
-            self.bridges[token.client_id] = (session, client)
+            # owner:admin is held only by the box page (ADR 0012); every other caller is an OAuth client.
+            self.bridges[token.client_id] = (session, client, ADMIN_SCOPE not in token.scopes)
             return client
 
     async def _drop(self, client_id: str) -> None:
         entry = self.bridges.pop(client_id, None)
         if entry is None:
             return
-        session, client = entry
+        session, client, _ = entry
         await client.close()
         who = digest(session)
         lease = self.runtime.coordinator.lease
@@ -620,10 +623,11 @@ class Gateway:
         self.runtime.auth.logout(session)
 
     async def sweep(self) -> None:
-        """Drop bridges whose client was revoked from the CLI or whose grants all expired."""
+        """Drop bridges whose client was revoked or whose grants all expired. The box page's
+        bridge has no OAuth client behind it and is never swept."""
         async with self.lock:
-            for client_id in list(self.bridges):
-                if not self.provider.client_active(client_id):
+            for client_id, (_, _, oauth) in list(self.bridges.items()):
+                if oauth and not self.provider.client_active(client_id):
                     await self._drop(client_id)
 
     async def _sweep_loop(self):

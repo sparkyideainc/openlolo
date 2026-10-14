@@ -291,6 +291,22 @@ async def test_network_routes(box, monkeypatch):
         assert state["state"] == "idle" and state["setup_name"] is None and not runtime.provisioning.active
 
 
+async def test_box_page_keeps_control_and_its_operations_across_the_sweep(box):
+    runtime, portal = box
+    gateway = runtime.door_gateway
+    async with box_page(portal) as c:
+        paused = (await c.post("/app/pause", json={})).json()
+        bridge = gateway.bridges[PORTAL_IDENTITY][1]
+        await bridge.ensure_control()
+        lease = runtime.coordinator.lease
+        assert lease is not None
+        # The sweep runs every 30 s and on every revoke; the page has no OAuth client behind it.
+        await gateway.sweep()
+        assert gateway.bridges[PORTAL_IDENTITY][1] is bridge and runtime.coordinator.lease is lease
+        single = await c.get(f"/app/operations/{paused['id']}")
+        assert single.status_code == 200 and single.json()["kind"] == "pause"
+
+
 async def test_diagnostics_are_redacted(box):
     runtime, portal = box
     async with box_page(portal) as c:

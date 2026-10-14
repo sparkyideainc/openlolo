@@ -28,9 +28,10 @@ ALL_SCOPES = [*SCOPES, ADMIN_SCOPE]
 
 
 class BridgeResolver(Protocol):
-    """Supplies the PhoneClient for the current caller once the required scope is confirmed."""
+    """Supplies the PhoneClient for the current caller once the required scope is confirmed.
+    ``exempt`` skips the per-client rate limit; only Pause passes it."""
 
-    async def bridge(self, scope: str) -> PhoneClient: ...
+    async def bridge(self, scope: str, *, exempt: bool = False) -> PhoneClient: ...
 
 
 Duration = Annotated[float, Field(ge=0.03, le=2)]
@@ -137,15 +138,17 @@ def create_server(
         **server_options,
     )
 
-    async def phone(scope: str) -> PhoneClient:
+    async def phone(scope: str, exempt: bool = False) -> PhoneClient:
         if resolver is not None:
-            return await resolver.bridge(scope)
+            return await resolver.bridge(scope, exempt=exempt)
         assert bridge is not None
         return bridge
 
-    async def run(scope: str, call: Callable[[PhoneClient], Awaitable[dict]]) -> CallToolResult:
+    async def run(
+        scope: str, call: Callable[[PhoneClient], Awaitable[dict]], *, exempt: bool = False
+    ) -> CallToolResult:
         async def work():
-            return await call(await phone(scope))
+            return await call(await phone(scope, exempt))
 
         return await tool_result(work())
 
@@ -240,8 +243,9 @@ def create_server(
     @server.tool(annotations=CONTROL)
     async def openlolo_pause(operation_id: OperationId = None) -> CallToolResult:
         """Stop pending input and attempt release-all immediately, even while a screenshot is blocked."""
-        # Pause is the safety exception: any authenticated caller may stop input.
-        return await run(READ_SCOPE, lambda p: p.control("pause", operation(operation_id)))
+        # Pause is the safety exception: any authenticated caller may stop input, and the rate
+        # limit never applies to it.
+        return await run(READ_SCOPE, lambda p: p.control("pause", operation(operation_id)), exempt=True)
 
     @server.tool(annotations=CONTROL)
     async def openlolo_cancel(target: UUID, operation_id: OperationId = None) -> CallToolResult:
@@ -352,7 +356,7 @@ def create_server(
         settle: Settle = TOUCH_SETTLE,
         operation_id: OperationId = None,
     ) -> CallToolResult:
-        """Put text on the phone clipboard and press Cmd+V into the focused field: any Unicode, any length, ~0.3 s. Replaces the phone clipboard. Preferred over openlolo_type_text for content."""
+        """Put text on the phone clipboard and press Cmd+V into the focused field: any Unicode, up to 10,000 characters and 16 KiB of UTF-8, ~0.3 s. Replaces the phone clipboard. Preferred over openlolo_type_text for content."""
         return await action(operation_id, "send_text", observe, settle, text=text)
 
     @server.tool(annotations=READ)

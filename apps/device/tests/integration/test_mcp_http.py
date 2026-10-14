@@ -277,6 +277,25 @@ async def test_control_scope_flow_rotation_reuse_and_revocation(remote, caplog):
         assert app.provider.list_clients() == []
 
 
+async def test_pause_is_never_rate_limited(remote, monkeypatch):
+    runtime, app = remote
+    monkeypatch.setattr(mcp_http, "CALLS_PER_MINUTE", 3)
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id)
+        issued = await tokens(c, client_id, code, verifier)
+    client, http = await connect(app, issued["access_token"])
+    async with http, client:
+        for _ in range(3):
+            assert not (await client.call_tool("openlolo_status", {})).is_error
+        limited = await client.call_tool("openlolo_status", {})
+        assert limited.is_error and limited.structured_content["error"]["code"] == "RATE_LIMITED"
+        for _ in range(3):
+            paused = await client.call_tool("openlolo_pause", {})
+            assert not paused.is_error, paused.structured_content
+        assert runtime.coordinator.paused
+
+
 async def test_no_scope_request_offers_registered_scopes(remote):
     runtime, app = remote
     async with web(app) as c:

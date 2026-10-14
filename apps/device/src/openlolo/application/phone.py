@@ -8,7 +8,7 @@ from openlolo.application.shortcuts import validate_shortcut
 from openlolo.domain.apps import match_apps
 from openlolo.domain.capabilities import capabilities
 from openlolo.domain.errors import OpenLoloError
-from openlolo.domain.models import Action, Binding, CaptureOptions, FullPageOptions
+from openlolo.domain.models import SEND_TEXT_BYTES, Action, Binding, CaptureOptions, FullPageOptions
 from openlolo.domain.profiles import ProfileStore
 
 TOUCH_KINDS = {"tap", "long_press", "swipe"}
@@ -300,6 +300,11 @@ class Phone:
             raise OpenLoloError("FRAME_EXPIRED", "Capture a new portrait screenshot before touch input")
 
     def action(self, operation_id, owner, token, action):
+        if action.kind == "send_text" and len(action.text.encode()) > SEND_TEXT_BYTES:
+            # Refused before the lease check and the journal, whichever door it came through.
+            raise OpenLoloError(
+                "REQUEST_TOO_LARGE", f"send_text takes at most {SEND_TEXT_BYTES} UTF-8 bytes", 413
+            )
         self.coordinator.check(owner, token)
         recorded = self.journal.existing(operation_id, owner, action.kind, action.model_dump())
         if recorded is not None:
