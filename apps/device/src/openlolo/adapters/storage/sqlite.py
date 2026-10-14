@@ -36,7 +36,7 @@ class Journal:
             CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS oauth_clients (
                 client_id TEXT PRIMARY KEY, value TEXT NOT NULL, approved INTEGER NOT NULL,
-                created REAL NOT NULL);
+                created REAL NOT NULL, last_used REAL);
             CREATE TABLE IF NOT EXISTS oauth_grants (
                 digest TEXT PRIMARY KEY, kind TEXT NOT NULL, client_id TEXT NOT NULL,
                 family TEXT NOT NULL, value TEXT NOT NULL, expires REAL NOT NULL,
@@ -62,8 +62,6 @@ class Journal:
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(oauth_clients)")}
         if "issuer" not in columns:
             self.db.execute("ALTER TABLE oauth_clients ADD COLUMN issuer TEXT")
-        if "last_used" not in columns:
-            self.db.execute("ALTER TABLE oauth_clients ADD COLUMN last_used REAL")
         self.db.execute("CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC, id DESC)")
         # The Bluetooth companion-app channel is gone: its per-phone keys and label-code secret with it.
         self.db.execute("DROP TABLE IF EXISTS app_keys")

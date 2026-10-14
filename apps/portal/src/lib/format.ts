@@ -164,16 +164,12 @@ export function activeUntil(client: Client, now = new Date()): Date | null {
 	return new Date(Math.max(...values) * 1000);
 }
 
-/** Second line of an Access row: when the client last used the box (or what it may do, for
- * clients from before "last used" was recorded) and until when. */
+/** Second line of an Access row: when the client last used the box and until when. */
 export function clientSubtitle(client: Client, now = new Date()): string {
 	const until = activeUntil(client, now);
 	if (!until) return "No active session";
-	const lead =
-		typeof client.last_used === "number"
-			? `Used ${relativeText(client.last_used, now).toLowerCase()}`
-			: shortScopeText(client.scopes ?? []);
-	return `${lead} · ${client.never_expires ? "no end" : untilText(until, now)}`;
+	const used = relativeText(client.last_used, now).toLowerCase();
+	return `Used ${used} · ${client.never_expires ? "no end" : untilText(until, now)}`;
 }
 
 export function consentFrom(consent: Consent): string {

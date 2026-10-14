@@ -70,7 +70,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
     """Every ``/app/*`` route as (path, methods, guarded handler); ``entry`` names the door."""
     from openlolo import __version__
     from openlolo.interfaces import tls
-    from openlolo.interfaces.mcp_http import SHORT_WINDOW, grant_from_choice
+    from openlolo.interfaces.mcp_http import grant_from_choice
 
     config = runtime.config
     network = getattr(runtime, "network", None)
@@ -203,10 +203,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         """Six-digit, 30-second PIN that completes exactly this request with the choice made here."""
         require(ADMIN_SCOPE)
         data = await body(request)
-        choice = {
-            "admin": data.get("admin") is True,
-            "window": str(data.get("window", SHORT_WINDOW)),
-        }
+        choice = {"admin": data.get("admin") is True, "window": str(data.get("window", ""))}
         return provider.issue_pin(request.path_params["handle"], choice)
 
     @add("/discover", ["GET"])

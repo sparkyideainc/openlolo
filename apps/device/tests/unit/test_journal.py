@@ -198,7 +198,7 @@ def test_opens_old_schema_and_migrates_additively(tmp_path):
     for _ in range(2):  # Opening twice proves the migration is idempotent.
         j = Journal(path)
         columns = [row["name"] for row in j.db.execute("PRAGMA table_info(oauth_clients)")]
-        assert columns == ["client_id", "value", "approved", "created", "issuer", "last_used"]
+        assert columns == ["client_id", "value", "approved", "created", "issuer"]
         assert j.db.execute("SELECT issuer FROM oauth_clients WHERE client_id='c1'").fetchone()[0] is None
         assert j.db.execute("SELECT count(*) FROM owner_labels").fetchone()[0] == 0
         assert j.secret == b"\x00"

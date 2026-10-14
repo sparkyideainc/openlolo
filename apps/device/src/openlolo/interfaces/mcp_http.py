@@ -69,12 +69,10 @@ STATUS_PATH = "/oauth/consent/status"
 # How long an approval lasts, the same choices for every client (ADR 0005). "24h" has a fixed end.
 # "30d" is renewed while used: every refresh moves the end to now + REFRESH_SECONDS, so a client
 # unused for 30 days loses access. "never" lasts until the owner removes the client (or resets
-# the box); its end is a date no box will reach. Grants issued with the retired 1h and 8h windows
-# keep their stored end. An unknown choice, such as one from a stale page, gets 24 hours.
+# the box); its end is a date no box will reach.
 NEVER_SECONDS = 100 * 365 * 24 * 3600
 CONTROL_WINDOWS = {"24h": 24 * 3600, "30d": REFRESH_SECONDS, "never": NEVER_SECONDS}
 DEFAULT_WINDOW = "30d"
-SHORT_WINDOW = "24h"
 WINDOW_WORDS = {"24h": "24 hours", "30d": "30 days, renewed while used", "never": "Until I remove it"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
@@ -217,8 +215,8 @@ class OAuthProvider:
                     "active_until": {g["kind"]: g["expires"] for g in grants},
                     "issuer": row["issuer"] if row["issuer"] is not None else self.legacy_issuer,
                     "scopes": sorted({s for value in refresh for s in value.get("scopes", [])}),
-                    "renewed_while_used": any(value.get("sliding") for value in refresh),
-                    "never_expires": any(value.get("never") for value in refresh),
+                    "renewed_while_used": any(value["sliding"] for value in refresh),
+                    "never_expires": any(value["never"] for value in refresh),
                 }
             )
         return result
@@ -393,6 +391,7 @@ class OAuthProvider:
         if pending is None:
             raise OpenLoloError("CONSENT_EXPIRED", status=404)
         client, _ = pending
+        window_seconds(choice["window"])  # Refuse a bad choice now, not when the PIN is used.
         pin = f"{secrets.randbelow(10**6):06d}"
         with self.db:
             self.db.execute("DELETE FROM oauth_grants WHERE kind='pin' AND family=?", (handle,))
@@ -423,7 +422,7 @@ class OAuthProvider:
         value = json.loads(row["value"])
         return {
             "admin": bool(value.get("admin")),
-            "window": str(value.get("window", SHORT_WINDOW)),
+            "window": str(value["window"]),
         }
 
     async def load_authorization_code(
@@ -457,8 +456,8 @@ class OAuthProvider:
         value = json.loads(row["value"])
         now = time.time()
         family = secrets.token_hex(16)
-        family_expires = now + min(NEVER_SECONDS, value["window"])
-        sliding, never = bool(value.get("sliding")), bool(value.get("never"))
+        family_expires = now + value["window"]
+        sliding, never = value["sliding"], value["never"]
         return self._issue(client.client_id, value["scopes"], family, family_expires, now, sliding, never)
 
     def _issue(
@@ -468,16 +467,12 @@ class OAuthProvider:
         family: str,
         family_expires: float,
         now: float,
-        sliding: bool = False,
-        never: bool = False,
+        sliding: bool,
+        never: bool,
     ):
         access, refresh = _token(), _token()
         access_expires = min(now + ACCESS_SECONDS, family_expires)
-        value: dict[str, Any] = {"scopes": scopes, "family_expires": family_expires}
-        if sliding:
-            value["sliding"] = True
-        if never:
-            value["never"] = True
+        value = {"scopes": scopes, "family_expires": family_expires, "sliding": sliding, "never": never}
         # Tokens are issued at the code exchange and every refresh (about every ACCESS_SECONDS
         # while a client works), so this is "last used" without a write per MCP request.
         with self.db:
@@ -526,7 +521,7 @@ class OAuthProvider:
             self.db.execute(
                 "UPDATE oauth_grants SET revoked=1 WHERE digest=?", (digest(refresh_token.token),)
             )
-        sliding, never = bool(value.get("sliding")), bool(value.get("never"))
+        sliding, never = value["sliding"], value["never"]
         family_expires = now + REFRESH_SECONDS if sliding else value["family_expires"]
         return self._issue(
             client.client_id, scopes or value["scopes"], row["family"], family_expires, now, sliding, never
@@ -874,6 +869,12 @@ async def read_form(request: Request, limit: int = 8192) -> dict[str, str]:
     return {key: values[0] for key, values in parsed.items()}
 
 
+def window_seconds(window: str) -> int:
+    if window not in CONTROL_WINDOWS:
+        raise OpenLoloError("INVALID_WINDOW", f"window must be one of {', '.join(CONTROL_WINDOWS)}", 422)
+    return CONTROL_WINDOWS[window]
+
+
 def grant_from_choice(offered: list[str], admin: bool, window: str) -> tuple[list[str], int]:
     """Translate the owner's consent choice into granted scopes and the grant's lifetime.
 
@@ -883,7 +884,7 @@ def grant_from_choice(offered: list[str], admin: bool, window: str) -> tuple[lis
     a grant itself with the ``scope`` parameter of a refresh."""
     granted = [scope for scope in SCOPES if scope in offered] or [READ_SCOPE]
     admin = admin and ADMIN_SCOPE in offered
-    seconds = CONTROL_WINDOWS.get(window, CONTROL_WINDOWS[SHORT_WINDOW])
+    seconds = window_seconds(window)
     if admin:
         granted.append(ADMIN_SCOPE)
     return granted, seconds

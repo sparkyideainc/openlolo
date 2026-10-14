@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import hashlib
-import json
 import secrets
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -483,32 +482,6 @@ async def test_never_grant_outlasts_long_idle_periods(remote, clock):
         renewed = await refresh(c, client_id, issued["refresh_token"])
         assert renewed.status_code == 200, renewed.text
         assert client_row(app, client_id)["active_until"]["refresh"] == end
-
-
-async def test_grants_from_retired_windows_are_not_extended(remote, clock):
-    """An 8h grant issued before this release: fixed end, no sliding flag; a refresh keeps the end."""
-    runtime, app = remote
-    async with web(app) as c:
-        client_id = await register(c)
-        code, verifier = await authorize(c, runtime, client_id, window="24h")
-        issued = await tokens(c, client_id, code, verifier)
-        end = clock.now + 8 * 3600
-        db = runtime.journal.db
-        with db:
-            for row in db.execute("SELECT digest, value FROM oauth_grants WHERE client_id=?", (client_id,)):
-                value = {**json.loads(row["value"]), "family_expires": end}
-                db.execute(
-                    "UPDATE oauth_grants SET value=?, expires=? WHERE digest=?",
-                    (json.dumps(value), end, row["digest"]),
-                )
-
-        clock.now += 7 * 3600
-        renewed = await refresh(c, client_id, issued["refresh_token"])
-        assert renewed.status_code == 200, renewed.text
-        assert client_row(app, client_id)["active_until"]["refresh"] == end
-
-        clock.now = end + 1
-        assert (await refresh(c, client_id, renewed.json()["refresh_token"])).status_code == 400
 
 
 async def test_box_page_revoke_ends_access_and_refresh_at_once(remote, tmp_path):

@@ -69,7 +69,12 @@ async def test_issuers_do_not_accept_each_others_grants(entries):
             pc, PUBLIC, public_client, callback=PUBLIC_CALLBACK, scope="phone:read"
         )
         assert started.status_code == 302 and request_id
-        form = {"request": request_id, "credential": runtime.auth.issue(), "decision": "allow"}
+        form = {
+            "request": request_id,
+            "credential": runtime.auth.issue(),
+            "decision": "allow",
+            "window": "24h",
+        }
         consented = await pc.post("/oauth/consent", data=form, headers={"Origin": PUBLIC})
         assert consented.status_code == 302, consented.text
         code = parse_qs(urlsplit(consented.headers["location"]).query)["code"][0]
