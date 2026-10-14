@@ -32,7 +32,7 @@ stream_jpeg_quality = 60
 tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in the worker unit.
 # Remote MCP entry for AI clients. Set to the public HTTPS origin your tunnel serves
 # (see docs/runbooks/remote-access.md). Starts a second loopback listener on mcp_port;
-# point the tunnel at http://127.0.0.1:8090 only. Leave unset to keep SSH-only access.
+# point the tunnel at http://127.0.0.1:8090 only. Leave unset for a LAN-only box.
 # public_url = "https://pi.tailnet.ts.net"
 # mcp_port = 8090
 # Optional LAN MCP entry. The setup page uses HTTP port 80 and does not depend on this TLS door.

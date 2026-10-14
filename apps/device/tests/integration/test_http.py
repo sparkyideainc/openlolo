@@ -27,7 +27,9 @@ async def test_session_origin_host_and_content_type(runtime):
         assert (await c.get("/api/status")).status_code == 401
         session = runtime.auth.open_session()
         # The retired browser cookie is not a credential any more.
-        assert (await c.get("/api/status", cookies={"openlolo_session": session})).status_code == 401
+        assert (
+            await c.get("/api/status", headers={"Cookie": f"openlolo_session={session}"})
+        ).status_code == 401
         assert (await c.get("/api/status", headers={"Authorization": session})).status_code == 401
         login(c, runtime)
         assert (await c.get("/api/status")).status_code == 200

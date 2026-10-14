@@ -17,9 +17,11 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import httpx
 from openlolo_sdk import OpenLoloError, Phone
 
 SAFARI = "com.apple.mobilesafari"
+MAX_ERRORS = 20  # Stop early, keeping the evidence, after this many failed steps.
 
 
 def percentiles(values: list[float]) -> dict:
@@ -65,45 +67,61 @@ def main() -> int:
     errors: Counter[str] = Counter()
     report: dict = {"started": time.time(), "taps_requested": args.taps, "minutes": args.minutes}
     deadline = time.monotonic() + args.minutes * 60
-    with Phone(args.box, name="endurance.py", observe=False) as phone:
-        report["status_before"] = phone.status().get("connection")
-        phone.open_url("about:blank", SAFARI).sleep(1.5)
-        phone.screenshot()
-        done = 0
-        while done < args.taps and time.monotonic() < deadline:
-            try:
+    last_error: list[str] = [""]
+
+    def attempt(work):
+        """Run one step; a failure becomes a counted error instead of ending the run."""
+        try:
+            return work()
+        except OpenLoloError as exc:
+            last_error[0] = exc.code
+        except httpx.HTTPError as exc:
+            last_error[0] = type(exc).__name__
+        errors[last_error[0]] += 1
+        return None
+
+    try:
+        with Phone(args.box, name="endurance.py", observe=False) as phone:
+            status = attempt(phone.status)
+            report["status_before"] = status.get("connection") if status else None
+            attempt(lambda: phone.open_url("about:blank", SAFARI).sleep(1.5).screenshot())
+            done = 0
+            while done < args.taps and time.monotonic() < deadline and sum(errors.values()) <= MAX_ERRORS:
                 started = time.monotonic()
-                phone.tap(x, y)
+                if attempt(lambda: phone.tap(x, y)) is None:
+                    if last_error[0] == "FRAME_EXPIRED":
+                        attempt(phone.screenshot)  # A stale frame refuses the tap; look again.
+                    continue
                 taps.append(
                     (phone.last.get("timing") or {}).get("action_seconds", time.monotonic() - started)
                 )
                 done += 1
                 if done % args.capture_every == 0:
                     started = time.monotonic()
-                    phone.screenshot()
-                    captures.append(time.monotonic() - started)
-            except OpenLoloError as exc:
-                errors[exc.code] += 1
-                if exc.code == "FRAME_EXPIRED":
-                    phone.screenshot()  # A stale frame refuses the tap; look again and go on.
-                elif sum(errors.values()) > 20:
-                    break
-            if done and done % 50 == 0:
-                print(f"{done} taps, p95 {percentiles(taps).get('p95')} s", flush=True)
-        report["status_after"] = phone.status().get("connection")
-    report |= {
-        "finished": time.time(),
-        "taps": percentiles(taps),
-        "captures": percentiles(captures),
-        "errors": dict(errors),
-        "passed": bool(taps) and not errors,
-    }
-    path = args.out / f"endurance-{int(report['started'])}.json"
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        json.dump(report, handle, indent=2)
-    print(json.dumps({k: report[k] for k in ("taps", "captures", "errors", "passed")}, indent=2))
-    print(f"Evidence: {path}")
+                    if attempt(phone.screenshot) is not None:
+                        captures.append(time.monotonic() - started)
+                if done % 50 == 0:
+                    print(f"{done} taps, p95 {percentiles(taps).get('p95')} s", flush=True)
+            status = attempt(phone.status)
+            report["status_after"] = status.get("connection") if status else None
+    except (OpenLoloError, httpx.HTTPError) as exc:
+        # Approval, pinning or connection failed outright; still keep what was measured.
+        errors[getattr(exc, "code", type(exc).__name__)] += 1
+    finally:
+        # Written on every exit, Ctrl-C included, with whatever was measured so far.
+        report |= {
+            "finished": time.time(),
+            "taps": percentiles(taps),
+            "captures": percentiles(captures),
+            "errors": dict(errors),
+            "passed": bool(taps) and not errors,
+        }
+        path = args.out / f"endurance-{int(report['started'])}.json"
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(report, handle, indent=2)
+        print(json.dumps({k: report[k] for k in ("taps", "captures", "errors", "passed")}, indent=2))
+        print(f"Evidence: {path}")
     return 0 if report["passed"] else 1
 
 
