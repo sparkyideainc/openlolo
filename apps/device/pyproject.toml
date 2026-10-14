@@ -29,7 +29,17 @@ device = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1", "ty>=0.0.84,<1", "pre-commit>=4,<5"]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=1,<2",
+    "ruff>=0.12,<1",
+    "ty>=0.0.84,<1",
+    "pre-commit>=4,<5",
+    "openlolo-sdk",  # End-to-end tests drive the real gateway with the script SDK.
+]
+
+[tool.uv.sources]
+openlolo-sdk = { path = "../../packages/sdk-python", editable = true }
 
 [build-system]
 requires = ["hatchling"]

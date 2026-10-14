@@ -4,6 +4,7 @@ from collections import OrderedDict
 
 from openlolo.adapters.storage.binding import device_tag
 from openlolo.application import actions, fullpage, recovery
+from openlolo.domain.apps import match_apps
 from openlolo.domain.capabilities import capabilities
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Action, Binding, CaptureOptions, FullPageOptions
@@ -200,10 +201,13 @@ class Phone:
             raise OpenLoloError("FULL_PAGE_UNAVAILABLE", "Images are gone or the capture failed", 404)
         return {"operation": record, **result}
 
-    async def apps(self):
+    async def apps(self, query: str = "", include_hidden: bool = True):
         apps = await self.coordinator.observe(lambda: self.device.list_apps(self.binding()))
         known = set(self.profiles.ids())
-        return [{**app, "has_profile": app.get("bundle_id") in known} for app in apps]
+        return [
+            {**app, "has_profile": app.get("bundle_id") in known}
+            for app in match_apps(apps, query, include_hidden)
+        ]
 
     def app_profile(self, bundle_id: str) -> dict:
         return self.profiles.get(bundle_id).describe()

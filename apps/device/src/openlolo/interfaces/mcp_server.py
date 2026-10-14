@@ -4,6 +4,7 @@ import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal, Protocol
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from mcp.server import MCPServer
@@ -164,23 +165,8 @@ def create_server(
         include_hidden: bool = False,
     ) -> CallToolResult:
         """Find installed apps (bundle identifier, name, version, has_profile). Pass query, e.g. "youtube", to match name or bundle identifier and keep the result small; an empty query lists everything."""
-
-        async def find(p: PhoneClient) -> dict:
-            data = await p.request("GET", "apps")
-            apps = data.get("apps", [])
-            needle = query.strip().lower()
-            if needle:
-                apps = [
-                    app
-                    for app in apps
-                    if needle in str(app.get("name") or "").lower()
-                    or needle in str(app.get("bundle_id") or "").lower()
-                ]
-            if not include_hidden:
-                apps = [app for app in apps if not app.get("hidden")]
-            return {**data, "apps": apps, "query": query, "matched": len(apps)}
-
-        return await run(READ_SCOPE, find)
+        params = urlencode({"query": query, "include_hidden": str(include_hidden).lower()})
+        return await run(READ_SCOPE, lambda p: p.request("GET", "apps?" + params))
 
     @server.tool(annotations=READ)
     async def openlolo_app_profiles() -> CallToolResult:

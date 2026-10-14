@@ -304,6 +304,9 @@ class OAuthProvider:
                     "redirect_hosts": sorted({str(u.host or "") for u in client.redirect_uris or []}),
                     "scopes": value["scopes"],
                     "issuer": value.get("issuer", self.legacy_issuer),
+                    # A script using the device grant; its user code is shown on both sides.
+                    "kind": "device" if value.get("device") else "oauth",
+                    "user_code": value.get("user_code"),
                     "expires_in": max(0, int(row["expires"] - now)),
                     "created": row["expires"] - PENDING_SECONDS,
                 }
@@ -319,6 +322,8 @@ class OAuthProvider:
         if pending is None:
             raise OpenLoloError("CONSENT_EXPIRED", "Start the connection again from the client", 400)
         client, value = pending
+        if value.get("device"):
+            return self._decide_device(handle, client, value, granted, window)
         params = AuthorizationParams.model_validate(value["params"])
         issuer = value.get("issuer", self.legacy_issuer)
         with self.db:
@@ -352,6 +357,17 @@ class OAuthProvider:
         redirect = construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
         self.record_decision(handle, client.client_id, redirect)
         return redirect
+
+    def _decide_device(self, handle: str, client, value: dict, granted: list[str] | None, window: int) -> str:
+        """A device request has no redirect: its script collects the decision by polling."""
+        from openlolo.interfaces.device_grant import record_decision
+
+        with self.db:
+            self.db.execute("DELETE FROM oauth_grants WHERE digest=?", (handle,))
+            if granted:
+                self.db.execute("UPDATE oauth_clients SET approved=1 WHERE client_id=?", (client.client_id,))
+        record_decision(self, handle, client.client_id, value, granted or [], window)
+        return ""
 
     # -- owner approval from the box page: decisions the consent page polls for ---------------
 
@@ -906,6 +922,8 @@ def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: lis
     )
     server.custom_route(CONSENT_PATH, methods=["GET", "POST"])(consent_routes(provider, origin, runtime))
     server.custom_route(STATUS_PATH, methods=["GET"])(status_route(provider))
+    from openlolo.interfaces.device_grant import DeviceGrant, DeviceGrantRoutes
+
     app = server.streamable_http_app(
         streamable_http_path=MCP_PATH,
         json_response=True,
@@ -915,4 +933,5 @@ def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: lis
             enable_dns_rebinding_protection=True, allowed_hosts=sorted(hosts), allowed_origins=[origin]
         ),
     )
+    app = DeviceGrantRoutes(app, DeviceGrant(provider, config.setup_name))
     return EntrySecurity(app, hosts, gateway, provider)

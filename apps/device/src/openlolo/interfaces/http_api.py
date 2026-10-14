@@ -180,7 +180,10 @@ def create_app(runtime, manage_lifespan=True):
 
     async def apps(request):
         owner(request)
-        return JSONResponse({"apps": await phone.apps()})
+        query = request.query_params.get("query", "")[:80]
+        hidden = request.query_params.get("include_hidden", "true") != "false"
+        found = await phone.apps(query, hidden)
+        return JSONResponse({"apps": found, "query": query, "matched": len(found)})
 
     async def device(request):
         owner(request)

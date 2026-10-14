@@ -74,6 +74,16 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 						expires_in: 240,
 						created: t - 120,
 					},
+					{
+						handle: "demo-script",
+						client_id: "nightly-script",
+						client_name: "nightly.py",
+						kind: "device",
+						user_code: "BCDF-GHJK",
+						scopes: ["phone:read", "phone:control"],
+						expires_in: 480,
+						created: t - 60,
+					},
 				];
 	let clients: Client[] = [
 		{
