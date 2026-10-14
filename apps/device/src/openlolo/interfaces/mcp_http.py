@@ -1,8 +1,8 @@
 """Remote MCP entry: embedded OAuth 2.1 server, bearer-gated Streamable HTTP, one bridge per client.
 
 This is the only public door into the device (ADR 0003). The tunnel terminates TLS and
-forwards to this loopback listener; everything security-relevant happens here or in the
-unchanged Phone API behind it. Tokens are stored as digests only and never logged.
+forwards to this loopback listener; everything security-relevant happens here or in the phone
+core it calls in-process. Tokens are stored as digests only and never logged.
 """
 
 import asyncio
@@ -15,7 +15,6 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import (
     AccessToken,
@@ -36,8 +35,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 
 from openlolo.domain.errors import OpenLoloError
 from openlolo.interfaces.auth import digest
-from openlolo.interfaces.http_api import create_app
-from openlolo.interfaces.mcp_client import BridgeError, PhoneClient
+from openlolo.interfaces.local_phone import BridgeError, LocalPhone
 from openlolo.interfaces.mcp_server import (
     ADMIN_SCOPE,
     CONTROL_SCOPE,
@@ -557,22 +555,27 @@ class OAuthProvider:
             self.revoke_family(row["family"])
 
 
+def owner_of(client_id: str) -> str:
+    """The journal and lease owner for one caller: stable across bridge drops and restarts, and
+    never equal to a pre-upgrade session digest (64 bare hex characters)."""
+    return "client:" + digest(client_id)
+
+
 class Gateway:
-    """Resolves the caller's PhoneClient; one internal Phone API session and lease per OAuth client."""
+    """Resolves the caller's LocalPhone: one owner identity and lease per OAuth client, plus the
+    box page's."""
 
     def __init__(self, runtime, provider: OAuthProvider):
         self.runtime = runtime
         self.provider = provider
-        self.api = create_app(runtime)
-        self.base_url = "http://" + runtime.config.allowed_hosts[0]
-        # client_id -> (session, bridge, oauth). The box page's identity is not an OAuth client,
-        # so the revocation sweep must leave it alone.
-        self.bridges: dict[str, tuple[str, PhoneClient, bool]] = {}
+        # client_id -> (bridge, oauth). The box page's identity is not an OAuth client, so the
+        # revocation sweep must leave it alone.
+        self.bridges: dict[str, tuple[LocalPhone, bool]] = {}
         self.calls: dict[str, list[float]] = {}
         self.lock = asyncio.Lock()
         self.sweeper: asyncio.Task | None = None
 
-    async def bridge(self, scope: str, *, exempt: bool = False) -> PhoneClient:
+    async def bridge(self, scope: str, *, exempt: bool = False) -> LocalPhone:
         token = get_access_token()
         if token is None:
             raise BridgeError("LOGIN_REQUIRED")
@@ -589,46 +592,40 @@ class Gateway:
         async with self.lock:
             entry = self.bridges.get(token.client_id)
             if entry is not None:
-                try:
-                    self.runtime.auth.owner(entry[0])
-                    return entry[1]
-                except OpenLoloError:
-                    await self._drop(token.client_id)
-            session = self.runtime.auth.open_session()
+                return entry[0]
+            owner = owner_of(token.client_id)
             client_info = await self.provider.get_client(token.client_id)
             label = (client_info.client_name if client_info and client_info.client_name else token.client_id)[
                 :64
             ]
-            self.runtime.journal.label_owner(digest(session), label)
-            http = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=self.api),
-                base_url=self.base_url,
-                headers={"Authorization": f"Bearer {session}"},
-            )
-            client = PhoneClient(http, transport="streamable-http")
+            self.runtime.journal.label_owner(owner, label)
+            client = LocalPhone(self.runtime.phone, owner=owner, transport="streamable-http")
             # owner:admin is held only by the box page (ADR 0012); every other caller is an OAuth client.
-            self.bridges[token.client_id] = (session, client, ADMIN_SCOPE not in token.scopes)
+            self.bridges[token.client_id] = (client, ADMIN_SCOPE not in token.scopes)
             return client
 
     async def _drop(self, client_id: str) -> None:
         entry = self.bridges.pop(client_id, None)
         if entry is None:
             return
-        session, client, _ = entry
+        client, _ = entry
         await client.close()
-        who = digest(session)
         lease = self.runtime.coordinator.lease
-        if lease and lease.owner == who:
+        if lease and lease.owner == client.owner:
             await self.runtime.coordinator.drop_control()
-        self.runtime.auth.logout(session)
 
     async def sweep(self) -> None:
         """Drop bridges whose client was revoked or whose grants all expired. The box page's
         bridge has no OAuth client behind it and is never swept."""
         async with self.lock:
-            for client_id, (_, _, oauth) in list(self.bridges.items()):
+            for client_id, (_, oauth) in list(self.bridges.items()):
                 if oauth and not self.provider.client_active(client_id):
                     await self._drop(client_id)
+            # Rate-limit windows of callers quiet for a minute carry nothing.
+            cutoff = time.time() - 60
+            for client_id, recent in list(self.calls.items()):
+                if not any(t > cutoff for t in recent):
+                    del self.calls[client_id]
 
     async def _sweep_loop(self):
         while True:

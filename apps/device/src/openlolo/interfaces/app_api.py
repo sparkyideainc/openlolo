@@ -1,9 +1,9 @@
 """Owner JSON routes (``/app/*``, ADR 0005 contract).
 
 The routes are served on the box page only: ``setup_portal`` runs them behind its own session
-as the page's identity (ADR 0012). Phone operations
-go through the same per-client bridge the MCP tools use, so leases, journaling, pause and
-revocation apply identically whichever way a request arrived.
+as the page's identity (ADR 0012). Phone operations go through the same gateway bridge the MCP
+tools use, so leases, journaling, pause and rate limits apply identically whichever way a
+request arrived.
 """
 
 from collections.abc import Awaitable, Callable
