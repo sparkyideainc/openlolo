@@ -64,7 +64,7 @@ def base_url(box: str) -> str:
 
 def is_lan(host: str) -> bool:
     """The LAN entry (self-signed, pinned): mDNS names and private or loopback addresses."""
-    if host.endswith(".local"):
+    if host.endswith(".local") or host == "localhost":
         return True
     try:
         address = ipaddress.ip_address(host.strip("[]"))

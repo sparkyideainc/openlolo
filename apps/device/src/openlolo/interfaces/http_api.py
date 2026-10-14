@@ -1,13 +1,13 @@
+"""Internal Phone API: owner sessions, leases, the journal and every phone operation."""
+
 import base64
 import inspect
 import json
-from contextlib import asynccontextmanager
-from pathlib import Path
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from openlolo.domain.errors import OpenLoloError
@@ -20,8 +20,6 @@ from openlolo.domain.models import (
     LinkRequest,
     SetupRequest,
 )
-
-WEB = Path(__file__).resolve().parents[1] / "web"
 
 
 async def body(request, limit=16384):
@@ -79,18 +77,10 @@ class Security:
             await JSONResponse({"error": exc.as_dict()}, status_code=exc.status)(scope, receive, secure_send)
 
 
-def create_app(runtime, manage_lifespan=True):
+def create_app(runtime):
+    """The Phone API, served only in-process: MCP gateway bridges and the box page call it
+    through an ASGI transport with a session from ``Auth.open_session``. No port serves it."""
     phone, auth = runtime.phone, runtime.auth
-
-    @asynccontextmanager
-    async def lifespan(_):
-        if manage_lifespan:
-            await runtime.start()
-        try:
-            yield
-        finally:
-            if manage_lifespan:
-                await runtime.close()
 
     def owner(request):
         return auth.owner(request.cookies.get("openlolo_session"))
@@ -102,33 +92,6 @@ def create_app(runtime, manage_lifespan=True):
         return JSONResponse(
             {"error": {"code": "INVALID_REQUEST", "message": "Request fields are invalid"}}, status_code=400
         )
-
-    async def static(request):
-        filename = request.path_params.get("name", "index.html")
-        if filename not in {"index.html", "app.js", "styles.css"}:
-            return Response(status_code=404)
-        return FileResponse(WEB / filename)
-
-    async def login(request):
-        data = await body(request)
-        token = data.get("credential")
-        if not isinstance(token, str) or len(token) > 256:
-            raise OpenLoloError("INVALID_CREDENTIAL", status=401)
-        session = auth.login(token)
-        label = "cli" if request.headers.get("x-openlolo-client") == "cli" else "browser"
-        runtime.journal.label_owner(auth.owner(session), label)
-        response = JSONResponse({"authenticated": True})
-        response.set_cookie("openlolo_session", session, httponly=True, samesite="strict", max_age=8 * 3600)
-        return response
-
-    async def logout(request):
-        who = owner(request)
-        if runtime.coordinator.lease and runtime.coordinator.lease.owner == who:
-            await runtime.coordinator.drop_control()
-        auth.logout(request.cookies["openlolo_session"])
-        response = JSONResponse({"authenticated": False})
-        response.delete_cookie("openlolo_session")
-        return response
 
     async def status(request):
         return JSONResponse(await phone.status(owner(request)))
@@ -204,16 +167,6 @@ def create_app(runtime, manage_lifespan=True):
     async def operation(request):
         return JSONResponse(phone.operation_status(request.path_params["id"], owner(request)))
 
-    async def calibration_status(request):
-        owner(request)
-        try:
-            session = runtime.calibration.current()
-            return JSONResponse(
-                {**runtime.calibration.public(session["token"]), "geometry": session["geometry"]}
-            )
-        except OpenLoloError:
-            return JSONResponse({"active": False})
-
     async def setup(request):
         who = owner(request)
         data = SetupRequest.model_validate(await body(request)).model_dump()
@@ -270,18 +223,8 @@ def create_app(runtime, manage_lifespan=True):
             runtime.journal.update(data["operation_id"], "FAILED", exc.as_dict())
             raise
 
-    # Static filenames are fixed, never interpreted as filesystem paths.
-    async def asset(request):
-        return FileResponse(WEB / request.url.path.lstrip("/"))
-
     routes = [
-        Route("/", static),
-        Route("/app.js", asset),
-        Route("/styles.css", asset),
-        Route("/api/login", login, methods=["POST"]),
-        Route("/api/logout", logout, methods=["POST"]),
         Route("/api/status", status),
-        Route("/api/calibration", calibration_status),
         Route("/api/capabilities", capabilities),
         Route("/api/screenshot", screenshot, methods=["POST"]),
         Route("/api/full_page", full_page, methods=["POST"]),
@@ -300,7 +243,6 @@ def create_app(runtime, manage_lifespan=True):
     ]
     app = Starlette(
         routes=routes,
-        lifespan=lifespan,
         exception_handlers={
             OpenLoloError: error_handler,
             ValidationError: error_handler,
@@ -309,37 +251,3 @@ def create_app(runtime, manage_lifespan=True):
         },
     )
     return Security(app, runtime)
-
-
-def calibration_app(runtime):
-    calibration = runtime.calibration
-
-    async def route(request):
-        token = request.path_params["token"]
-        try:
-            calibration.current(token)
-            resource = request.path_params.get("resource", "")
-            if resource == "events" and request.method == "POST":
-                expected = f"http://{runtime.config.calibration_host}:{runtime.config.calibration_port}"
-                if request.headers.get("origin") != expected:
-                    raise OpenLoloError("ORIGIN_REJECTED", status=403)
-                calibration.telemetry(token, await body(request, 4096))
-                return Response(status_code=204)
-            if request.method != "GET":
-                return Response(status_code=404)
-            if resource == "state":
-                return JSONResponse(calibration.public(token), headers={"Cache-Control": "no-store"})
-            if resource in {"", "calibration.js"}:
-                return FileResponse(
-                    WEB / ("calibration.html" if not resource else resource),
-                    headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
-                )
-            return Response(status_code=404)
-        except OpenLoloError as exc:
-            return JSONResponse({"error": exc.as_dict()}, status_code=exc.status)
-        except (ValueError, TypeError):
-            return Response(status_code=400)
-
-    return Starlette(
-        routes=[Route("/{token}/", route), Route("/{token}/{resource}", route, methods=["GET", "POST"])]
-    )

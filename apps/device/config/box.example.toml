@@ -1,4 +1,5 @@
-# Copy to /etc/openlolo/box.toml. The API never binds to a LAN address.
+# Copy to /etc/openlolo/box.toml. The Phone API has no listener; host, port and allowed_* name
+# the Host and Origin of its in-process callers (MCP entries, box page).
 backend = "hardware"
 # Hardware profile, set by the installer: "radxa-zero3w" (Lolo Pocket) or "auto" for any other box.
 # board = "auto"
@@ -30,9 +31,6 @@ hid_stop_before_capture = true  # false keeps the input stream up across screens
 screenshot_source = "stream"
 stream_jpeg_quality = 60
 tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in the worker unit.
-# Explicitly enable only while calibrating. This listener exposes no control API.
-# calibration_host = "192.168.4.47"
-# calibration_port = 8081
 # Remote MCP entry for AI clients. Set to the public HTTPS origin your tunnel serves
 # (see docs/runbooks/remote-access.md). Starts a second loopback listener on mcp_port;
 # point the tunnel at http://127.0.0.1:8090 only. Leave unset to keep SSH-only access.

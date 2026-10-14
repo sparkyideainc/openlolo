@@ -312,4 +312,4 @@ printf 'Connect the iPhone to the box over USB to pair it automatically; unlock 
 printf '\nWi-Fi name, password, and iPhone join QR:\n'
 sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo setup-card || \
   printf 'Label not ready yet; run: sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo setup-card\n'
-printf 'Browser login with: sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo credential\n'
+printf 'Then open the box page on the iPhone; AI clients and scripts are approved there under Access.\n'

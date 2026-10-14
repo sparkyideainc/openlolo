@@ -14,9 +14,9 @@ from openlolo.interfaces.mcp_server import create_server
 
 
 async def bridge_for(runtime, **kwargs):
-    cookie = runtime.auth.login(runtime.auth.issue())
+    cookie = runtime.auth.open_session()
     http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(runtime, False)),
+        transport=httpx.ASGITransport(app=create_app(runtime)),
         base_url="http://testserver",
         headers={"X-OpenLolo-Client": "cli"},
         cookies={"openlolo_session": cookie},
@@ -289,7 +289,7 @@ async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):
 
 
 async def test_lost_action_response_is_not_replayed(runtime):
-    asgi = httpx.ASGITransport(app=create_app(runtime, False))
+    asgi = httpx.ASGITransport(app=create_app(runtime))
     submissions = []
 
     class LoseResponse(httpx.AsyncBaseTransport):
@@ -300,7 +300,7 @@ async def test_lost_action_response_is_not_replayed(runtime):
                 raise httpx.ReadError("Response lost after dispatch")
             return response
 
-    cookie = runtime.auth.login(runtime.auth.issue())
+    cookie = runtime.auth.open_session()
     http = httpx.AsyncClient(
         transport=LoseResponse(),
         base_url="http://testserver",

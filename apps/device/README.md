@@ -9,9 +9,9 @@ The current implementation is a local control prototype that lets AI agents obse
 operate an explicitly bound iPhone through Apple's CoreDevice services: native
 screenshots, touch, a virtual keyboard, hardware buttons, and app/device information.
 The phone connects to the ARM64 Linux box either over **USB** or over **Wi-Fi**; the two are
-interchangeable transports under one device layer. The browser UI runs through an SSH
-tunnel. A remote MCP entry exposes the same API to agents. Python,
-asyncio, Starlette, SQLite, pymobiledevice3, and plain browser assets; no cloud relay or
+interchangeable transports under one device layer. AI agents use the MCP entries and scripts
+use the Python SDK (`packages/sdk-python`) over the same MCP tools; the owner approves both
+on the box page. Python, asyncio, Starlette, SQLite and pymobiledevice3; no cloud relay or
 persistent video in this prototype. First-time Wi-Fi setup uses an offline local portal;
 USB pairing requires accepting iOS's Trust prompt.
 
@@ -22,17 +22,21 @@ published at [openlolo.com](https://openlolo.com).
 ## Try the simulator
 
 ```sh
-uv sync --frozen --dev
-uv run openlolo serve --simulate
-# In a second terminal; paste this single-use credential into the login form:
-uv run openlolo credential --state-dir .tmp/simulator/state
+uv sync --frozen --dev --extra mcp
+uv run openlolo serve --simulate --lan-url https://localhost:8443
 ```
 
-Open <http://127.0.0.1:8080>. Acquire control, refresh the screenshot, then tap, drag,
-type, send keys, or press hardware buttons. The simulated phone is clearly labeled. Its
-nine-target image is synthetic; simulation is not hardware validation. Control lapses after
-90 seconds without an action or screenshot (`lease_seconds`); the UI never renews. Pause cancels pending input and attempts
-release-all on a separate worker channel. Resume explicitly before sending more input.
+The box page runs on <http://127.0.0.1:8080>; in the simulator your own machine counts as the
+owner's phone on the cable, so you can approve clients there. Drive the simulated phone with
+the SDK (it prints an approval request, approve it under Access):
+
+```sh
+uv run python -c 'from openlolo_sdk import Phone; Phone("https://localhost:8443").home()'
+```
+
+The simulated phone's nine-target image is synthetic; simulation is not hardware validation.
+Control lapses after 90 seconds without an action or screenshot (`lease_seconds`). Pause
+cancels pending input and attempts release-all on a separate worker channel.
 
 ```sh
 uv run --extra mcp pytest -q
@@ -52,15 +56,11 @@ persistent state `/var/lib/openlolo`, and sockets `/run/openlolo`.
 curl -fsSL https://openlolo.com/install.sh | sudo sh
 # Or build your own tarball from a commit, scp it, and run scripts/install.sh on the box.
 sh scripts/package.sh                      # dist/openlolo-device-YYYYMMDD-<commit>.tar.gz
-ssh -N -L 127.0.0.1:8080:127.0.0.1:8080 openlolo@BOX_ADDRESS
-# On the box, issue a credential for this browser login:
-sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo credential
 ```
 
-The control API and browser UI accept only loopback connections and configured Host/Origin
-values. Port 80 separately serves setup assets and limited Wi-Fi routes. Credentials go in
-the login form, never in URLs. The CLI uses the same HTTP Phone
-API and operation coordinator as the browser; it cannot bypass leases or binding.
+The internal Phone API has no listener: the MCP entries and the box page call it in-process,
+each with its own session, so every door shares the leases, the journal and Pause. The box
+page (port 80) is the owner surface; the MCP entries (remote and LAN) are the only other doors.
 
 ## Device connection
 
@@ -83,8 +83,8 @@ The worker process (`openlolo-device`) owns one persistent session: it discovers
 bound phone, checks trust, Developer Mode and the developer disk image (mounting it when
 allowed), opens the tunnel without root, keeps the service clients open, watches for loss,
 and reconnects after a phone reboot, a Wi-Fi interruption, or a USB unplug/replug.
-`/api/status` reports the connection state and the reason when the owner must act.
-Switch modes with `POST /api/setup/transport` or the UI; the phone stays bound.
+`openlolo_status` (and the box page) reports the connection state and the reason when the
+owner must act. Switching modes is an owner action on the box page; the phone stays bound.
 
 ## Remote MCP for AI clients
 
@@ -96,6 +96,14 @@ scan the QR code on the client's consent page) for a bounded duration; approval 
 screen and input together, and control expires with the chosen window. Claude Code and
 Claude Desktop connect the same way: add the remote URL as an HTTP MCP server and approve
 the request when the browser opens.
+
+## Scripts
+
+`packages/sdk-python` (`openlolo-sdk`) scripts the phone from Python:
+`Phone("openlolo-ab12").open_app("com.apple.mobilenotes").type("hello").home()`. The first run
+asks the owner to approve it on the box page (OAuth device authorization); the grant is cached
+and refreshed until the owner removes it. `scripts/bench.py` (step list) and
+`scripts/endurance.py` (bounded tap/capture run with latency percentiles) are built on it.
 
 ## Box page
 

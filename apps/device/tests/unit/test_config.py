@@ -31,7 +31,7 @@ def test_public_url_rejects_non_origins(value):
 
 def test_mcp_port_must_not_collide():
     with pytest.raises(ValueError):
-        Config(backend="simulated", public_url="https://pi.tailnet.ts.net", mcp_port=8080)
+        Config(backend="simulated", public_url="https://pi.tailnet.ts.net", mcp_port=8090, portal_port=8090)
     with pytest.raises(ValueError):
         Config(backend="simulated", host="0.0.0.0", public_url="https://pi.tailnet.ts.net")
 
@@ -46,9 +46,12 @@ def test_legacy_keys_and_legacy_binding_are_ignored(tmp_path):
             "cleanup_deadline": 4,
             "bluetooth_adapter": "hci0",  # Removed Bluetooth channel (and its label-code gate).
             "setup_requires_usb": False,
+            "calibration_host": "192.168.4.47",  # Retired Safari calibration listener.
+            "calibration_port": 8081,
         }
     )
     assert not hasattr(config, "media_python") and not hasattr(config, "bluetooth_adapter")
+    assert not hasattr(config, "calibration_host")
     (tmp_path / "binding.json").write_text(
         '{"usb_identity":"old-phone","owner_confirmed":true,"portrait_locked":true}'
     )
@@ -99,8 +102,7 @@ def test_lan_defaults_when_disabled_and_port_443():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"lan_url": "https://openlolo-ab12.local:8080"},  # control port
-        {"lan_url": "https://openlolo-ab12.local:8081"},  # calibration port
+        {"lan_url": "https://openlolo-ab12.local:8080", "portal_port": 8080},  # box page port
         {"lan_url": "https://openlolo-ab12.local:8090", "public_url": "https://pi.tailnet.ts.net"},
         {"lan_url": "https://openlolo-ab12.local:8443", "lan_bind": "8.8.8.8"},
         {"lan_url": "https://openlolo-ab12.local:8443", "lan_extra_hosts": ["192.168.4.25:8443"]},

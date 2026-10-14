@@ -171,6 +171,10 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
 
     async def access(request: Request) -> dict:
         """Who may open the page from here, and why not."""
+        address = peer(request)
+        if runtime.config.backend == "simulated" and address is not None and address.is_loopback:
+            # The simulator has no cable or paired phone; the developer's own machine stands in.
+            return {"cable": True, "setup_ap": False, "paired_phone": True, "allowed": True}
         cable = await runtime.phone.cable_present()
         setup_ap = on_setup_ap(request)
         paired_phone = False if setup_ap else await on_paired_phone(request)

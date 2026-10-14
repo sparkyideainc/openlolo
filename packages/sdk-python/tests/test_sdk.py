@@ -154,6 +154,7 @@ def test_addresses():
         with pytest.raises(ValueError):
             base_url(bad)
     assert is_lan("openlolo-ab12.local") and is_lan("192.168.1.4") and is_lan("127.0.0.1")
+    assert is_lan("localhost")  # The simulator's LAN entry.
     assert not is_lan("pi.tailnet.ts.net") and not is_lan("8.8.8.8")
 
 

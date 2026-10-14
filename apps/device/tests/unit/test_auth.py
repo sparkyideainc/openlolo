@@ -1,9 +1,10 @@
+import time
+
 import pytest
 from support import raises_code
 
 from openlolo.adapters.storage.sqlite import Journal
-from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.auth import Auth
+from openlolo.interfaces.auth import SESSION_SECONDS, Auth
 
 
 @pytest.fixture
@@ -13,35 +14,24 @@ def auth(tmp_path):
     journal.close()
 
 
-def test_single_use_credential_is_consumed_once(auth):
-    token = auth.issue()
-    auth.verify(token)
-    with raises_code("INVALID_CREDENTIAL"):
-        auth.verify(token)
-    for bad in ("", "x" * 257, None, 12):
-        with raises_code("INVALID_CREDENTIAL"):
-            auth.verify(bad)  # type: ignore[arg-type]
-    assert len(auth.failures) == 5
-
-
-def test_ten_failures_lock_the_box_for_a_minute(auth):
-    for _ in range(10):
-        with raises_code("INVALID_CREDENTIAL"):
-            auth.verify("not-a-credential")
-    with pytest.raises(OpenLoloError) as info:
-        auth.verify(auth.issue())  # Correct, but the box is locked out.
-    assert info.value.code == "LOGIN_RATE_LIMIT" and info.value.status == 429
-
-
-def test_login_opens_a_session_and_logout_ends_it(auth):
-    session = auth.login(auth.issue())
+def test_open_session_and_logout(auth):
+    session = auth.open_session()
     owner = auth.owner(session)
     assert owner == auth.owner(session) and len(owner) == 64
+    assert auth.owner(auth.open_session()) != owner  # Every bridge is its own owner.
     auth.logout(session)
     with raises_code("LOGIN_REQUIRED"):
         auth.owner(session)
     with raises_code("LOGIN_REQUIRED"):
         auth.owner("")
+
+
+def test_lapsed_session_is_refused(auth, monkeypatch):
+    session = auth.open_session()
+    later = time.time() + SESSION_SECONDS + 1
+    monkeypatch.setattr("openlolo.interfaces.auth.time.time", lambda: later)
+    with raises_code("LOGIN_REQUIRED"):
+        auth.owner(session)
 
 
 def test_old_app_keys_and_label_code_are_dropped_on_open(tmp_path):
@@ -50,11 +40,12 @@ def test_old_app_keys_and_label_code_are_dropped_on_open(tmp_path):
     with journal.db:
         journal.db.execute("CREATE TABLE IF NOT EXISTS app_keys (app_id TEXT PRIMARY KEY)")
         journal.db.execute("INSERT INTO secrets VALUES ('setup_code', 'ABCDEFGHJKMN')")
+        journal.db.execute("CREATE TABLE IF NOT EXISTS logins (digest TEXT PRIMARY KEY, expires REAL)")
     journal.close()
     reopened = Journal(path)
     try:
         tables = {r[0] for r in reopened.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert "app_keys" not in tables
+        assert "app_keys" not in tables and "logins" not in tables
         assert reopened.db.execute("SELECT COUNT(*) FROM secrets WHERE name='setup_code'").fetchone()[0] == 0
     finally:
         reopened.close()

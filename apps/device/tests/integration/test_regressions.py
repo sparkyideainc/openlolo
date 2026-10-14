@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from openlolo.application.shortcuts import validate_shortcut
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Action, CaptureOptions
 
@@ -69,7 +70,8 @@ async def test_shortcuts_disabled_until_device_validation(runtime, lease):
     assert not runtime.phone.capabilities()["shortcuts"]
     with pytest.raises(OpenLoloError):
         runtime.phone.shortcut(str(uuid4()), "owner", lease, "home")
-    runtime.calibration.validate_shortcut(
+    validate_shortcut(
+        runtime.journal,
         runtime.phone.binding(),
         {
             "name": "home",
