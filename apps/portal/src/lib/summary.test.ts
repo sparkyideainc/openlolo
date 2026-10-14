@@ -42,6 +42,12 @@ describe("boxSummary", () => {
 			context,
 		);
 		expect(dev.action).toEqual({ kind: "setup", step: "developer_mode" });
+		const locked = boxSummary(
+			{ connection: { state: "phone_locked", transport: "wifi" } },
+			context,
+		);
+		expect(locked.headline).toBe("iPhone is locked");
+		expect(locked.action).toBeUndefined();
 		const lost = boxSummary(
 			{ connection: { state: "disconnected", message: "Cable out" } },
 			context,

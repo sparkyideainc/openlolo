@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import time
+import types
 
 import pytest
 from support import raises_code
@@ -25,12 +26,14 @@ class FakeTransport:
         self.is_present = present
         self.error = error
         self.opened = 0
+        self.attempts = 0
         self.verifications = []
 
     async def present(self, udid):
         return self.is_present
 
     async def open(self, udid):
+        self.attempts += 1
         if self.error:
             raise self.error
         self.opened += 1
@@ -76,6 +79,8 @@ class FakeSession:
         self.events = []
         self.hid_active = False
         self.closed = False
+        self.probes = 0
+        self.idle_checks = 0
         FakeSession.instances.append(self)
 
     async def prepare(self, auto_mount, on_state):
@@ -90,10 +95,11 @@ class FakeSession:
         pass
 
     async def probe(self):
-        pass
+        self.probes += 1
 
     async def idle_check(self):
-        pass
+        self.idle_checks += 1
+        self.hid_active = False
 
     async def screenshot(self, binding, options, deadline):
         metadata = FrameMetadata(
@@ -197,9 +203,16 @@ class FakeWifi(FakeTransport):
         self.in_flight = 0
         self.max_in_flight = 0
         self.forgotten = 0
+        self.last = {}
 
     def paired(self, udid):
         return self.is_paired
+
+    def matches(self, udid, properties):
+        return properties.get("authTag") == "ok"
+
+    def remember(self, udid, host, port):
+        self.last[udid] = (host, port)
 
     def forget(self, udid=None):
         self.forgotten += 1
@@ -236,6 +249,7 @@ def manager(tmp_path, clock):
         reconnect_min_seconds=0.01,
         reconnect_max_seconds=0.05,
         recover_wait_seconds=1,
+        wifi_announcements=False,
     )
     transports = {"usb": FakeUsb(), "wifi": FakeWifi(clock)}
     return CoreDeviceManager(config, transports, FakeTunnel, FakeSession, clock=clock)
@@ -677,5 +691,176 @@ async def test_owner_state_waits_for_an_event_not_a_timer(manager):
         usb.error = None
         await manager.find()  # Top button after tapping Trust.
         await wait_state(manager, State.CONNECTED)
+    finally:
+        await manager.close()
+
+
+# ----- probes, safety-net windows, advertisements, locked phone ---------------------------
+
+
+class LockedError(Exception):
+    """pymobiledevice3's refusal from a phone locked for more than ~30 s."""
+
+
+def rebuild(manager, clock, **config):
+    """The same fakes behind a manager with changed config or an announcement source."""
+    announcements = config.pop("announcements", None)
+    network_ok = config.pop("network_ok", lambda: True)
+    return CoreDeviceManager(
+        manager.config.model_copy(update=config),
+        manager.transports,
+        FakeTunnel,
+        FakeSession,
+        clock=clock,
+        announcements=announcements,
+        network_ok=network_ok,
+    )
+
+
+async def test_usb_is_never_probed_and_wifi_only_after_an_idle_interval(manager):
+    await manager.start()
+    try:
+        await manager.connect(BINDING)
+        await wait_state(manager, State.CONNECTED)
+        await asyncio.sleep(1.3)  # probe_interval is 1 s.
+        assert FakeSession.instances[-1].probes == 0
+    finally:
+        await manager.close()
+    wifi = manager.transports["wifi"]
+    wifi.is_present = True
+    await manager.start()
+    try:
+        await manager.connect(BINDING.model_copy(update={"transport": "wifi"}))
+        await wait_state(manager, State.CONNECTED)
+        session = FakeSession.instances[-1]
+        for _ in range(4):  # A request every 0.4 s keeps the probe away.
+            await asyncio.sleep(0.4)
+            await manager.list_apps(BINDING.model_copy(update={"transport": "wifi"}))
+        assert session.probes == 0
+        await asyncio.sleep(1.3)
+        assert session.probes == 1
+    finally:
+        await manager.close()
+
+
+async def test_input_session_closes_on_its_own_timer_without_a_probe(manager):
+    manager.config = manager.config.model_copy(update={"hid_idle_seconds": 1})
+    await manager.start()
+    try:
+        await manager.connect(BINDING)
+        await wait_state(manager, State.CONNECTED)
+        session = FakeSession.instances[-1]
+        await asyncio.sleep(0.2)
+        assert session.idle_checks == 0  # Nothing open: no timer.
+        generation = await manager.begin(BINDING)
+        manager.gate.release()
+        assert generation and session.hid_active
+        async with asyncio.timeout(3):
+            while session.hid_active:
+                await asyncio.sleep(0.01)
+        assert session.idle_checks == 1 and session.probes == 0 and not manager.connection.hid_active
+    finally:
+        await manager.close()
+
+
+async def test_safety_net_windows_back_off_and_pause_without_a_network(manager, clock):
+    online = [True]
+    manager = rebuild(manager, clock, search_backoff_seconds=[0.05, 0.1, 0.2], network_ok=lambda: online[0])
+    await boot_without_phone(manager)
+    try:
+        assert manager.windows == 1
+        await asyncio.sleep(0.5)  # Windows due at +0.05, +0.15, +0.35 s.
+        assert 3 <= manager.windows <= 5 and manager.backoff >= 2
+        online[0] = False  # Setup mode: the radio is an access point without a default route.
+        await settle(manager)
+        windows = manager.windows
+        await asyncio.sleep(0.5)
+        assert manager.windows == windows
+        online[0] = True
+        await manager.find()  # The button restarts the sequence.
+        assert manager.backoff == 0
+        manager.transports["wifi"].is_present = True
+        async with asyncio.timeout(2):
+            while manager.connection.state != State.CONNECTED.value:
+                await asyncio.sleep(0.01)
+        windows = manager.windows
+        await asyncio.sleep(0.4)
+        assert manager.windows == windows  # Connected: nothing searches.
+    finally:
+        await manager.close()
+
+
+async def test_the_bound_phone_advertising_opens_one_window(manager, clock):
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def source():
+        while True:
+            yield await queue.get()
+
+    def ad(tag="ok"):
+        return types.SimpleNamespace(address="192.168.4.71", port=49152, properties={"authTag": tag})
+
+    manager = rebuild(manager, clock, announcements=source)
+    await boot_without_phone(manager)
+    try:
+        wifi = manager.transports["wifi"]
+        windows = manager.windows
+        queue.put_nowait(ad("stranger"))
+        await settle(manager)
+        assert manager.windows == windows and wifi.last == {}
+        wifi.is_present = True  # The owner unlocks the phone; it advertises at once.
+        queue.put_nowait(ad())
+        await wait_transport(manager, "wifi")
+        assert manager.windows == windows + 1 and manager.announced == 1
+        assert wifi.last == {BINDING.udid: ("192.168.4.71", 49152)}
+        queue.put_nowait(ad())  # Connected: the address is refreshed, nothing else happens.
+        await settle(manager)
+        assert manager.windows == windows + 1 and manager.announced == 1
+    finally:
+        await manager.close()
+
+
+async def test_a_locked_phone_is_tried_once_and_requests_fail_fast(manager, clock):
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    usb.is_present = False
+    wifi.is_present = True
+    wifi.error = LockedError("The device has not been unlocked recently")
+    await manager.start()
+    try:
+        await manager.connect(AUTO)
+        await wait_state(manager, State.PHONE_LOCKED)
+        await settle(manager, 100)
+        assert wifi.attempts == 1  # No immediate retry on the other path: it is locked there too.
+        assert manager.status()["connection"]["message"].startswith("Unlock the phone")
+        with raises_code("PHONE_LOCKED"):
+            await manager.capture(AUTO, CaptureOptions())
+        assert wifi.attempts == 2  # The request tried once more, in case it was just unlocked.
+        wifi.error = None
+        await manager.find()  # Unlocked; the top button (or its advertisement) connects.
+        await wait_transport(manager, "wifi")
+    finally:
+        await manager.close()
+
+
+async def test_boot_search_waits_for_the_network_but_not_for_the_cable(manager, clock):
+    online = [False]
+    usb = manager.transports["usb"]
+    usb.is_present = False
+    manager = rebuild(manager, clock, network_ok=lambda: online[0])
+    await manager.start()
+    try:
+        await manager.connect(AUTO)
+        await settle(manager)
+        assert manager.windows == 0  # Wi-Fi has not joined yet: nothing to search on.
+        online[0] = True
+        async with asyncio.timeout(3):
+            while manager.windows == 0:
+                await asyncio.sleep(0.01)
+        await manager.disconnect()
+        online[0] = False
+        usb.is_present = True  # On the cable: connect at once, network or not.
+        await manager.connect(AUTO)
+        await wait_transport(manager, "usb")
+        assert manager.windows == 1
     finally:
         await manager.close()

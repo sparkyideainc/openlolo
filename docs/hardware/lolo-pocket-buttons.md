@@ -19,19 +19,23 @@
 
 ## Phone search
 
-There is no background search loop. Each trigger starts at most one 10 s Wi-Fi discovery window.
+The phone is found through events. Each event opens at most one 10 s Wi-Fi search window; a window that is already open is joined, not extended. Wi-Fi tries the phone's last known address first, then Bonjour, re-asking once a second.
 
 | Trigger | Action |
 |---|---|
-| Boot | Check the cable at once, plus one 10 s Wi-Fi search. |
-| Cable plugged in | Automatic pair and connect, triggered by the usbmuxd attach event. |
-| Cable unplugged | 10 s Wi-Fi search, then stop. |
-| Wi-Fi link drops | 10 s Wi-Fi search, then stop. |
-| Top-button press | 10 s Wi-Fi search. |
-| AI/MCP request while disconnected | One 10 s search. Phone found: the request proceeds. Not found: `DEVICE_DISCONNECTED`, "Press the top button or plug in the phone". |
-| Otherwise | Idle; no polling. |
+| Boot | Check the cable at once. Once the box is on a network (Wi-Fi may join after the worker starts), one Wi-Fi search, starting with the address saved from the last session. |
+| Cable plugged in | Connect at once, triggered by the usbmuxd attach event. No search. |
+| Cable unplugged | One Wi-Fi search. |
+| Wi-Fi session lost | One Wi-Fi search. |
+| Phone advertises on the LAN (avahi) | One Wi-Fi search, at most one per 15 s. An unlocked iPhone advertises at once, so unlocking it reconnects the box. |
+| Top-button press | One Wi-Fi search. |
+| AI/MCP request while disconnected | One search. Found: the request proceeds. Not found: `DEVICE_DISCONNECTED`, "Press the top button or plug in the phone". Locked: `PHONE_LOCKED`. |
+| Still disconnected | Safety-net searches 1, 2, then every 5 min, only with a bound phone off the cable and the box on a network (paused in setup mode). Any event above restarts the sequence. |
+| Connected | No search. USB is never probed; Wi-Fi is checked only after 30 s without a request. |
 
 The 10 s bounds discovery only. A connection attempt that starts inside the window may finish after it.
+
+A locked iPhone refuses new Wi-Fi sessions (about 30 s after locking) and drops an idle one within a few minutes. The box shows "Unlock the phone" and waits for the phone to advertise again. USB is not affected.
 
 ## Battery
 
