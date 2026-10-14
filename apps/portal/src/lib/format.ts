@@ -172,6 +172,7 @@ export function clientSubtitle(client: Client, now = new Date()): string {
 }
 
 export function consentFrom(consent: Consent): string {
+	if (consent.kind === "device") return "A script or app on a computer";
 	const hosts = (consent.redirect_hosts ?? []).filter((h) => h !== "");
 	return hosts.length > 0 ? hosts.join(", ") : text(consent.issuer, "Unknown");
 }

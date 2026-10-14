@@ -54,6 +54,9 @@ TIMING_LOG = logging.getLogger("openlolo.mcp.entry")
 CONSENT_PATH = "/oauth/consent"
 ACCESS_SECONDS = 15 * 60
 REFRESH_SECONDS = 30 * 24 * 3600
+# A rotated refresh token is accepted once more within this window, so a reply lost on the way
+# to the client does not end its grant; any other reuse still revokes the whole family.
+REFRESH_GRACE_SECONDS = 60
 CODE_SECONDS = 5 * 60
 PENDING_SECONDS = 10 * 60
 PENDING_CLIENTS = 20
@@ -304,6 +307,9 @@ class OAuthProvider:
                     "redirect_hosts": sorted({str(u.host or "") for u in client.redirect_uris or []}),
                     "scopes": value["scopes"],
                     "issuer": value.get("issuer", self.legacy_issuer),
+                    # A script using the device grant; its user code is shown on both sides.
+                    "kind": "device" if value.get("device") else "oauth",
+                    "user_code": value.get("user_code"),
                     "expires_in": max(0, int(row["expires"] - now)),
                     "created": row["expires"] - PENDING_SECONDS,
                 }
@@ -319,6 +325,8 @@ class OAuthProvider:
         if pending is None:
             raise OpenLoloError("CONSENT_EXPIRED", "Start the connection again from the client", 400)
         client, value = pending
+        if value.get("device"):
+            return self._decide_device(handle, client, value, granted, window)
         params = AuthorizationParams.model_validate(value["params"])
         issuer = value.get("issuer", self.legacy_issuer)
         with self.db:
@@ -352,6 +360,17 @@ class OAuthProvider:
         redirect = construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
         self.record_decision(handle, client.client_id, redirect)
         return redirect
+
+    def _decide_device(self, handle: str, client, value: dict, granted: list[str] | None, window: int) -> str:
+        """A device request has no redirect: its script collects the decision by polling."""
+        from openlolo.interfaces.device_grant import record_decision
+
+        with self.db:
+            self.db.execute("DELETE FROM oauth_grants WHERE digest=?", (handle,))
+            if granted:
+                self.db.execute("UPDATE oauth_clients SET approved=1 WHERE client_id=?", (client.client_id,))
+        record_decision(self, handle, client.client_id, value, granted or [], window)
+        return ""
 
     # -- owner approval from the box page: decisions the consent page polls for ---------------
 
@@ -437,17 +456,29 @@ class OAuthProvider:
             refresh_token=refresh,
         )
 
+    @staticmethod
+    def _in_grace(row, value: dict, client_id: str, now: float) -> bool:
+        """A retired refresh token presented again within REFRESH_GRACE_SECONDS of its rotation,
+        once, by its own client: the reply carrying its successor was most likely lost."""
+        retired = value.get("retired")
+        return (
+            isinstance(retired, dict)
+            and row["client_id"] == client_id
+            and not retired.get("grace_used")
+            and now - float(retired.get("at", 0)) <= REFRESH_GRACE_SECONDS
+        )
+
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str):
         row = self._grant("refresh", refresh_token)
         if row is None:
             return None
-        if row["revoked"]:
+        value = json.loads(row["value"])
+        if row["revoked"] and not self._in_grace(row, value, client.client_id, time.time()):
             # A rotated refresh token presented again means it leaked: end the whole family.
             self.revoke_family(row["family"])
             return None
         if row["client_id"] != client.client_id:
             return None
-        value = json.loads(row["value"])
         return RefreshToken(
             token=refresh_token,
             client_id=client.client_id,
@@ -460,20 +491,29 @@ class OAuthProvider:
         self, client: OAuthClientInformationFull, refresh_token: RefreshToken, scopes: list[str]
     ) -> OAuthToken:
         row = self._grant("refresh", refresh_token.token)
-        if row is None or row["revoked"] or row["client_id"] != client.client_id:
+        if row is None or row["client_id"] != client.client_id:
             raise TokenError("invalid_grant")
         now = time.time()
         value = json.loads(row["value"])
+        retry = bool(row["revoked"])
+        if retry and not self._in_grace(row, value, client.client_id, now):
+            self.revoke_family(row["family"])
+            raise TokenError("invalid_grant")
         if value["family_expires"] <= now:
             self.revoke_family(row["family"])
             raise TokenError("invalid_grant", "grant expired; the owner must approve again")
-        with self.db:
-            self.db.execute(
-                "UPDATE oauth_grants SET revoked=1 WHERE digest=?", (digest(refresh_token.token),)
-            )
+        if retry:
+            # Lost reply: the successor pair was never received. Retire it and rotate again from
+            # this token, once; the grace clock stays at the first rotation, so it cannot chain.
+            retired = value["retired"]
+            with self.db:
+                self.db.execute(
+                    "UPDATE oauth_grants SET revoked=1 WHERE digest IN (?, ?)",
+                    (retired["refresh"], retired["access"]),
+                )
         sliding, never = value["sliding"], value["never"]
         family_expires = now + REFRESH_SECONDS if sliding else value["family_expires"]
-        return self._issue(
+        issued = self._issue(
             client.client_id,
             scopes or phone_scopes(value["scopes"]),
             row["family"],
@@ -482,6 +522,19 @@ class OAuthProvider:
             sliding,
             never,
         )
+        assert issued.refresh_token is not None
+        retired = {
+            "at": value["retired"]["at"] if retry else now,
+            "refresh": digest(issued.refresh_token),
+            "access": digest(issued.access_token),
+            "grace_used": retry,
+        }
+        with self.db:
+            self.db.execute(
+                "UPDATE oauth_grants SET revoked=1, value=? WHERE digest=?",
+                (json.dumps({**value, "retired": retired}), digest(refresh_token.token)),
+            )
+        return issued
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         row = self._grant("access", token)
@@ -906,6 +959,8 @@ def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: lis
     )
     server.custom_route(CONSENT_PATH, methods=["GET", "POST"])(consent_routes(provider, origin, runtime))
     server.custom_route(STATUS_PATH, methods=["GET"])(status_route(provider))
+    from openlolo.interfaces.device_grant import DeviceGrant, DeviceGrantRoutes
+
     app = server.streamable_http_app(
         streamable_http_path=MCP_PATH,
         json_response=True,
@@ -915,4 +970,5 @@ def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: lis
             enable_dns_rebinding_protection=True, allowed_hosts=sorted(hosts), allowed_origins=[origin]
         ),
     )
+    app = DeviceGrantRoutes(app, DeviceGrant(provider, config.setup_name))
     return EntrySecurity(app, hosts, gateway, provider)

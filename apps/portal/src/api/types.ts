@@ -78,6 +78,9 @@ export interface Consent {
 	redirect_hosts?: string[];
 	scopes?: string[];
 	issuer?: string;
+	// "device": a script using the device grant; it prints the same user_code.
+	kind?: "oauth" | "device" | string;
+	user_code?: string | null;
 	expires_in?: number;
 	created?: number;
 }

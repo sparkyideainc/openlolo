@@ -66,7 +66,7 @@ function Access() {
 							key={consent.handle}
 							minHeight={56}
 							title={clientName(consent)}
-							subtitle={`Asked ${relativeText(consent.created).toLowerCase()} · ${expiresText(consent.expires_in).toLowerCase()}`}
+							subtitle={`${consent.user_code ? `Code ${consent.user_code} · ` : ""}Asked ${relativeText(consent.created).toLowerCase()} · ${expiresText(consent.expires_in).toLowerCase()}`}
 							accessory="chevron"
 							leading={<Avatar name={clientName(consent)} />}
 							onClick={() => setRequest(consent.handle)}

@@ -87,6 +87,9 @@ describe("format", () => {
 			"https://box",
 		);
 		expect(consentFrom({ handle: "h" })).toBe("Unknown");
+		expect(consentFrom({ handle: "h", kind: "device" })).toBe(
+			"A script or app on a computer",
+		);
 	});
 });
 

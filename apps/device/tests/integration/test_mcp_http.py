@@ -3,6 +3,7 @@ import base64
 import hashlib
 import secrets
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from support import narrow, owner_approve
 
 from openlolo.bootstrap import Runtime
 from openlolo.config import Config
+from openlolo.interfaces import mcp_http
 from openlolo.interfaces.mcp_http import CONSENT_PATH, STATUS_PATH, TIMING_LOG, create_gateway_app
 
 PUBLIC = "https://pi.tailnet.ts.net"
@@ -234,18 +236,25 @@ async def test_control_scope_flow_rotation_reuse_and_revocation(remote, caplog):
         assert refreshed.status_code == 200, refreshed.text
         fresh = refreshed.json()
         assert fresh["access_token"] != issued["access_token"]
-        # Old access token stays valid until it expires; rotated refresh token is dead.
-        replay = await c.post(
-            "/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": issued["refresh_token"],
-                "client_id": client_id,
-            },
-        )
+
+        # A lost reply: the retired token comes back within the grace period and rotates again,
+        # once. The pair the client never saw is retired.
+        def refresh(token):
+            return c.post(
+                "/token",
+                data={"grant_type": "refresh_token", "refresh_token": token, "client_id": client_id},
+            )
+
+        retried = await refresh(issued["refresh_token"])
+        assert retried.status_code == 200, retried.text
+        second = retried.json()
+        assert second["refresh_token"] not in {fresh["refresh_token"], issued["refresh_token"]}
+        assert await app.provider.load_access_token(fresh["access_token"]) is None
+        assert await app.provider.load_access_token(second["access_token"]) is not None
+        # A second reuse is theft, not a lost reply: the whole family ends.
+        replay = await refresh(issued["refresh_token"])
         assert replay.status_code == 400 and replay.json()["error"] == "invalid_grant"
-        # Reuse revoked the whole family, including the fresh access token.
-        client, http = await connect(app, fresh["access_token"])
+        client, http = await connect(app, second["access_token"])
         async with http:
             with pytest.raises(Exception):
                 async with client:
@@ -513,3 +522,40 @@ async def test_box_page_revoke_ends_access_and_refresh_at_once(remote, tmp_path)
             "invalid_grant",
             "invalid_client",
         }
+
+
+async def test_refresh_grace_period_is_bounded_and_cannot_chain(remote, monkeypatch):
+    runtime, app = remote
+    async with web(app) as c:
+        client_id = await register(c)
+
+        async def grant():
+            code, verifier = await authorize(c, runtime, client_id, window="never")
+            return await tokens(c, client_id, code, verifier)
+
+        def refresh(token):
+            return c.post(
+                "/token",
+                data={"grant_type": "refresh_token", "refresh_token": token, "client_id": client_id},
+            )
+
+        now = [time.time()]
+        monkeypatch.setattr(mcp_http, "time", SimpleNamespace(time=lambda: now[0], monotonic=time.monotonic))
+
+        # Reuse after the grace period revokes the family, even on a never-ending grant.
+        first = await grant()
+        assert (await refresh(first["refresh_token"])).status_code == 200
+        now[0] += mcp_http.REFRESH_GRACE_SECONDS + 1
+        late = await refresh(first["refresh_token"])
+        assert late.status_code == 400 and late.json()["error"] == "invalid_grant"
+
+        # Chaining: the grace clock stays at the first rotation, and only one retry is allowed.
+        a = await grant()
+        b = (await refresh(a["refresh_token"])).json()  # Reply "lost".
+        now[0] += 40
+        c_pair = await refresh(a["refresh_token"])  # Grace retry at +40 s.
+        assert c_pair.status_code == 200
+        now[0] += 15  # +55 s: still inside the first window, but the retry was spent.
+        assert (await refresh(a["refresh_token"])).status_code == 400
+        assert await app.provider.load_access_token(c_pair.json()["access_token"]) is None  # Family ended.
+        assert await app.provider.load_access_token(b["access_token"]) is None

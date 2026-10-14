@@ -1096,6 +1096,7 @@ mcp = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "openlolo-sdk" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1118,9 +1119,28 @@ provides-extras = ["mcp", "device"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "openlolo-sdk", editable = "../../packages/sdk-python" },
     { name = "pre-commit", specifier = ">=4,<5" },
     { name = "pytest", specifier = ">=8,<10" },
     { name = "pytest-asyncio", specifier = ">=1,<2" },
+    { name = "ruff", specifier = ">=0.12,<1" },
+    { name = "ty", specifier = ">=0.0.84,<1" },
+]
+
+[[package]]
+name = "openlolo-sdk"
+version = "0.1.0"
+source = { editable = "../../packages/sdk-python" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28,<1" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8,<10" },
     { name = "ruff", specifier = ">=0.12,<1" },
     { name = "ty", specifier = ">=0.0.84,<1" },
 ]

@@ -102,6 +102,9 @@ export function RequestDialog({
 					</div>
 					<Section>
 						<LabeledRow label="From" value={consentFrom(consent)} />
+						{consent.user_code ? (
+							<LabeledRow label="Code" value={consent.user_code} />
+						) : null}
 						<LabeledRow label="Can" value={scopeText(scopes)} />
 						<LabeledRow
 							label="Request expires"
