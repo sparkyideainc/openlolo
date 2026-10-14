@@ -90,9 +90,7 @@ async def serve(config):
         extras.append(
             SecondaryServer(
                 uvicorn.Config(
-                    create_gateway_app(
-                        runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:], app_routes=True
-                    ),
+                    create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:]),
                     host=config.lan_bind,
                     port=config.lan_port,
                     ssl_certfile=str(cert),

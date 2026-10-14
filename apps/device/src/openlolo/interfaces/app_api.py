@@ -1,8 +1,7 @@
 """Owner JSON routes (``/app/*``, ADR 0005 contract).
 
-The routes are served two ways from one table: on the box page (``setup_portal`` runs them
-behind its own session as the page's identity, ADR 0012) and on the LAN OAuth/MCP gateway
-(bearer-gated by the MCP SDK's middleware) while ``lan_url`` is configured. Phone operations
+The routes are served on the box page only: ``setup_portal`` runs them behind its own session
+as the page's identity (ADR 0012). Phone operations
 go through the same per-client bridge the MCP tools use, so leases, journaling, pause and
 revocation apply identically whichever way a request arrived.
 """
@@ -192,9 +191,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         if data.get("decision") != "allow":
             provider.decide_handle(handle, None, 0)
             return {"decided": "deny", "scopes": []}
-        granted, seconds = grant_from_choice(
-            value["scopes"], data.get("admin") is True, str(data.get("window", ""))
-        )
+        granted, seconds = grant_from_choice(value["scopes"], str(data.get("window", "")))
         provider.decide_handle(handle, granted, seconds)
         return {"decided": "allow", "scopes": granted, "window": seconds}
 
@@ -299,12 +296,6 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         return await export(runtime)
 
     return routes
-
-
-def install_app_routes(server, runtime, gateway, provider) -> None:
-    """Mount the app routes on the LAN gateway (ADR 0005)."""
-    for path, methods, handler in app_routes(runtime, gateway, provider, entry="lan"):
-        server.custom_route(path, methods=methods)(handler)
 
 
 def redact(text: str) -> str:

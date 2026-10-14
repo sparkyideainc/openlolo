@@ -1,21 +1,22 @@
-"""Owner routes on the LAN entry: admin consent window, scopes, and every /app/* route."""
+"""Owner routes (/app/*) on the box page, and how the owner decides MCP-client requests there."""
 
 import asyncio
 import html
+import json
 import re
 import time
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from support import (
-    APP_CALLBACK,
     CONSENT_PATH,
     LAN,
-    LAN_CERT,
     PUBLIC,
-    app_token,
+    box_page,
     lan_config,
+    lan_token,
     owner_approve,
+    portal_build,
     register,
     running,
     start_authorization,
@@ -25,7 +26,6 @@ from support import (
 
 from openlolo.application import provisioning as provisioning_module
 from openlolo.bootstrap import Runtime
-from openlolo.interfaces import tls
 from openlolo.interfaces.auth import digest
 from openlolo.interfaces.mcp_http import (
     ADMIN_CALLS_PER_MINUTE,
@@ -34,19 +34,19 @@ from openlolo.interfaces.mcp_http import (
     STATUS_PATH,
     create_gateway_app,
 )
+from openlolo.interfaces.mcp_server import ALL_SCOPES
+from openlolo.interfaces.setup_portal import PORTAL_IDENTITY, create_setup_portal
 
-ADMIN = "phone:read phone:control owner:admin"
 PUBLIC_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
+LAPTOP = ("192.168.1.20", 50000)
 
 
 @pytest.fixture
-async def lan(tmp_path):
+async def box(tmp_path):
     config = lan_config(tmp_path)
     runtime = Runtime(config)
     await runtime.start()
-    app = create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:], app_routes=True)
-    async with running(app):
-        yield runtime, app
+    yield runtime, create_setup_portal(runtime, web=portal_build(tmp_path))
     await runtime.close()
 
 
@@ -77,221 +77,189 @@ def refresh_window(provider, client_id):
     return row["active_until"]["refresh"] - time.time()
 
 
-async def test_admin_registration_consent_and_admin_window(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
+async def test_no_client_can_be_granted_owner_admin(box):
+    runtime, _ = box
+    lan = create_gateway_app(runtime, LAN, allowed_hosts=runtime.config.lan_hosts[1:])
+    async with running(lan), web(lan, LAN) as c:
+        meta = (await c.get("/.well-known/oauth-authorization-server")).json()
+        assert "owner:admin" not in meta.get("scopes_supported", [])
+        refused = await register(c, scope="phone:read phone:control owner:admin")
+        assert refused.status_code == 400 and refused.json()["error"] == "invalid_client_metadata"
         registered = await register(c)
         assert registered.status_code == 201, registered.text
-        body = registered.json()
-        client_id = body["client_id"]
-        assert body["redirect_uris"] == [APP_CALLBACK] and body["scope"] == ADMIN
-        # owner:admin is not a scope the remote entry offers at all.
-        public = create_gateway_app(runtime)
-        async with web(public, PUBLIC) as pc:
-            refused = await register(pc)
-            assert refused.status_code == 400 and refused.json()["error"] == "invalid_client_metadata"
+        client_id = registered.json()["client_id"]
+        assert registered.json()["scope"] == "phone:read phone:control"
+        asked, request_id, _ = await start_authorization(c, LAN, client_id, scope="owner:admin")
+        assert request_id is None and "error=invalid_scope" in asked.headers["location"]
 
         started, request_id, verifier = await start_authorization(c, LAN, client_id)
         assert started.status_code == 302 and request_id
         page = await c.get(started.headers["location"])
-        assert page.status_code == 200 and SCOPE_WORDS["owner:admin"] in page.text
-
-        # JSON bodies are not a consent: the page is a same-origin form.
-        as_json = await c.post("/oauth/consent", json={"request": request_id, "decision": "deny"})
-        assert as_json.status_code == 403 and "Cross-site" in as_json.text
-        cross = await c.post(
-            CONSENT_PATH,
-            data={"request": request_id, "decision": "deny"},
-            headers={"Origin": "https://evil.test"},
-        )
-        assert cross.status_code == 403 and "Cross-site" in cross.text
-
-        redirect = owner_approve(runtime, request_id)
-        assert redirect.startswith(APP_CALLBACK + "?")
-        query = parse_qs(urlsplit(redirect).query)
-        assert query["state"] == ["abc"] and query["code"]
-        assert (await c.get(CONSENT_PATH, params={"request": request_id})).status_code == 400  # Consumed.
-
-        issued = await tokens(c, LAN, client_id, query["code"][0], verifier)
+        assert page.status_code == 200 and "name='admin'" not in page.text
+        code = parse_qs(urlsplit(owner_approve(runtime, request_id, window="24h")).query)["code"][0]
+        issued = await tokens(c, LAN, client_id, code, verifier)
         assert issued.status_code == 200, issued.text
-        assert issued.json()["scope"] == ADMIN and issued.json()["expires_in"] <= 900
-        [row] = [r for r in app.provider.list_clients() if r["client_id"] == client_id]
-        assert row["approved"] and row["scopes"] == ["owner:admin", "phone:control", "phone:read"]
-        assert abs(row["active_until"]["refresh"] - (time.time() + REFRESH_SECONDS)) < 60
-        assert row["issuer"] == LAN
-
-        # The token itself is not accepted through the query string and works at /mcp.
-        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
-        assert (await c.post("/mcp", json=ping, headers=bearer(issued.json()))).status_code == 200
-
-        # Without admin registration the admin checkbox is ignored; a window not offered is refused.
-        plain = await register(c, scope="phone:read phone:control", name="Reader")
-        plain_id = plain.json()["client_id"]
-        _, request_id, verifier = await start_authorization(c, LAN, plain_id)
-        code = parse_qs(urlsplit(owner_approve(runtime, request_id, admin=True, window="24h")).query)["code"][
-            0
-        ]
-        issued = (await tokens(c, LAN, plain_id, code, verifier)).json()
-        assert issued["scope"] == "phone:read phone:control"
-        [row] = [r for r in app.provider.list_clients() if r["client_id"] == plain_id]
+        assert issued.json()["scope"] == "phone:read phone:control"
+        [row] = [r for r in lan.provider.list_clients() if r["client_id"] == client_id]
+        assert row["approved"] and row["scopes"] == ["phone:control", "phone:read"]
         assert abs(row["active_until"]["refresh"] - (time.time() + 24 * 3600)) < 60
         assert row["renewed_while_used"] is False and row["never_expires"] is False
-        assert row["last_used"] is not None
+        # The LAN entry has no owner routes, whatever the token.
+        assert (await c.get("/app/status", headers=bearer(issued.json()))).status_code == 404
+
+        # A grant stored before this change keeps working without its admin scope.
+        for row in runtime.journal.db.execute(
+            "SELECT digest, value FROM oauth_grants WHERE kind IN ('access','refresh') AND client_id=?",
+            (client_id,),
+        ).fetchall():
+            value = json.loads(row["value"])
+            value["scopes"] = [*value["scopes"], "owner:admin"]
+            with runtime.journal.db:
+                runtime.journal.db.execute(
+                    "UPDATE oauth_grants SET value=? WHERE digest=?", (json.dumps(value), row["digest"])
+                )
+        loaded = await lan.provider.load_access_token(issued.json()["access_token"])
+        assert loaded is not None and loaded.scopes == ["phone:read", "phone:control"]
+        refreshed = await c.post(
+            "/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": issued.json()["refresh_token"],
+                "client_id": client_id,
+                "resource": LAN + "/mcp",
+            },
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        assert refreshed.json()["scope"] == "phone:read phone:control"
 
         # Cancel on the consent page returns the client an access_denied redirect.
-        _, request_id, _ = await start_authorization(c, LAN, plain_id)
+        _, request_id, _ = await start_authorization(c, LAN, client_id)
         denied = await c.post(
-            "/oauth/consent", data={"request": request_id, "decision": "deny"}, headers={"Origin": LAN}
+            CONSENT_PATH, data={"request": request_id, "decision": "deny"}, headers={"Origin": LAN}
         )
         assert denied.status_code == 302 and "error=access_denied" in denied.headers["location"]
 
 
-async def test_info_status_pause_operations_and_clients(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
-        anonymous = await c.get("/app/info")
-        assert anonymous.status_code == 200  # Discovery of the box needs no token.
-        client_id, issued = await app_token(c, runtime)
-        headers = bearer(issued)
-
-        info = (await c.get("/app/info", headers=headers)).json()
-        assert info["fingerprint"] == tls.fingerprint(LAN_CERT)
-        assert info["entry"] == "lan" and info["issuer"] == LAN and info["board"] == "test"
+async def test_info_status_pause_operations_and_clients(box):
+    runtime, portal = box
+    lan = create_gateway_app(runtime, LAN, allowed_hosts=runtime.config.lan_hosts[1:])
+    async with running(lan), web(lan, LAN) as lc, box_page(portal) as c:
+        info = (await c.get("/app/info")).json()
+        assert info["entry"] == "portal" and info["board"] == "test"
         assert info["setup_mode"] is False and info["features"] == {"network": True, "diagnostics": True}
-        assert info["scopes"] == ["phone:read", "phone:control", "owner:admin"]
+        assert info["scopes"] == ALL_SCOPES
 
-        status = await c.get("/app/status", headers=headers)
+        status = await c.get("/app/status")
         assert status.status_code == 200, status.text
         assert status.json()["setup_mode"] is False and "mcp" in status.json()
-        capabilities = await c.get("/app/capabilities", headers=headers)
-        assert capabilities.status_code == 200
+        assert status.json()["pending_consents"] == 0
+        assert (await c.get("/app/capabilities")).status_code == 200
 
-        paused = await c.post("/app/pause", json={}, headers=headers)
+        paused = await c.post("/app/pause", json={})
         assert paused.status_code == 200, paused.text
         assert paused.json()["state"] == "SUCCEEDED" and paused.json()["kind"] == "pause"
         pause_id = paused.json()["id"]
 
-        listed = await c.get("/app/operations", headers=headers)
+        listed = await c.get("/app/operations")
         assert listed.status_code == 200, listed.text
-        operations = listed.json()["operations"]
-        [pause] = [op for op in operations if op["id"] == pause_id]
-        assert pause["client"] == "Lolo App" and "owner" not in pause
-        page = await c.get("/app/operations", params={"limit": 1}, headers=headers)
+        [pause] = [op for op in listed.json()["operations"] if op["id"] == pause_id]
+        assert pause["client"] == PORTAL_IDENTITY and "owner" not in pause
+        page = await c.get("/app/operations", params={"limit": 1})
         assert len(page.json()["operations"]) == 1
-        single = await c.get(f"/app/operations/{pause_id}", headers=headers)
+        single = await c.get(f"/app/operations/{pause_id}")
         assert single.status_code == 200 and single.json()["state"] == "SUCCEEDED"
-        assert (await c.get("/app/operations/nope", headers=headers)).status_code == 404
+        assert (await c.get("/app/operations/nope")).status_code == 404
 
-        clients = (await c.get("/app/clients", headers=headers)).json()["clients"]
-        [me] = [row for row in clients if row["client_id"] == client_id]
-        assert me["self"] is True and me["client_name"] == "Lolo App"
-
-        assert status.json()["pending_consents"] == 0
-        assert (await c.post("/app/credential", json={}, headers=headers)).status_code == 404  # Gone.
-        refused = await c.post(f"/app/clients/{client_id}/revoke", json={}, headers=headers)
-        assert refused.status_code == 409 and refused.json()["error"]["code"] == "CANNOT_REVOKE_SELF"
-
-        other_id, other = await app_token(c, runtime, name="Other Phone")
-        assert (await c.get("/app/status", headers=bearer(other))).status_code == 200
-        clients = (await c.get("/app/clients", headers=headers)).json()["clients"]
-        assert {row["client_id"]: row["self"] for row in clients} == {client_id: True, other_id: False}
-        revoked = await c.post(f"/app/clients/{other_id}/revoke", json={}, headers=headers)
+        client_id, _ = await lan_token(lc, runtime, name="Agent")
+        other_id, other = await lan_token(lc, runtime, name="Other agent")
+        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        assert (await lc.post("/mcp", json=ping, headers=bearer(other))).status_code == 200
+        clients = (await c.get("/app/clients")).json()["clients"]
+        assert {row["client_id"]: row["self"] for row in clients} == {client_id: False, other_id: False}
+        revoked = await c.post(f"/app/clients/{other_id}/revoke", json={})
         assert revoked.status_code == 200 and revoked.json() == {"revoked": other_id}
-        clients = (await c.get("/app/clients", headers=headers)).json()["clients"]
+        clients = (await c.get("/app/clients")).json()["clients"]
         assert [row["client_id"] for row in clients] == [client_id]
-        assert (await c.get("/app/status", headers=bearer(other))).status_code == 401
-        assert (await c.post(f"/app/clients/{other_id}/revoke", json={}, headers=headers)).status_code == 404
+        assert (await lc.post("/mcp", json=ping, headers=bearer(other))).status_code == 401
+        assert (await c.post(f"/app/clients/{other_id}/revoke", json={})).status_code == 404
 
 
-async def test_setup_and_discover_routes(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
-        _, issued = await app_token(c, runtime)
-        headers = bearer(issued)
-        discovered = await c.get("/app/discover", headers=headers)
+async def test_setup_and_discover_routes(box):
+    runtime, portal = box
+    async with box_page(portal) as c:
+        discovered = await c.get("/app/discover")
         assert discovered.status_code == 200 and discovered.json()["usb"][0]["udid"] == "simulated-phone"
 
         queued = await c.post(
             "/app/setup/pair",
             json={"payload": {"udid": "simulated-phone", "owner_confirmed": True}},
-            headers=headers,
         )
         assert queued.status_code == 202, queued.text
         assert queued.json()["state"] == "QUEUED" and queued.json()["kind"] == "pair"
         operation_id = queued.json()["id"]
         for _ in range(100):
-            polled = await c.get(f"/app/operations/{operation_id}", headers=headers)
+            polled = await c.get(f"/app/operations/{operation_id}")
             assert polled.status_code == 200
             if polled.json()["state"] not in {"QUEUED", "DISPATCHED"}:
                 break
             await asyncio.sleep(0.05)
         assert polled.json()["state"] == "SUCCEEDED", polled.text
         assert polled.json()["result"]["trusted"] is True
-        assert runtime.coordinator.lease is not None  # Setup auto-acquired the client's lease.
+        assert runtime.coordinator.lease is not None  # Setup auto-acquired the box page's lease.
         # The lease lapsed between page steps: setup takes control again instead of failing.
         await runtime.coordinator.drop_control()
-        mounted = await c.post("/app/setup/mount_ddi", json={}, headers=headers)
+        mounted = await c.post("/app/setup/mount_ddi", json={})
         assert mounted.status_code in {200, 202}, mounted.text
         assert runtime.coordinator.lease is not None
 
-        unconfirmed = await c.post(
-            "/app/setup/pair", json={"payload": {"udid": "simulated-phone"}}, headers=headers
-        )
+        unconfirmed = await c.post("/app/setup/pair", json={"payload": {"udid": "simulated-phone"}})
         assert unconfirmed.status_code == 400, unconfirmed.text
         assert unconfirmed.json()["error"]["code"] == "OWNER_CONFIRMATION_REQUIRED"
-        unknown = await c.post("/app/setup/nope", json={}, headers=headers)
+        unknown = await c.post("/app/setup/nope", json={})
         assert unknown.status_code == 404 and unknown.json()["error"]["code"] == "UNKNOWN_SETUP_ACTION"
-        bad_id = await c.post("/app/setup/mount_ddi", json={"operation_id": "x" * 65}, headers=headers)
+        bad_id = await c.post("/app/setup/mount_ddi", json={"operation_id": "x" * 65})
         assert bad_id.status_code == 400 and bad_id.json()["error"]["code"] == "INVALID_OPERATION_ID"
 
 
-async def test_reset_needs_the_box_name(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
-        _, issued = await app_token(c, runtime)
-        headers = bearer(issued)
-        wrong = await c.post("/app/reset", json={"device": "OpenLolo-NOPE"}, headers=headers)
+async def test_reset_needs_the_box_name(box):
+    runtime, portal = box
+    async with box_page(portal) as c:
+        wrong = await c.post("/app/reset", json={"device": "OpenLolo-NOPE"})
         assert wrong.status_code == 400 and wrong.json()["error"]["code"] == "RESET_NAME_MISMATCH"
-        right = await c.post(
-            "/app/reset", json={"device": runtime.config.setup_name.lower()}, headers=headers
-        )
+        right = await c.post("/app/reset", json={"device": runtime.config.setup_name.lower()})
         assert right.status_code == 200 and right.json()["state"] == "reset"
         assert runtime.bindings.read() is None
         assert (await c.get("/app/info")).json()["setup_mode"] is True
 
 
-async def test_network_routes(lan, monkeypatch):
-    runtime, app = lan
+async def test_network_routes(box, monkeypatch):
+    runtime, portal = box
     monkeypatch.setattr(provisioning_module, "HANDOFF_READ_SECONDS", 0.1)  # No captive-sheet pause in tests.
-    async with web(app, LAN) as c:
-        _, issued = await app_token(c, runtime)
-        headers = bearer(issued)
-        network = await c.get("/app/network", headers=headers)
+    async with box_page(portal) as c:
+        network = await c.get("/app/network")
         assert network.status_code == 200, network.text
         assert network.json()["provisioning"]["state"] == "idle" and network.json()["saved"] == ["home"]
 
-        scanned = await c.post("/app/network/scan", json={}, headers=headers)
+        scanned = await c.post("/app/network/scan", json={})
         assert scanned.status_code == 200 and scanned.json()["networks"][0]["ssid"] == "HomeNet"
 
-        entered = await c.post("/app/network/setup_mode", json={"enabled": True}, headers=headers)
+        entered = await c.post("/app/network/setup_mode", json={"enabled": True})
         assert entered.status_code == 200 and entered.json()["state"] == "setup_mode"
         assert entered.json()["setup_name"] == "OpenLolo-TEST" and entered.json()["reason"] == "api"
         assert "channel" not in entered.json()  # No Bluetooth channel to report.
         assert (await c.get("/app/info")).json()["setup_mode"] is True
-        assert (await c.get("/app/status", headers=headers)).json()["setup_mode"] is True
+        assert (await c.get("/app/status")).json()["setup_mode"] is True
         # Setup mode is the local WPA2 access point (ADR 0011): the setup AP is up.
         assert runtime.network.setup_ap_active
         assert "hotspot" not in network.json()
 
-        missing = await c.post("/app/network/connect", json={"ssid": "HomeNet"}, headers=headers)
+        missing = await c.post("/app/network/connect", json={"ssid": "HomeNet"})
         assert missing.status_code == 400 and missing.json()["error"]["code"] == "INVALID_REQUEST"
-        joining = await c.post(
-            "/app/network/connect", json={"ssid": "HomeNet", "psk": "correct horse"}, headers=headers
-        )
+        joining = await c.post("/app/network/connect", json={"ssid": "HomeNet", "psk": "correct horse"})
         assert joining.status_code == 202, joining.text
         assert joining.json()["attempt_id"] and joining.json()["state"] in {"setup_mode", "joining"}
         for _ in range(100):
-            state = (await c.get("/app/network", headers=headers)).json()["provisioning"]
+            state = (await c.get("/app/network")).json()["provisioning"]
             if state["state"] == "idle" and state["last_attempt"]["result"]:
                 break
             await asyncio.sleep(0.05)
@@ -303,33 +271,30 @@ async def test_network_routes(lan, monkeypatch):
         profile = state["last_attempt"]["profile"]
         assert profile.startswith("openlolo-homenet-")
 
-        protected = await c.post("/app/network/forget", json={"ssid": "home"}, headers=headers)
+        protected = await c.post("/app/network/forget", json={"ssid": "home"})
         assert protected.status_code == 403 and protected.json()["error"]["code"] == "PROFILE_PROTECTED"
-        forgotten = await c.post("/app/network/forget", json={"ssid": profile}, headers=headers)
+        forgotten = await c.post("/app/network/forget", json={"ssid": profile})
         assert forgotten.status_code == 200 and runtime.network.profiles == ["home"]
-        unknown = await c.post("/app/network/reboot", json={}, headers=headers)
+        unknown = await c.post("/app/network/reboot", json={})
         assert unknown.status_code == 404
-        left = await c.post("/app/network/setup_mode", json={"enabled": False}, headers=headers)
+        left = await c.post("/app/network/setup_mode", json={"enabled": False})
         assert left.status_code == 200 and left.json()["state"] == "idle"
         assert (await c.get("/app/info")).json()["setup_mode"] is False
         # A Wi-Fi change while online never opens the window.
-        joining = await c.post(
-            "/app/network/connect", json={"ssid": "HomeNet", "psk": "correct horse"}, headers=headers
-        )
+        joining = await c.post("/app/network/connect", json={"ssid": "HomeNet", "psk": "correct horse"})
         assert joining.status_code == 202
         for _ in range(100):
-            state = (await c.get("/app/network", headers=headers)).json()["provisioning"]
+            state = (await c.get("/app/network")).json()["provisioning"]
             if state["state"] == "idle" and state["last_attempt"]["result"]:
                 break
             await asyncio.sleep(0.05)
         assert state["state"] == "idle" and state["setup_name"] is None and not runtime.provisioning.active
 
 
-async def test_diagnostics_are_redacted(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
-        _, issued = await app_token(c, runtime)
-        report = await c.get("/app/diagnostics", headers=bearer(issued))
+async def test_diagnostics_are_redacted(box):
+    runtime, portal = box
+    async with box_page(portal) as c:
+        report = await c.get("/app/diagnostics")
         assert report.status_code == 200, report.text
         data = report.json()
         assert {"versions", "config", "status", "journal", "logs", "network", "provisioning"} <= set(data)
@@ -340,123 +305,99 @@ async def test_diagnostics_are_redacted(lan):
         assert data["network"]["saved"] == ["home"] and "psk" not in str(data).lower()
 
 
-async def test_scope_matrix_and_admin_rate_limit(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
-        for path in ("/app/status", "/app/operations", "/app/network", "/app/clients"):
-            anonymous = await c.get(path)
+async def test_owner_routes_need_the_box_page(box):
+    _, portal = box
+    # Another device on the LAN without a session gets nothing.
+    async with box_page(portal, client=LAPTOP, session=False) as laptop:
+        for path in ("/app/status", "/app/operations", "/app/network", "/app/clients", "/app/consents"):
+            anonymous = await laptop.get(path)
             assert anonymous.status_code == 401, path
             assert anonymous.json()["error"]["code"] == "LOGIN_REQUIRED"
-        assert (await c.post("/app/pause", json={})).status_code == 401
-        assert (await c.get("/app/status", headers={"Authorization": "Bearer nope"})).status_code == 401
-
-        _, reader = await app_token(c, runtime, control=False, admin=False, name="Reader")
-        assert reader["scope"] == "phone:read"
-        headers = bearer(reader)
-        assert (await c.get("/app/status", headers=headers)).status_code == 200
-        assert (await c.post("/app/pause", json={}, headers=headers)).status_code == 200
-        for path in ("/app/operations", "/app/network", "/app/clients", "/app/discover", "/app/diagnostics"):
-            denied = await c.get(path, headers=headers)
-            assert denied.status_code == 403 and denied.json()["error"]["code"] == "SCOPE_REQUIRED", path
-        for path in ("/app/setup/pair", "/app/network/scan", "/app/clients/x/revoke"):
-            denied = await c.post(path, json={}, headers=headers)
-            assert denied.status_code == 403, path
-
-        # Admin without control: management works, phone setup still needs the control scope.
-        _, manager = await app_token(c, runtime, control=False, admin=True, name="Manager")
-        assert manager["scope"] == "phone:read owner:admin"
-        assert (await c.get("/app/clients", headers=bearer(manager))).status_code == 200
-        setup = await c.post("/app/setup/mount_ddi", json={}, headers=bearer(manager))
-        assert setup.status_code == 403 and setup.json()["error"]["code"] == "SCOPE_REQUIRED"
-
-        assert ADMIN_CALLS_PER_MINUTE == 300
-        _, admin = await app_token(c, runtime, name="Admin")
-        codes = {(await c.get("/app/status", headers=bearer(admin))).status_code for _ in range(130)}
+        assert (await laptop.post("/app/pause", json={})).status_code == 401
+    # The box page polls status while the owner has it open: its higher limit applies.
+    assert ADMIN_CALLS_PER_MINUTE == 300
+    async with box_page(portal) as c:
+        codes = {(await c.get("/app/status")).status_code for _ in range(130)}
         assert codes == {200}
 
 
-async def test_owner_decides_pending_consents_of_the_remote_entry(lan):
-    runtime, app = lan
+async def test_owner_decides_pending_consents_of_the_remote_entry(box):
+    runtime, portal = box
     public = create_gateway_app(runtime)
-    async with running(public), web(app, LAN) as c, web(public, PUBLIC) as pc:
-        _, issued = await app_token(c, runtime)
-        headers = bearer(issued)
-        assert (await c.get("/app/consents", headers=headers)).json() == {"consents": []}
+    lan = create_gateway_app(runtime, LAN, allowed_hosts=runtime.config.lan_hosts[1:])
+    async with running(public), running(lan), web(lan, LAN) as lc, web(public, PUBLIC) as pc:
+        async with box_page(portal) as c:
+            assert (await c.get("/app/consents")).json() == {"consents": []}
 
-        client_id, request_id, verifier = await public_request(pc)
-        listed = await c.get("/app/consents", headers=headers)
-        assert listed.status_code == 200, listed.text
-        [pending] = listed.json()["consents"]
-        assert pending["handle"] == digest(request_id) and request_id not in listed.text
-        assert pending["client_name"] == "Claude" and pending["client_id"] == client_id
-        assert pending["scopes"] == ["phone:read", "phone:control"] and pending["issuer"] == PUBLIC
-        assert 0 < pending["expires_in"] <= 600 and pending["redirect_hosts"] == ["claude.ai"]
-        assert (await c.get("/app/status", headers=headers)).json()["pending_consents"] == 1
-        assert await status_of(pc, request_id) == {"state": "pending"}
+            client_id, request_id, verifier = await public_request(pc)
+            listed = await c.get("/app/consents")
+            assert listed.status_code == 200, listed.text
+            [pending] = listed.json()["consents"]
+            assert pending["handle"] == digest(request_id) and request_id not in listed.text
+            assert pending["client_name"] == "Claude" and pending["client_id"] == client_id
+            assert pending["scopes"] == ["phone:read", "phone:control"] and pending["issuer"] == PUBLIC
+            assert 0 < pending["expires_in"] <= 600 and pending["redirect_hosts"] == ["claude.ai"]
+            assert (await c.get("/app/status")).json()["pending_consents"] == 1
+            assert await status_of(pc, request_id) == {"state": "pending"}
 
-        # Owner allows control for 30 days from the box page; the browser's poll picks up the redirect once.
-        choice = {"decision": "allow", "control": True, "window": "30d"}
-        decided = await c.post(f"/app/consents/{pending['handle']}", json=choice, headers=headers)
-        assert decided.status_code == 200, decided.text
-        assert decided.json() == {
-            "decided": "allow",
-            "scopes": ["phone:read", "phone:control"],
-            "window": REFRESH_SECONDS,
-        }
-        assert (await c.get("/app/status", headers=headers)).json()["pending_consents"] == 0
-        assert (await c.get("/app/consents", headers=headers)).json() == {"consents": []}
-        polled = await status_of(pc, request_id)
-        assert polled["state"] == "decided" and polled["redirect"].startswith(PUBLIC_CALLBACK + "?")
-        query = parse_qs(urlsplit(polled["redirect"]).query)
-        assert query["state"] == ["abc"] and query["code"]
-        assert await status_of(pc, request_id) == {"state": "gone"}  # Handed over exactly once.
+            # Owner allows for 30 days from the box page; the browser's poll picks up the redirect once.
+            choice = {"decision": "allow", "window": "30d"}
+            decided = await c.post(f"/app/consents/{pending['handle']}", json=choice)
+            assert decided.status_code == 200, decided.text
+            assert decided.json() == {
+                "decided": "allow",
+                "scopes": ["phone:read", "phone:control"],
+                "window": REFRESH_SECONDS,
+            }
+            assert (await c.get("/app/status")).json()["pending_consents"] == 0
+            assert (await c.get("/app/consents")).json() == {"consents": []}
+            polled = await status_of(pc, request_id)
+            assert polled["state"] == "decided" and polled["redirect"].startswith(PUBLIC_CALLBACK + "?")
+            query = parse_qs(urlsplit(polled["redirect"]).query)
+            assert query["state"] == ["abc"] and query["code"]
+            assert await status_of(pc, request_id) == {"state": "gone"}  # Handed over exactly once.
 
-        # The code belongs to the remote issuer even though the LAN entry minted it.
-        foreign = await tokens(c, LAN, client_id, query["code"][0], verifier, callback=PUBLIC_CALLBACK)
-        assert foreign.status_code in {400, 401}, foreign.text
-        exchanged = await tokens(pc, PUBLIC, client_id, query["code"][0], verifier, callback=PUBLIC_CALLBACK)
-        assert exchanged.status_code == 200, exchanged.text
-        assert exchanged.json()["scope"] == "phone:read phone:control"
-        [row] = [r for r in public.provider.list_clients() if r["client_id"] == client_id]
-        assert (
-            row["approved"] and row["issuer"] == PUBLIC and row["scopes"] == ["phone:control", "phone:read"]
-        )
-        assert abs(refresh_window(public.provider, client_id) - REFRESH_SECONDS) < 60
-        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
-        assert (await pc.post("/mcp", json=ping, headers=bearer(exchanged.json()))).status_code == 200
+            # The code belongs to the remote issuer: the LAN entry refuses it.
+            code = query["code"][0]
+            foreign = await tokens(lc, LAN, client_id, code, verifier, callback=PUBLIC_CALLBACK)
+            assert foreign.status_code in {400, 401}, foreign.text
+            exchanged = await tokens(pc, PUBLIC, client_id, code, verifier, callback=PUBLIC_CALLBACK)
+            assert exchanged.status_code == 200, exchanged.text
+            assert exchanged.json()["scope"] == "phone:read phone:control"
+            [row] = [r for r in public.provider.list_clients() if r["client_id"] == client_id]
+            assert row["approved"] and row["issuer"] == PUBLIC
+            assert row["scopes"] == ["phone:control", "phone:read"]
+            assert abs(refresh_window(public.provider, client_id) - REFRESH_SECONDS) < 60
+            ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+            assert (await pc.post("/mcp", json=ping, headers=bearer(exchanged.json()))).status_code == 200
 
-        # Deny from the box page: the client gets access_denied, nothing is granted.
-        other_id, request_id, _ = await public_request(pc, name="Other agent")
-        handle = digest(request_id)
-        denied = await c.post(f"/app/consents/{handle}", json={"decision": "deny"}, headers=headers)
-        assert denied.status_code == 200 and denied.json() == {"decided": "deny", "scopes": []}
-        polled = await status_of(pc, request_id)
-        assert polled["state"] == "decided" and "error=access_denied" in polled["redirect"]
-        assert not any(r["client_id"] == other_id for r in public.provider.list_clients() if r["approved"])
-        # A decided handle is unknown afterwards, as is one that never existed.
-        for bad in (handle, "nope", digest("nope")):
-            gone = await c.post(f"/app/consents/{bad}", json=choice, headers=headers)
-            assert gone.status_code == 404 and gone.json()["error"]["code"] == "CONSENT_EXPIRED", bad
+            # Deny from the box page: the client gets access_denied, nothing is granted.
+            other_id, request_id, _ = await public_request(pc, name="Other agent")
+            handle = digest(request_id)
+            denied = await c.post(f"/app/consents/{handle}", json={"decision": "deny"})
+            assert denied.status_code == 200 and denied.json() == {"decided": "deny", "scopes": []}
+            polled = await status_of(pc, request_id)
+            assert polled["state"] == "decided" and "error=access_denied" in polled["redirect"]
+            approved = [r["client_id"] for r in public.provider.list_clients() if r["approved"]]
+            assert other_id not in approved
+            # A decided handle is unknown afterwards, as is one that never existed.
+            for bad in (handle, "nope", digest("nope")):
+                gone = await c.post(f"/app/consents/{bad}", json=choice)
+                assert gone.status_code == 404 and gone.json()["error"]["code"] == "CONSENT_EXPIRED", bad
 
-        # Only the owner's admin scope may see or decide consents.
-        _, _, _ = await public_request(pc, name="Waiting")
-        _, reader = await app_token(c, runtime, control=False, admin=False, name="Reader")
-        [waiting] = (await c.get("/app/consents", headers=headers)).json()["consents"]
-        for method, path in (
-            ("GET", "/app/consents"),
-            ("POST", f"/app/consents/{waiting['handle']}"),
-        ):
-            refused = await c.request(method, path, json=choice, headers=bearer(reader))
-            assert refused.status_code == 403 and refused.json()["error"]["code"] == "SCOPE_REQUIRED", path
-        assert (await c.get("/app/consents")).status_code == 401
-        assert [r["handle"] for r in (await c.get("/app/consents", headers=headers)).json()["consents"]] == [
-            waiting["handle"]
-        ]
+            # An unknown duration is refused, and the request stays pending.
+            _, request_id, _ = await public_request(pc, name="Waiting")
+            refused = await c.post(
+                f"/app/consents/{digest(request_id)}", json={"decision": "allow", "window": "8h"}
+            )
+            assert refused.status_code == 422 and refused.json()["error"]["code"] == "INVALID_WINDOW"
+            assert await status_of(pc, request_id) == {"state": "pending"}
 
 
-async def test_consent_page_offers_box_page_approval(lan):
-    runtime, app = lan
-    async with web(app, LAN) as c:
+async def test_consent_page_offers_box_page_approval(box):
+    runtime, _ = box
+    lan = create_gateway_app(runtime, LAN, allowed_hosts=runtime.config.lan_hosts[1:])
+    async with running(lan), web(lan, LAN) as c:
         registered = await register(c)
         client_id = registered.json()["client_id"]
         started, request_id, _ = await start_authorization(c, LAN, client_id)

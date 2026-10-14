@@ -20,8 +20,8 @@ from openlolo.interfaces.mcp_client import (
 Coordinate = Annotated[float, Field(ge=0, le=1)]
 READ_SCOPE, CONTROL_SCOPE = "phone:read", "phone:control"
 SCOPES = [READ_SCOPE, CONTROL_SCOPE]
-# Owner administration (grants, Wi-Fi, onboarding, diagnostics). Only the LAN entry offers it
-# (ADR 0005); remote MCP clients never see it.
+# Owner administration (grants, Wi-Fi, onboarding, diagnostics). Held only by the box page's own
+# identity (ADR 0012); no OAuth client can be granted it.
 ADMIN_SCOPE = "owner:admin"
 ALL_SCOPES = [*SCOPES, ADMIN_SCOPE]
 

@@ -28,7 +28,7 @@ LAN_CERT = FIXTURES / "tls" / "openlolo-test.crt"
 LAN_KEY = FIXTURES / "tls" / "openlolo-test.key"
 PUBLIC = "https://pi.tailnet.ts.net"
 LAN = "https://openlolo-test.local:8443"
-APP_CALLBACK = "https://admin.example/oauth/callback"  # An owner-administering LAN client.
+APP_CALLBACK = "https://agent.example/oauth/callback"  # A client of the LAN entry.
 CONSENT_PATH = "/oauth/consent"
 
 
@@ -58,9 +58,7 @@ def pkce():
     return verifier, challenge
 
 
-async def register(
-    c, *, callback=APP_CALLBACK, scope="phone:read phone:control owner:admin", name="Lolo App"
-):
+async def register(c, *, callback=APP_CALLBACK, scope="phone:read phone:control", name="Lolo App"):
     metadata = {"client_name": name, "redirect_uris": [callback], "token_endpoint_auth_method": "none"}
     if scope is not None:
         metadata["scope"] = scope
@@ -88,7 +86,7 @@ async def start_authorization(c, origin, client_id, *, callback=APP_CALLBACK, sc
     return r, request_id, verifier
 
 
-def owner_approve(runtime, request_id, *, admin=True, window="30d") -> str:
+def owner_approve(runtime, request_id, *, window="30d") -> str:
     """The owner taps Approve on the box page; return the client redirect the consent page polls for."""
     from openlolo.interfaces.auth import digest
     from openlolo.interfaces.mcp_http import grant_from_choice
@@ -97,7 +95,7 @@ def owner_approve(runtime, request_id, *, admin=True, window="30d") -> str:
     provider, handle = runtime.door_provider, digest(request_id)
     pending = provider.pending_by_handle(handle)
     assert pending is not None, "request expired"
-    granted, seconds = grant_from_choice(pending[1]["scopes"], admin, window)
+    granted, seconds = grant_from_choice(pending[1]["scopes"], window)
     return provider.decide_handle(handle, granted, seconds)
 
 
@@ -115,22 +113,43 @@ async def tokens(c, origin, client_id, code, verifier, *, callback=APP_CALLBACK)
     )
 
 
-async def app_token(c, runtime, *, control=True, admin=True, window="30d", name="Lolo App"):
-    """Register, authorize and consent on the LAN entry; return (client_id, token response dict)."""
+async def lan_token(c, runtime, *, window="30d", name="Lolo App"):
+    """Register, authorize and approve a client on the LAN entry; return (client_id, token response)."""
     registered = await register(c, name=name)
     assert registered.status_code == 201, registered.text
     client_id = registered.json()["client_id"]
     _, request_id, verifier = await start_authorization(c, LAN, client_id)
     assert request_id
-    redirect = owner_approve(runtime, request_id, admin=admin, window=window)
-    code = parse_qs(urlsplit(redirect).query)["code"][0]
+    code = parse_qs(urlsplit(owner_approve(runtime, request_id, window=window)).query)["code"][0]
     issued = await tokens(c, LAN, client_id, code, verifier)
     assert issued.status_code == 200, issued.text
-    if not control:
-        # Approval always grants control; a client narrows its own grant on refresh.
-        issued = await narrow(c, LAN, client_id, issued.json(), drop="phone:control")
-        assert issued.status_code == 200, issued.text
     return client_id, issued.json()
+
+
+PHONE_ADDRESS = ("192.168.1.77", 50000)  # The simulated phone's RemotePairing address.
+
+
+def portal_build(tmp_path):
+    """A minimal box page build for the listener to serve."""
+    build = tmp_path / "portal"
+    (build / "assets").mkdir(parents=True, exist_ok=True)
+    (build / "index.html").write_text("<!doctype html><title>OpenLolo</title><div id=app></div>")
+    return build
+
+
+@contextlib.asynccontextmanager
+async def box_page(app, *, client=PHONE_ADDRESS, session=True):
+    """The box page as the paired phone on the cable sees it, with its session open."""
+    from openlolo.interfaces.setup_portal import CLIENT_HEADER
+
+    transport = httpx.ASGITransport(app=app, client=client)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://openlolo-test.local", headers={CLIENT_HEADER: "portal"}
+    ) as c:
+        if session:
+            opened = await c.post("/setup/session")
+            assert opened.status_code == 200, opened.text
+        yield c
 
 
 async def narrow(c, origin, client_id, issued: dict, *, drop: str):

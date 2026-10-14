@@ -70,7 +70,7 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 						client_id: "claude-desktop",
 						client_name: "Claude Desktop",
 						redirect_hosts: ["claude.ai"],
-						scopes: ["phone:read", "phone:control", "owner:admin"],
+						scopes: ["phone:read", "phone:control"],
 						expires_in: 240,
 						created: t - 120,
 					},

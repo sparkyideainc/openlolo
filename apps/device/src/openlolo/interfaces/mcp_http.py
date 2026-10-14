@@ -40,7 +40,6 @@ from openlolo.interfaces.http_api import create_app
 from openlolo.interfaces.mcp_client import BridgeError, PhoneClient
 from openlolo.interfaces.mcp_server import (
     ADMIN_SCOPE,
-    ALL_SCOPES,
     CONTROL_SCOPE,
     READ_SCOPE,
     SCOPES,
@@ -70,6 +69,11 @@ STATUS_PATH = "/oauth/consent/status"
 NEVER_SECONDS = 100 * 365 * 24 * 3600
 CONTROL_WINDOWS = {"24h": 24 * 3600, "30d": REFRESH_SECONDS, "never": NEVER_SECONDS}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def phone_scopes(scopes: list[str]) -> list[str]:
+    """Stored grant scopes minus any no longer grantable (owner:admin before the box page owned it)."""
+    return [scope for scope in scopes if scope in SCOPES]
 
 
 def _token() -> str:
@@ -248,17 +252,12 @@ class OAuthProvider:
         if params.resource is not None and params.resource != self.resource:
             raise AuthorizeError("invalid_target", "token can only be issued for this device")
         # Clients send no scope (ChatGPT) or register with and repeat only the read scope the 401
-        # challenge advertised (Claude). Always offer read and control: the owner decides on the
-        # consent page, where control stays unchecked by default. The admin scope of the LAN entry is
-        # offered only when the client registered for or requested it. The token response reports the
-        # scope actually granted.
+        # challenge advertised (Claude). Always offer read and control together: approval on the box
+        # page grants both. The token response reports the scope actually granted.
         requested = params.scopes or []
         if any(scope not in self.scopes for scope in requested):
             raise AuthorizeError("invalid_scope")
-        registered = (client.scope or "").split()
-        scopes = [
-            scope for scope in self.scopes if scope in SCOPES or scope in requested or scope in registered
-        ]
+        scopes = list(self.scopes)
         request_id = _token()
         value = {"client_id": client.client_id, "scopes": scopes, "params": params.model_dump(mode="json")}
         self._store("request", request_id, client.client_id, request_id, value, time.time() + PENDING_SECONDS)
@@ -452,7 +451,7 @@ class OAuthProvider:
         return RefreshToken(
             token=refresh_token,
             client_id=client.client_id,
-            scopes=value["scopes"],
+            scopes=phone_scopes(value["scopes"]),
             expires_at=int(row["expires"]),
             resource=self.resource,
         )
@@ -475,7 +474,13 @@ class OAuthProvider:
         sliding, never = value["sliding"], value["never"]
         family_expires = now + REFRESH_SECONDS if sliding else value["family_expires"]
         return self._issue(
-            client.client_id, scopes or value["scopes"], row["family"], family_expires, now, sliding, never
+            client.client_id,
+            scopes or phone_scopes(value["scopes"]),
+            row["family"],
+            family_expires,
+            now,
+            sliding,
+            never,
         )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
@@ -486,7 +491,7 @@ class OAuthProvider:
         return AccessToken(
             token=token,
             client_id=row["client_id"],
-            scopes=value["scopes"],
+            scopes=phone_scopes(value["scopes"]),
             expires_at=int(row["expires"]),
             resource=self.resource,
         )
@@ -694,7 +699,6 @@ class EntrySecurity:
 SCOPE_WORDS = {
     READ_SCOPE: "see the screen and status",
     CONTROL_SCOPE: "touch, type and press buttons",
-    ADMIN_SCOPE: "manage this OpenLolo (Wi-Fi, onboarding, other clients)",
 }
 
 
@@ -794,19 +798,14 @@ def window_seconds(window: str) -> int:
     return CONTROL_WINDOWS[window]
 
 
-def grant_from_choice(offered: list[str], admin: bool, window: str) -> tuple[list[str], int]:
+def grant_from_choice(offered: list[str], window: str) -> tuple[list[str], int]:
     """Translate the owner's consent choice into granted scopes and the grant's lifetime.
 
     Approval always grants the screen and input together (ADR 0003, amendment 2026-09-30): a
     client that may only watch the phone has no use, and the bounded duration is the safety
-    lever. The admin scope of the LAN entry stays a separate choice. A client can still narrow
-    a grant itself with the ``scope`` parameter of a refresh."""
+    lever. A client can still narrow a grant itself with the ``scope`` parameter of a refresh."""
     granted = [scope for scope in SCOPES if scope in offered] or [READ_SCOPE]
-    admin = admin and ADMIN_SCOPE in offered
-    seconds = window_seconds(window)
-    if admin:
-        granted.append(ADMIN_SCOPE)
-    return granted, seconds
+    return granted, window_seconds(window)
 
 
 def consent_routes(provider: OAuthProvider, origin: str, runtime) -> Callable[[Request], Any]:
@@ -868,22 +867,19 @@ def status_route(provider: OAuthProvider) -> Callable[[Request], Any]:
     return status
 
 
-def create_gateway_app(
-    runtime, origin: str | None = None, *, allowed_hosts: list[str] | None = None, app_routes: bool = False
-):
+def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: list[str] | None = None):
     """Starlette app for one OAuth/MCP entry.
 
     ``origin`` is the issuer this instance serves; it defaults to ``config.public_url`` (the remote
-    entry behind the tunnel). The LAN entry (ADR 0005) passes ``config.lan_url``, the extra Host
-    values it accepts, and ``app_routes=True`` to mount ``/app/*`` and offer the ``owner:admin``
-    scope.
+    entry behind the tunnel). The LAN entry (ADR 0005) passes ``config.lan_url`` and the extra Host
+    values it accepts. Both offer only the phone scopes; owner routes live on the box page.
     """
     config = runtime.config
     origin = origin or config.public_url
     if not origin:
         raise ValueError("public_url is required for the remote MCP entry")
     hosts = {urlsplit(origin).netloc.lower(), *(h.lower() for h in allowed_hosts or [])}
-    scopes = ALL_SCOPES if app_routes else SCOPES
+    scopes = SCOPES
     provider = OAuthProvider(runtime.journal, origin, scopes=scopes, legacy_issuer=config.public_url)
     gateway = Gateway(runtime, provider)
     if not TIMING_LOG.handlers:
@@ -910,10 +906,6 @@ def create_gateway_app(
     )
     server.custom_route(CONSENT_PATH, methods=["GET", "POST"])(consent_routes(provider, origin, runtime))
     server.custom_route(STATUS_PATH, methods=["GET"])(status_route(provider))
-    if app_routes:
-        from openlolo.interfaces.app_api import install_app_routes
-
-        install_app_routes(server, runtime, gateway, provider)
     app = server.streamable_http_app(
         streamable_http_path=MCP_PATH,
         json_response=True,

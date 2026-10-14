@@ -1,6 +1,5 @@
 // Approve or deny one AI client request with its access window (the app's RequestSheet).
 
-import { Switch } from "@openlolo/ui/components/switch";
 import {
 	ToggleGroup,
 	ToggleGroupItem,
@@ -42,19 +41,16 @@ export function RequestDialog({
 }) {
 	const queryClient = useQueryClient();
 	const [window, setWindow] = useState<ConsentWindow>("30d");
-	const [admin, setAdmin] = useState(false);
 	const [openedAt, setOpenedAt] = useState(() => Date.now());
 	const tick = useTick(open);
 	useEffect(() => {
 		if (open) {
 			setWindow("30d");
-			setAdmin(false);
 			setOpenedAt(Date.now());
 		}
 	}, [open]);
 
 	const scopes = consent?.scopes ?? [];
-	const offersAdmin = scopes.includes("owner:admin");
 	const windows: ConsentWindow[] = ["24h", "30d", "never"];
 	const done = () => {
 		void queryClient.invalidateQueries({ queryKey: keys.consents });
@@ -64,7 +60,7 @@ export function RequestDialog({
 	};
 	const decide = useMutation({
 		mutationFn: (allow: boolean) =>
-			api.decide(consent?.handle ?? "", allow, admin, window),
+			api.decide(consent?.handle ?? "", allow, window),
 		onSuccess: (_, allow) => {
 			toast.success(allow ? "Access approved." : "Request denied.");
 			done();
@@ -106,10 +102,7 @@ export function RequestDialog({
 					</div>
 					<Section>
 						<LabeledRow label="From" value={consentFrom(consent)} />
-						<LabeledRow
-							label="Can"
-							value={scopeText(scopes.filter((s) => s !== "owner:admin"))}
-						/>
+						<LabeledRow label="Can" value={scopeText(scopes)} />
 						<LabeledRow
 							label="Request expires"
 							value={expiresText(remaining).replace("Expires ", "")}
@@ -135,23 +128,6 @@ export function RequestDialog({
 								</ToggleGroupItem>
 							))}
 						</ToggleGroup>
-						{offersAdmin ? (
-							<div className="mt-2 flex min-h-14 items-center justify-between gap-4 rounded-2xl bg-card px-4 py-2">
-								<span className="flex flex-col">
-									<span className="text-base text-foreground">
-										Allow box administration
-									</span>
-									<span className="text-[13px] text-muted-foreground">
-										Lets the client change box settings and clients.
-									</span>
-								</span>
-								<Switch
-									checked={admin}
-									onCheckedChange={setAdmin}
-									aria-label="Allow box administration"
-								/>
-							</div>
-						) : null}
 					</Section>
 					<div className="flex flex-col gap-2.5 pb-2">
 						<BusyButton

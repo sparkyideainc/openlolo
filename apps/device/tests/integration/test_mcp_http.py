@@ -103,7 +103,7 @@ async def authorize(c, runtime, client_id, *, window="24h", scope="phone:read ph
     assert page.status_code == 200 and "Claude" in page.text and "claude.ai" in page.text
     request_id = parse_qs(urlsplit(consent).query)["request"][0]
     assert "name='control'" not in page.text and "name='window'" not in page.text
-    redirect = owner_approve(runtime, request_id, admin=False, window=window)
+    redirect = owner_approve(runtime, request_id, window=window)
     assert (await c.get(STATUS_PATH, params={"request": request_id})).json() == {
         "state": "decided",
         "redirect": redirect,
