@@ -31,7 +31,9 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.yaml"))):
             ssid, password = str(ssid), str((ap or {}).get("password") or "")
             name = "".join(c if c.isalnum() or c in "-_." else "_" for c in ssid) or "wifi"
             lines = ["[connection]", f"id={ssid}", f"uuid={uuid.uuid4()}", "type=wifi",
-                     f"interface-name={ifname}", "autoconnect=true", "",
+                     f"interface-name={ifname}", "autoconnect=true",
+                     # 0 = keep retrying; the default gives up after 4 failures.
+                     "autoconnect-retries=0", "",
                      "[wifi]", "mode=infrastructure", f"ssid={ssid}", ""]
             if password:
                 lines += ["[wifi-security]", "key-mgmt=wpa-psk", f"psk={password}", ""]
