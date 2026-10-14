@@ -14,7 +14,6 @@ from openlolo.application.phone import Phone
 from openlolo.application.provisioning import Provisioning
 from openlolo.domain.models import Binding
 from openlolo.domain.profiles import ProfileStore
-from openlolo.interfaces.auth import Auth
 
 
 class Runtime:
@@ -36,7 +35,6 @@ class Runtime:
             manager = NetworkManager(config.wifi_interface)
             manager.configure_setup_ap(config)
             self.network = manager
-        self.auth = Auth(self.journal)
         self.provisioning = Provisioning(
             config,
             self.network,

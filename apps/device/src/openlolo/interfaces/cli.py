@@ -88,7 +88,7 @@ async def serve(config):
         )
     if not servers:
         raise SystemExit("Nothing to serve: enable portal_port, public_url or lan_url")
-    # The Phone API itself has no listener (it is called in-process), so the runtime's lifecycle
+    # The phone core has no listener of its own (it is called in-process), so the runtime's lifecycle
     # and the stop signals are handled here rather than by one uvicorn server.
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()

@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, Response
 
 from openlolo.adapters.system.network import run as run_command
 from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.http_api import body
+from openlolo.interfaces.json_body import body
 from openlolo.interfaces.local_phone import LOST_CONTROL, BridgeError
 from openlolo.interfaces.mcp_server import ADMIN_SCOPE, ALL_SCOPES, CONTROL_SCOPE, READ_SCOPE
 
@@ -56,7 +56,7 @@ def guarded(handler: Callable[[Request], Awaitable[Any]]) -> Handler:
         try:
             result = await handler(request)
         except BridgeError as exc:
-            # Bridged Phone API errors keep their HTTP status; gateway-level ones map by code.
+            # Phone core errors keep their status; gateway-level ones map by code.
             status = exc.status or {"LOGIN_REQUIRED": 401, "SCOPE_REQUIRED": 403, "RATE_LIMITED": 429}.get(
                 exc.code, 409
             )

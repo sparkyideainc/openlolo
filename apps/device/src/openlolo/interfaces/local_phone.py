@@ -344,7 +344,10 @@ class LocalPhone:
                     self.forget(exc)
                 raise
             if result["state"] in PENDING:
-                await self.coordinator.outcome(operation_id, self.wait_seconds if wait is None else wait)
+                deadline = self.wait_seconds if wait is None else wait
+                await self._run(
+                    lambda: self.coordinator.outcome(operation_id, deadline), operation_id, entry=False
+                )
                 result = await self.operation(operation_id, entry=False)
             timing = {"action_seconds": round(time.monotonic() - started, 3)}
             output = {"operation": result, "timing": timing}

@@ -24,7 +24,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.http_api import body
+from openlolo.interfaces.json_body import body
 
 log = logging.getLogger("openlolo.portal")
 WEB = Path(__file__).resolve().parents[1] / "web" / "portal"

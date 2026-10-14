@@ -1,16 +1,12 @@
 import asyncio
+import base64
 import json
 from uuid import uuid4
 
-import httpx
 import pytest
 
-from openlolo.bootstrap import Runtime
-from openlolo.config import Config
 from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.http_api import create_app
 from openlolo.interfaces.local_phone import BridgeError, LocalPhone
-from openlolo.interfaces.mcp_client import PhoneClient
 
 
 def local(runtime, **kwargs):
@@ -148,92 +144,110 @@ async def test_outcome_waits_are_not_polled(runtime):
     await bridge.close()
 
 
-def runtime_at(path):
-    return Runtime(
-        Config(
-            backend="simulated",
-            state_dir=path / "state",
-            runtime_dir=path / "run",
-            allowed_hosts=["testserver"],
-        )
+async def test_control_replays_and_reads(runtime):
+    bridge = local(runtime)
+    op = str(uuid4())
+    first = await bridge._control("acquire", op)
+    token = first["control"]["lease_token"]
+    # A replayed acquire returns the same lease, token included, and journals nothing new.
+    assert (await bridge._control("acquire", op))["control"]["lease_token"] == token
+    shot = await bridge.screenshot()
+    assert base64.b64decode(shot["image"]).startswith(b"\xff\xd8")
+    assert shot["metadata"]["source_age_seconds"] is None and shot["metadata"]["content_rect"] == [
+        0,
+        0,
+        390,
+        844,
+    ]
+    status = await bridge.status()
+    assert status["connection"]["state"] == "connected" and status["transport"] == "usb"
+    assert status["control"]["owned"] is True and "lease_token" not in status["control"]
+    assert (await bridge.apps())["apps"][0]["bundle_id"] == "com.apple.Preferences"
+    assert (await bridge.apps("x" * 200))["query"] == "x" * 80
+    assert (await bridge.device_info())["product_type"] == "Simulator"
+    with pytest.raises(BridgeError) as cancel:
+        await bridge._control("cancel", str(uuid4()))
+    assert cancel.value.code == "INVALID_REQUEST" and cancel.value.status == 400
+
+
+async def wait_for(bridge, op, seconds=2.0):
+    await bridge.coordinator.outcome(op, seconds)
+    return await bridge.operation(op)
+
+
+async def test_discover_and_onboarding_setup_kinds(runtime):
+    bridge = local(runtime)
+    discovered = await bridge.discover()
+    assert discovered["usb"] == [{"udid": "simulated-phone", "connection": "USB"}]
+    assert discovered["wifi_paired"] == [] and discovered["simulated"] is True
+    await bridge.ensure_control()
+    for kind in ("pair", "developer_mode"):
+        for payload in (
+            {"udid": "simulated-phone"},
+            {"udid": "simulated-phone", "owner_confirmed": "yes"},
+            {},
+        ):
+            with pytest.raises(BridgeError) as refused:
+                await bridge.setup(kind, str(uuid4()), payload)
+            assert refused.value.code == "OWNER_CONFIRMATION_REQUIRED" and refused.value.status == 400
+    # Nothing queued or journalled.
+    assert [row["kind"] for row in runtime.journal.list_operations()] == ["acquire"]
+    queued = await bridge.setup("pair", str(uuid4()), {"udid": "simulated-phone", "owner_confirmed": True})
+    assert queued["state"] == "QUEUED"
+    record = await wait_for(bridge, queued["id"])
+    assert record["state"] == "SUCCEEDED"
+    assert record["result"] == {
+        "trusted": True,
+        "wifi_pairing": True,
+        "udid": "simulated-phone",
+        "simulated": True,
+    }
+    queued = await bridge.setup(
+        "developer_mode", str(uuid4()), {"udid": "simulated-phone", "owner_confirmed": True}
     )
+    assert (await wait_for(bridge, queued["id"]))["result"]["developer_mode"] is True
+    queued = await bridge.setup("mount_ddi", str(uuid4()), {})
+    assert (await wait_for(bridge, queued["id"]))["result"]["mounted"] is True
+    await bridge.close()
 
 
-async def scenario(bridge):
-    await bridge.control("acquire", str(uuid4()))
-    frame = await frame_of(bridge)
+async def test_full_page_scrolls_joins_and_serves_images_to_its_owner(runtime):
+    bridge = local(runtime)
+    op = str(uuid4())
+    data = await bridge.full_page(op, {"max_pages": 8, "settle": 0, "stitch": True})
+    assert data["operation"]["state"] == "SUCCEEDED", data
+    summary = data["operation"]["result"]
+    # The simulator scrolls 1200 points of content: several pages, then the end.
+    assert summary["stopped"] == "end" and 3 <= summary["page_count"] <= 8
+    assert '"image":' not in json.dumps(summary) and all(page["matched"] for page in summary["pages"])
+    # The join is not pixel perfect: sparse circles leave blank overlaps, the last flick is clamped.
+    total = sum(page["shift"] for page in summary["pages"])
+    assert runtime.phone.device.SCROLL_MAX - 40 <= total <= runtime.phone.device.SCROLL_MAX + 300
+    assert summary["current"]["frame_id"] == runtime.phone.frame.frame_id
+    assert len(data["pages"]) == summary["page_count"]
+    assert base64.b64decode(data["pages"][0]["image"]).startswith(b"\xff\xd8")
+    stitched = data["stitched"]
+    assert stitched["width"] == summary["pages"][0]["metadata"]["width"] and "image" in stitched
+    # The identical request replays the record without touching the phone.
+    swipes = len([r for r in runtime.phone.device.reports if r[0] == "touch" and r[1][0] == "release"])
+    replay = await bridge.full_page(op, {"max_pages": 8, "settle": 0, "stitch": True})
+    assert replay["operation"]["id"] == op
+    assert swipes == len(
+        [r for r in runtime.phone.device.reports if r[0] == "touch" and r[1][0] == "release"]
+    )
+    # The last page is where the screen stays, so its frame is valid for the next touch.
+    current = summary["current"]
     tap = {
         "kind": "tap",
-        "frame_id": frame["frame_id"],
-        "geometry_epoch": frame["geometry_epoch"],
         "x": 0.5,
         "y": 0.5,
+        "frame_id": current["frame_id"],
+        "geometry_epoch": current["geometry_epoch"],
     }
-    op = str(uuid4())
-    await bridge.action(op, tap, False)
-    await bridge.action(op, tap, False)
-    with pytest.raises(BridgeError):
-        await bridge.action(op, {**tap, "x": 0.7}, False)
-    await bridge.action(str(uuid4()), {"kind": "send_text", "text": "héllo"}, False)
-    await bridge.action(str(uuid4()), {"kind": "launch_app", "bundle_id": "com.apple.Preferences"}, False)
-    await bridge.link(str(uuid4()), "com.apple.mobilesafari", "page", {"url": "https://example.org/"}, False)
-    with pytest.raises(BridgeError):
-        await bridge.link(str(uuid4()), "net.whatsapp.WhatsApp", "chat_with_text", {"phone": "1"}, False)
-    await bridge.full_page(str(uuid4()), {"max_pages": 2, "settle": 0})
-    await bridge.control("pause", str(uuid4()))
-    await bridge.control("resume", str(uuid4()))
-    await bridge.control("renew", str(uuid4()))
-    await bridge.control("release", str(uuid4()))
-
-
-def rows(runtime):
-    volatile = {
-        "process",
-        "seconds",
-        "remaining_seconds",
-        "stream_epoch",
-        "received_at",
-        "request_seconds",
-        "cadence",
-        "lags",
-        "since",
-        "change_count",
-        "clipboard",
-        "notes",
-    }
-
-    def clean(value):
-        if isinstance(value, dict):
-            return {k: clean(v) for k, v in value.items() if k not in volatile and "frame_id" not in k}
-        if isinstance(value, list):
-            return [clean(v) for v in value]
-        return value
-
-    found = runtime.journal.db.execute(
-        "SELECT kind, state, result FROM operations ORDER BY created"
-    ).fetchall()
-    return [(r["kind"], r["state"], clean(json.loads(r["result"]) if r["result"] else None)) for r in found]
-
-
-async def test_the_journal_records_the_same_rows_through_either_bridge(tmp_path):
-    results = []
-    for name in ("http", "local"):
-        runtime = runtime_at(tmp_path / name)
-        await runtime.start()
-        if name == "http":
-            session = runtime.auth.open_session()
-            http = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=create_app(runtime)),
-                base_url="http://testserver",
-                headers={"Authorization": f"Bearer {session}"},
-            )
-            bridge = PhoneClient(http)
-        else:
-            bridge = local(runtime)
-        await scenario(bridge)
-        await bridge.close()
-        results.append(rows(runtime))
-        await runtime.close()
-    http_rows, local_rows = results
-    assert len(local_rows) == 10
-    assert http_rows == local_rows
+    assert (await bridge.action(str(uuid4()), tap, False))["operation"]["state"] == "SUCCEEDED"
+    # Another caller cannot read the images.
+    other = local(runtime)
+    with pytest.raises(BridgeError) as hidden:
+        await other._run(lambda: runtime.phone.full_page_result(op, other.owner))
+    assert hidden.value.code == "OPERATION_NOT_FOUND"
+    await bridge.close()
