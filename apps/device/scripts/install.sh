@@ -98,6 +98,9 @@ UV_PROJECT_ENVIRONMENT="$release_dir/.device-venv" "$uv_bin" sync --frozen --no-
 .venv/bin/python -c 'import openlolo.interfaces.cli'
 .device-venv/bin/python -c 'import openlolo.coredevice.worker; import pymobiledevice3.remote.core_device.hid_service, pymobiledevice3.remote.userspace_tunnel'
 [ -e /etc/openlolo/box.toml ] || install -m 0644 "$source_dir/config/box.example.toml" /etc/openlolo/box.toml
+# Earlier templates pinned the renewed lease at 60 s; the lease now lapses after this much idle
+# time, and the template default is 90. Only the untouched template line is rewritten.
+sed -i 's/^lease_seconds = 60$/lease_seconds = 90/' /etc/openlolo/box.toml
 if [ "$board" != auto ] && ! grep -qE '^[[:space:]]*board[[:space:]]*=' /etc/openlolo/box.toml; then
   printf '\n# Hardware profile detected by the installer.\nboard = "%s"\n' "$board" >> /etc/openlolo/box.toml
 fi

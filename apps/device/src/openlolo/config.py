@@ -26,7 +26,8 @@ class Config(StrictModel):
     port: int = Field(default=8080, ge=1024, le=65535)
     allowed_hosts: list[str] = ["127.0.0.1:8080", "localhost:8080"]
     allowed_origins: list[str] = ["http://127.0.0.1:8080", "http://localhost:8080"]
-    lease_seconds: float = Field(default=60, ge=1, le=60)
+    # Seconds without owner activity after which the control lease lapses and held input is released.
+    lease_seconds: float = Field(default=90, ge=1, le=600)
     queue_size: int = Field(default=16, ge=1, le=64)
     frame_ttl: float = Field(default=120, ge=1, le=300)
     capture_deadline: float = Field(default=20, ge=0.1, le=60)

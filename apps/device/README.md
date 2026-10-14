@@ -30,8 +30,8 @@ uv run openlolo credential --state-dir .tmp/simulator/state
 
 Open <http://127.0.0.1:8080>. Acquire control, refresh the screenshot, then tap, drag,
 type, send keys, or press hardware buttons. The simulated phone is clearly labeled. Its
-nine-target image is synthetic; simulation is not hardware validation. Control lasts 60
-seconds and the UI renews every 15 seconds. Pause cancels pending input and attempts
+nine-target image is synthetic; simulation is not hardware validation. Control lapses after
+90 seconds without an action or screenshot (`lease_seconds`); the UI never renews. Pause cancels pending input and attempts
 release-all on a separate worker channel. Resume explicitly before sending more input.
 
 ```sh
