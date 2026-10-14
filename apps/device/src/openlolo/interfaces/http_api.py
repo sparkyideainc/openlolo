@@ -1,7 +1,6 @@
 """Internal Phone API: owner sessions, leases, the journal and every phone operation."""
 
 import base64
-import inspect
 import json
 
 from pydantic import ValidationError
@@ -180,47 +179,10 @@ def create_app(runtime):
 
     async def control(request):
         who = owner(request)
-        data = ControlRequest.model_validate(await body(request)).model_dump()
+        data = ControlRequest.model_validate(await body(request))
         command = request.path_params["command"]
-        token = data.get("lease_token")
-        if command == "cancel" and data.get("target") is None:
-            raise OpenLoloError("INVALID_REQUEST", "Cancellation requires a target operation ID", 400)
-        coordinator = runtime.coordinator
-        # Stop is always available to an authenticated local owner, including after lease loss.
-        # Renew is a deprecated no-op that only reports status.
-        if command not in {"acquire", "pause", "renew"}:
-            coordinator.check(who, token, allow_paused=True)
-        if command not in {"acquire", "renew", "release", "pause", "resume", "cancel"}:
-            raise OpenLoloError("UNKNOWN_OPERATION", status=404)
-        record, fresh = runtime.journal.reserve(
-            data["operation_id"], who, command, {"target": data.get("target")}
-        )
-        if not fresh:
-            result = record
-            if command == "acquire" and record["state"] == "SUCCEEDED":
-                result = {**record, "control": coordinator.lease_status(who, include_token=True)}
-            return JSONResponse(result)
-        methods = {
-            "acquire": lambda: phone.acquire_control(who),
-            "renew": lambda: phone.renew_control(who, token),
-            "release": lambda: phone.release_control(who, token),
-            "pause": phone.pause,
-            "resume": lambda: phone.resume(who, token),
-            "cancel": lambda: phone.cancel(data["target"], who),
-        }
-        runtime.journal.update(data["operation_id"], "DISPATCHED")
-        try:
-            result = methods[command]()
-            if inspect.isawaitable(result):
-                result = await result
-            public = {k: v for k, v in result.items() if k != "lease_token"}
-            record = runtime.journal.update(data["operation_id"], "SUCCEEDED", public)
-            if command in {"acquire", "renew"}:
-                record["control"] = result
-            return JSONResponse(record)
-        except OpenLoloError as exc:
-            runtime.journal.update(data["operation_id"], "FAILED", exc.as_dict())
-            raise
+        record = await phone.control(data.operation_id, who, command, data.lease_token, data.target)
+        return JSONResponse(record)
 
     routes = [
         Route("/api/status", status),

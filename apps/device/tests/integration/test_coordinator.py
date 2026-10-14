@@ -309,3 +309,80 @@ async def test_open_link_resolves_profile_and_opens_url(runtime, lease):
     assert (
         runtime.phone.app_profile("com.burbn.instagram")["workflows"]["send_dm"]["steps"][0]["kind"] == "open"
     )
+
+
+class Checked(asyncio.Future):
+    """A work future that records the journal state at the moment it settles."""
+
+    def __init__(self, journal, op, seen):
+        super().__init__()
+        self.journal, self.op, self.seen = journal, op, seen
+
+    def _record(self):
+        self.seen.append(self.journal.get(self.op, "owner")["state"])
+
+    def set_result(self, result):
+        self._record()
+        super().set_result(result)
+
+    def cancel(self, msg=None):
+        if not self.done():
+            self._record()
+        return super().cancel(msg)
+
+
+def checked(runtime, op, seen):
+    work = runtime.coordinator.pending[op]
+    work.future = Checked(runtime.journal, op, seen)
+    return work
+
+
+async def test_journal_is_written_before_the_work_future_settles(runtime, lease):
+    """Coordinator.outcome waiters read the journal once the future settles: every path must
+    have recorded a terminal state by then."""
+    seen: list[str] = []
+    phone = runtime.phone
+    # Success.
+    op = str(uuid4())
+    phone.action(op, "owner", lease, Action(kind="key", key="enter"))
+    await runtime.coordinator.outcome(checked(runtime, op, seen).operation_id, 3)
+    # Failure while running.
+    op = str(uuid4())
+    phone.action(op, "owner", lease, Action(kind="key", key="enter"))
+    checked(runtime, op, seen)
+    phone.device.connected = False
+    await runtime.coordinator.outcome(op, 3)
+    phone.device.connected = True
+    # Cancelled while queued, and cancelled while running.
+    phone.device.delay = 0.5
+    capture = asyncio.create_task(phone.screenshot())
+    await asyncio.sleep(0.01)
+    queued = str(uuid4())
+    phone.action(queued, "owner", lease, Action(kind="key", key="enter"))
+    checked(runtime, queued, seen)
+    await phone.cancel(queued, "owner")
+    await capture
+    running = str(uuid4())
+    phone.action(running, "owner", lease, Action(kind="type_text", text="lots of characters"))
+    checked(runtime, running, seen)
+    await asyncio.sleep(0.07)
+    await phone.pause()
+    await runtime.coordinator.outcome(running, 3)
+    assert seen == ["SUCCEEDED", "OUTCOME_UNKNOWN", "CANCELLED", "OUTCOME_UNKNOWN"], seen
+
+
+async def test_outcome_waits_without_cancelling_the_work(runtime, lease):
+    op = str(uuid4())
+    runtime.phone.action(op, "owner", lease, Action(kind="type_text", text="lots of characters"))
+    started = time.monotonic()
+    await runtime.coordinator.outcome(op, 0.05)
+    assert time.monotonic() - started < 0.5
+    assert runtime.phone.operation_status(op, "owner")["state"] in {"QUEUED", "DISPATCHED"}
+    waiter = asyncio.create_task(runtime.coordinator.outcome(op, 10))
+    await asyncio.sleep(0.05)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await runtime.coordinator.outcome(op, 10)
+    assert runtime.phone.operation_status(op, "owner")["state"] == "SUCCEEDED"
+    await runtime.coordinator.outcome(str(uuid4()), 10)  # Unknown or finished: returns at once.

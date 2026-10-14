@@ -1,4 +1,5 @@
 import base64
+import inspect
 import time
 from collections import OrderedDict
 
@@ -401,6 +402,45 @@ class Phone:
 
     def resume(self, owner, token):
         return self.coordinator.resume(owner, token)
+
+    async def control(self, operation_id, owner, command, token=None, target=None):
+        """One journaled control command. Pause needs no lease (the safety exception); the
+        others need the caller's current token, paused or not. Renew is a deprecated no-op that
+        only reports status. A replayed operation ID returns its record; a replayed successful
+        acquire also returns the caller's lease, token included."""
+        if command == "cancel" and target is None:
+            raise OpenLoloError("INVALID_REQUEST", "Cancellation requires a target operation ID", 400)
+        coordinator = self.coordinator
+        if command not in {"acquire", "pause", "renew"}:
+            coordinator.check(owner, token, allow_paused=True)
+        if command not in {"acquire", "renew", "release", "pause", "resume", "cancel"}:
+            raise OpenLoloError("UNKNOWN_OPERATION", status=404)
+        record, fresh = self.journal.reserve(operation_id, owner, command, {"target": target})
+        if not fresh:
+            if command == "acquire" and record["state"] == "SUCCEEDED":
+                record = {**record, "control": coordinator.lease_status(owner, include_token=True)}
+            return record
+        methods = {
+            "acquire": lambda: self.acquire_control(owner),
+            "renew": lambda: self.renew_control(owner, token),
+            "release": lambda: self.release_control(owner, token),
+            "pause": self.pause,
+            "resume": lambda: self.resume(owner, token),
+            "cancel": lambda: self.cancel(target, owner),
+        }
+        self.journal.update(operation_id, "DISPATCHED")
+        try:
+            result = methods[command]()
+            if inspect.isawaitable(result):
+                result = await result
+        except OpenLoloError as exc:
+            self.journal.update(operation_id, "FAILED", exc.as_dict())
+            raise
+        public = {k: v for k, v in result.items() if k != "lease_token"}
+        record = self.journal.update(operation_id, "SUCCEEDED", public)
+        if command in {"acquire", "renew"}:
+            record["control"] = result
+        return record
 
     def operation_status(self, operation_id, owner):
         return self.journal.get(operation_id, owner)
