@@ -1,7 +1,5 @@
-// Approve or deny one AI client request, with the access window and an optional one-time PIN
-// (the app's RequestSheet).
+// Approve or deny one AI client request with its access window (the app's RequestSheet).
 
-import { Switch } from "@openlolo/ui/components/switch";
 import {
 	ToggleGroup,
 	ToggleGroupItem,
@@ -43,21 +41,16 @@ export function RequestDialog({
 }) {
 	const queryClient = useQueryClient();
 	const [window, setWindow] = useState<ConsentWindow>("30d");
-	const [admin, setAdmin] = useState(false);
-	const [pin, setPin] = useState<string | null>(null);
 	const [openedAt, setOpenedAt] = useState(() => Date.now());
 	const tick = useTick(open);
 	useEffect(() => {
 		if (open) {
 			setWindow("30d");
-			setAdmin(false);
-			setPin(null);
 			setOpenedAt(Date.now());
 		}
 	}, [open]);
 
 	const scopes = consent?.scopes ?? [];
-	const offersAdmin = scopes.includes("owner:admin");
 	const windows: ConsentWindow[] = ["24h", "30d", "never"];
 	const done = () => {
 		void queryClient.invalidateQueries({ queryKey: keys.consents });
@@ -67,19 +60,14 @@ export function RequestDialog({
 	};
 	const decide = useMutation({
 		mutationFn: (allow: boolean) =>
-			api.decide(consent?.handle ?? "", allow, admin, window),
+			api.decide(consent?.handle ?? "", allow, window),
 		onSuccess: (_, allow) => {
 			toast.success(allow ? "Access approved." : "Request denied.");
 			done();
 		},
 		onError: (error) => toast.error(error.message),
 	});
-	const issuePin = useMutation({
-		mutationFn: () => api.pin(consent?.handle ?? "", admin, window),
-		onSuccess: (result) => setPin(result.pin),
-		onError: (error) => toast.error(error.message),
-	});
-	const busy = decide.isPending || issuePin.isPending;
+	const busy = decide.isPending;
 	void tick;
 	const elapsed = Math.floor((Date.now() - openedAt) / 1000);
 	const remaining = consent ? (consent.expires_in ?? 0) - elapsed : 0;
@@ -114,10 +102,7 @@ export function RequestDialog({
 					</div>
 					<Section>
 						<LabeledRow label="From" value={consentFrom(consent)} />
-						<LabeledRow
-							label="Can"
-							value={scopeText(scopes.filter((s) => s !== "owner:admin"))}
-						/>
+						<LabeledRow label="Can" value={scopeText(scopes)} />
 						<LabeledRow
 							label="Request expires"
 							value={expiresText(remaining).replace("Expires ", "")}
@@ -143,37 +128,7 @@ export function RequestDialog({
 								</ToggleGroupItem>
 							))}
 						</ToggleGroup>
-						{offersAdmin ? (
-							<div className="mt-2 flex min-h-14 items-center justify-between gap-4 rounded-2xl bg-card px-4 py-2">
-								<span className="flex flex-col">
-									<span className="text-base text-foreground">
-										Allow box administration
-									</span>
-									<span className="text-[13px] text-muted-foreground">
-										Lets the client change box settings and clients.
-									</span>
-								</span>
-								<Switch
-									checked={admin}
-									onCheckedChange={setAdmin}
-									aria-label="Allow box administration"
-								/>
-							</div>
-						) : null}
 					</Section>
-					{pin ? (
-						<Section>
-							<div className="flex flex-col items-center gap-1.5 px-4 py-4 text-center">
-								<span className="select-all font-bold font-mono text-[34px] text-foreground tracking-widest">
-									{pin}
-								</span>
-								<span className="text-[13px] text-muted-foreground">
-									Enter this PIN on the requesting page. It expires in 30
-									seconds.
-								</span>
-							</div>
-						</Section>
-					) : null}
 					<div className="flex flex-col gap-2.5 pb-2">
 						<BusyButton
 							busy={decide.isPending && decide.variables === true}
@@ -191,15 +146,6 @@ export function RequestDialog({
 							onClick={() => decide.mutate(false)}
 						>
 							Deny
-						</BusyButton>
-						<BusyButton
-							look="link"
-							busy={issuePin.isPending}
-							disabled={busy}
-							onClick={() => issuePin.mutate()}
-							className="h-11 font-medium text-[15px]"
-						>
-							{pin ? "Issue a new PIN" : "Use a one-time PIN instead"}
 						</BusyButton>
 					</div>
 				</div>

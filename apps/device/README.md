@@ -10,7 +10,7 @@ operate an explicitly bound iPhone through Apple's CoreDevice services: native
 screenshots, touch, a virtual keyboard, hardware buttons, and app/device information.
 The phone connects to the ARM64 Linux box either over **USB** or over **Wi-Fi**; the two are
 interchangeable transports under one device layer. The browser UI runs through an SSH
-tunnel. Local stdio and remote MCP adapters expose the same API to agents. Python,
+tunnel. A remote MCP entry exposes the same API to agents. Python,
 asyncio, Starlette, SQLite, pymobiledevice3, and plain browser assets; no cloud relay or
 persistent video in this prototype. First-time Wi-Fi setup uses an offline local portal;
 USB pairing requires accepting iOS's Trust prompt.
@@ -91,9 +91,11 @@ Switch modes with `POST /api/setup/transport` or the UI; the phone stays bound.
 Claude.ai, ChatGPT, and API-level agents can reach the Pi through a public HTTPS URL
 served by Tailscale Funnel (Cloudflare Tunnel remains optional). The Pi keeps the MCP server, an embedded OAuth 2.1
 authorization server, and all authorization decisions; the tunnel only carries TLS.
-Every client is approved by the owner (from the box page, with a PIN, or with a
-single-use credential) for a bounded duration; approval grants the screen and input
-together, and control expires with the chosen window.
+Every client is approved by the owner on the box page (open the request under Access, or
+scan the QR code on the client's consent page) for a bounded duration; approval grants the
+screen and input together, and control expires with the chosen window. Claude Code and
+Claude Desktop connect the same way: add the remote URL as an HTTP MCP server and approve
+the request when the browser opens.
 
 ## Box page
 
@@ -125,14 +127,6 @@ CI runs the same checks on Python 3.11, 3.13, and 3.14. Type hints are gradual: 
 checks annotated code and infers the rest, so annotate new and touched code. The
 `coredevice` worker modules import pymobiledevice3 lazily and are exempt from import
 resolution on development machines; `uv sync --extra device` installs it locally.
-
-## Local MCP
-
-Install `uv sync --frozen --extra mcp`, create a dedicated private login, and launch
-`uv run --extra mcp openlolo-mcp --session ~/.config/openlolo/mcp-session.json`
-from a stdio MCP host. The adapter runs on the Mac over the same SSH tunnel and
-preserves the Pi's leases, journal, and frame checks. See the
-[host configuration template](config/mcp.example.json).
 
 ## Operating limits
 

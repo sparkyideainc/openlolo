@@ -90,9 +90,7 @@ async def serve(config):
         extras.append(
             SecondaryServer(
                 uvicorn.Config(
-                    create_gateway_app(
-                        runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:], app_routes=True
-                    ),
+                    create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:]),
                     host=config.lan_bind,
                     port=config.lan_port,
                     ssl_certfile=str(cert),
@@ -274,8 +272,7 @@ def main():
         state_dir = args.state_dir or load_config(args.config).state_dir
         journal = Journal(state_dir / "openlolo.sqlite3")
         try:
-            auth = Auth(journal)
-            provider = OAuthProvider(journal, auth, "https://unused.invalid")
+            provider = OAuthProvider(journal, "https://unused.invalid")
             if args.action == "list":
                 clients = provider.list_clients(every_issuer=True)
                 print(json.dumps({"clients": clients}, indent=2))

@@ -1,20 +1,15 @@
 import asyncio
 import base64
 import json
-import socket
-import sys
 from uuid import uuid4
 
 import httpx
 import pytest
-import uvicorn
 from mcp import Client
-from mcp.client.stdio import StdioServerParameters
 
 from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.cli import SecondaryServer, save_private
 from openlolo.interfaces.http_api import create_app
-from openlolo.interfaces.mcp_client import BridgeError, PhoneClient, endpoint, private_session
+from openlolo.interfaces.mcp_client import BridgeError, PhoneClient
 from openlolo.interfaces.mcp_server import create_server
 
 
@@ -390,64 +385,6 @@ async def test_mcp_request_cancellation_reaches_hardware(runtime):
                 break
             await asyncio.sleep(0.01)
         assert runtime.coordinator.paused and runtime.phone.device.generation is None
-
-
-def test_private_session_permissions_lock_and_endpoint(tmp_path):
-    path = tmp_path / "session.json"
-    save_private(path, {"url": "http://127.0.0.1:8080", "session": "secret"})
-    with private_session(path):
-        with pytest.raises(ValueError, match="already in use"):
-            with private_session(path):
-                pass
-    path.chmod(0o644)
-    with pytest.raises(ValueError, match="owner-only"):
-        with private_session(path):
-            pass
-    for value in (
-        "http://127.0.0.1:8080@evil.test",
-        "http://192.168.4.47:8080",
-        "http://localhost:8080/api",
-        "http://localhost:8080?token=secret",
-    ):
-        with pytest.raises(ValueError):
-            endpoint(value)
-
-
-async def test_stdio_subprocess_real_http_and_clean_disconnect(runtime, tmp_path):
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    runtime.config.allowed_hosts = [f"127.0.0.1:{port}"]
-    path = tmp_path / "mcp-session.json"
-    save_private(
-        path, {"url": f"http://127.0.0.1:{port}", "session": runtime.auth.login(runtime.auth.issue())}
-    )
-    api = SecondaryServer(uvicorn.Config(create_app(runtime, False), log_level="error", access_log=False))
-    task = asyncio.create_task(api.serve(sockets=[sock]))
-    try:
-        for _ in range(100):
-            if api.started:
-                break
-            await asyncio.sleep(0.01)
-        assert api.started
-        params = StdioServerParameters(
-            command=sys.executable, args=["-m", "openlolo.interfaces.mcp_server", "--session", str(path)]
-        )
-        async with Client(params, mode="legacy") as client:
-            await acquire(client)
-            image = await client.call_tool("openlolo_screenshot", {})
-            assert not image.is_error and any(b.type == "image" for b in image.content)
-            result = await client.call_tool("openlolo_key", {"operation_id": str(uuid4()), "key": "tab"})
-            assert not result.is_error and result.structured_content["operation"]["state"] == "SUCCEEDED"
-        for _ in range(100):
-            if runtime.coordinator.lease is None:
-                break
-            await asyncio.sleep(0.01)
-        assert runtime.coordinator.lease is None
-    finally:
-        api.should_exit = True
-        await task
-        sock.close()
 
 
 async def test_mcp_full_page_returns_one_image_per_page(runtime):

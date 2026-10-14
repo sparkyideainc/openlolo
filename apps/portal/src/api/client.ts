@@ -113,14 +113,8 @@ export interface BoxApi {
 	decide(
 		handle: string,
 		allow: boolean,
-		admin: boolean,
 		window: ConsentWindow,
 	): Promise<{ decided: string }>;
-	pin(
-		handle: string,
-		admin: boolean,
-		window: ConsentWindow,
-	): Promise<{ pin: string; expires_in: number }>;
 	revoke(clientId: string): Promise<void>;
 	discover(): Promise<DiscoveredPhone[]>;
 	setup(
@@ -168,15 +162,9 @@ export const liveApi: BoxApi = {
 		request("POST", "/app/network/setup_mode", { enabled }),
 	reset: (device) => request("POST", "/app/reset", { device }),
 	pause: () => request("POST", "/app/pause", { operation_id: operationId() }),
-	decide: (handle, allow, admin, window) =>
+	decide: (handle, allow, window) =>
 		request("POST", `/app/consents/${encodeURIComponent(handle)}`, {
 			decision: allow ? "allow" : "deny",
-			admin,
-			window,
-		}),
-	pin: (handle, admin, window) =>
-		request("POST", `/app/consents/${encodeURIComponent(handle)}/pin`, {
-			admin,
 			window,
 		}),
 	revoke: (clientId) =>

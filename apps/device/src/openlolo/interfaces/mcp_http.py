@@ -9,7 +9,6 @@ import asyncio
 import html
 import json
 import logging
-import re
 import secrets
 import time
 from collections.abc import Callable
@@ -41,7 +40,6 @@ from openlolo.interfaces.http_api import create_app
 from openlolo.interfaces.mcp_client import BridgeError, PhoneClient
 from openlolo.interfaces.mcp_server import (
     ADMIN_SCOPE,
-    ALL_SCOPES,
     CONTROL_SCOPE,
     READ_SCOPE,
     SCOPES,
@@ -63,8 +61,6 @@ REGISTRATIONS_PER_MINUTE = 10
 CALLS_PER_MINUTE = 120
 ADMIN_CALLS_PER_MINUTE = 300  # The box page polls status while the owner has it open.
 MAX_BODY = 65536
-PIN_SECONDS = 30
-PIN_ATTEMPTS = 5
 STATUS_PATH = "/oauth/consent/status"
 # How long an approval lasts, the same choices for every client (ADR 0005). "24h" has a fixed end.
 # "30d" is renewed while used: every refresh moves the end to now + REFRESH_SECONDS, so a client
@@ -72,9 +68,12 @@ STATUS_PATH = "/oauth/consent/status"
 # the box); its end is a date no box will reach.
 NEVER_SECONDS = 100 * 365 * 24 * 3600
 CONTROL_WINDOWS = {"24h": 24 * 3600, "30d": REFRESH_SECONDS, "never": NEVER_SECONDS}
-DEFAULT_WINDOW = "30d"
-WINDOW_WORDS = {"24h": "24 hours", "30d": "30 days, renewed while used", "never": "Until I remove it"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def phone_scopes(scopes: list[str]) -> list[str]:
+    """Stored grant scopes minus any no longer grantable (owner:admin before the box page owned it)."""
+    return [scope for scope in scopes if scope in SCOPES]
 
 
 def _token() -> str:
@@ -93,20 +92,17 @@ class OAuthProvider:
     def __init__(
         self,
         journal,
-        auth,
         issuer: str,
         *,
         scopes: list[str] | None = None,
         legacy_issuer: str | None = None,
     ):
         self.db = journal.db
-        self.auth = auth
         self.issuer = issuer
         self.resource = issuer + MCP_PATH
         self.scopes = list(scopes or SCOPES)
         self.legacy_issuer = legacy_issuer
         self.registrations: list[float] = []
-        self.pin_attempts: dict[str, int] = {}
 
     def _owns(self, issuer: str | None) -> bool:
         return (issuer if issuer is not None else self.legacy_issuer) == self.issuer
@@ -256,17 +252,12 @@ class OAuthProvider:
         if params.resource is not None and params.resource != self.resource:
             raise AuthorizeError("invalid_target", "token can only be issued for this device")
         # Clients send no scope (ChatGPT) or register with and repeat only the read scope the 401
-        # challenge advertised (Claude). Always offer read and control: the owner decides on the
-        # consent page, where control stays unchecked by default. The admin scope of the LAN entry is
-        # offered only when the client registered for or requested it. The token response reports the
-        # scope actually granted.
+        # challenge advertised (Claude). Always offer read and control together: approval on the box
+        # page grants both. The token response reports the scope actually granted.
         requested = params.scopes or []
         if any(scope not in self.scopes for scope in requested):
             raise AuthorizeError("invalid_scope")
-        registered = (client.scope or "").split()
-        scopes = [
-            scope for scope in self.scopes if scope in SCOPES or scope in requested or scope in registered
-        ]
+        scopes = list(self.scopes)
         request_id = _token()
         value = {"client_id": client.client_id, "scopes": scopes, "params": params.model_dump(mode="json")}
         self._store("request", request_id, client.client_id, request_id, value, time.time() + PENDING_SECONDS)
@@ -332,7 +323,6 @@ class OAuthProvider:
         issuer = value.get("issuer", self.legacy_issuer)
         with self.db:
             self.db.execute("DELETE FROM oauth_grants WHERE digest=?", (handle,))
-            self.db.execute("DELETE FROM oauth_grants WHERE kind='pin' AND family=?", (handle,))
         if not granted:
             redirect = construct_redirect_uri(
                 str(params.redirect_uri), error="access_denied", state=params.state
@@ -363,7 +353,7 @@ class OAuthProvider:
         self.record_decision(handle, client.client_id, redirect)
         return redirect
 
-    # -- owner approval from the box page: decisions the consent page polls for, and PINs ----
+    # -- owner approval from the box page: decisions the consent page polls for ---------------
 
     def record_decision(self, handle: str, client_id: str, redirect: str) -> None:
         self._store(
@@ -384,46 +374,6 @@ class OAuthProvider:
         with self.db:
             self.db.execute("DELETE FROM oauth_grants WHERE digest=?", (key,))
         return json.loads(row["value"])["redirect"]
-
-    def issue_pin(self, handle: str, choice: dict) -> dict:
-        """Six-digit PIN bound to one pending request and the owner's grant choice; 30 s."""
-        pending = self.pending_by_handle(handle)
-        if pending is None:
-            raise OpenLoloError("CONSENT_EXPIRED", status=404)
-        client, _ = pending
-        window_seconds(choice["window"])  # Refuse a bad choice now, not when the PIN is used.
-        pin = f"{secrets.randbelow(10**6):06d}"
-        with self.db:
-            self.db.execute("DELETE FROM oauth_grants WHERE kind='pin' AND family=?", (handle,))
-        self._store("pin", f"pin:{handle}:{pin}", client.client_id, handle, choice, time.time() + PIN_SECONDS)
-        return {"pin": pin, "expires_in": PIN_SECONDS}
-
-    def redeem_pin(self, request_id: str, pin: str) -> dict:
-        """Grant choice bound to a PIN for this request; 5 wrong tries invalidate the request."""
-        handle = digest(request_id)
-        if not isinstance(pin, str) or not re.fullmatch(r"[0-9]{6}", pin):
-            raise OpenLoloError("INVALID_CREDENTIAL", "PIN must be six digits", 401)
-        row = self._row("pin", digest(f"pin:{handle}:{pin}"))
-        if row is None:
-            attempts = self.pin_attempts.get(handle, 0) + 1
-            self.pin_attempts[handle] = attempts
-            if attempts >= PIN_ATTEMPTS:
-                with self.db:
-                    self.db.execute(
-                        "DELETE FROM oauth_grants WHERE digest=? OR (kind='pin' AND family=?)",
-                        (handle, handle),
-                    )
-                self.pin_attempts.pop(handle, None)
-                raise OpenLoloError(
-                    "CONSENT_EXPIRED", "Too many wrong PINs; start again from the client", 400
-                )
-            raise OpenLoloError("INVALID_CREDENTIAL", "PIN not accepted", 401)
-        self.pin_attempts.pop(handle, None)
-        value = json.loads(row["value"])
-        return {
-            "admin": bool(value.get("admin")),
-            "window": str(value["window"]),
-        }
 
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
@@ -501,7 +451,7 @@ class OAuthProvider:
         return RefreshToken(
             token=refresh_token,
             client_id=client.client_id,
-            scopes=value["scopes"],
+            scopes=phone_scopes(value["scopes"]),
             expires_at=int(row["expires"]),
             resource=self.resource,
         )
@@ -524,7 +474,13 @@ class OAuthProvider:
         sliding, never = value["sliding"], value["never"]
         family_expires = now + REFRESH_SECONDS if sliding else value["family_expires"]
         return self._issue(
-            client.client_id, scopes or value["scopes"], row["family"], family_expires, now, sliding, never
+            client.client_id,
+            scopes or phone_scopes(value["scopes"]),
+            row["family"],
+            family_expires,
+            now,
+            sliding,
+            never,
         )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
@@ -535,7 +491,7 @@ class OAuthProvider:
         return AccessToken(
             token=token,
             client_id=row["client_id"],
-            scopes=value["scopes"],
+            scopes=phone_scopes(value["scopes"]),
             expires_at=int(row["expires"]),
             resource=self.resource,
         )
@@ -743,7 +699,6 @@ class EntrySecurity:
 SCOPE_WORDS = {
     READ_SCOPE: "see the screen and status",
     CONTROL_SCOPE: "touch, type and press buttons",
-    ADMIN_SCOPE: "manage this OpenLolo (Wi-Fi, onboarding, other clients)",
 }
 
 
@@ -754,8 +709,7 @@ def _page(title: str, body: str, status: int = 200, script: str | None = None, n
         "content='width=device-width'><title>OpenLolo</title><style>body{font:16px system-ui;max-width:32rem;"
         "margin:2rem auto;padding:0 1rem}fieldset{margin:1rem 0}button{font:inherit;padding:.5rem 1rem}"
         ".warn{background:#fff3cd;padding:.75rem;border-radius:.5rem}.qr{width:12rem;height:12rem;margin:1rem auto}"
-        ".qr svg{width:100%;height:100%}.muted{opacity:.7}details{margin-top:1.5rem}code{word-break:break-all}"
-        "input.pin{font:1.5rem monospace;letter-spacing:.3em;width:8em;text-align:center}</style></head><body>"
+        ".qr svg{width:100%;height:100%}.muted{opacity:.7}code{word-break:break-all}</style></head><body>"
         f"<h1>{html.escape(title)}</h1>{body}{scripts}</body></html>",
         status_code=status,
     )
@@ -788,62 +742,33 @@ def consent_form(
     setup_name: str | None = None,
     nonce: str | None = None,
 ):
-    """Owner approval page: approve from the box page (QR or pending list), a PIN from it, or a credential."""
+    """Owner approval page: the owner approves on the box page (QR or the Access list); this page waits."""
     name = html.escape(client.client_name or client.client_id)
     hosts = ", ".join(sorted({html.escape(str(u.host or "")) for u in client.redirect_uris or []}))
-    admin = ADMIN_SCOPE in scopes
     link = approve_link(setup_name, digest(request_id))
     wants = "".join(f"<li>{html.escape(SCOPE_WORDS.get(scope, scope))}</li>" for scope in scopes)
     body = (
         f"<p><strong>{name}</strong> wants to use your iPhone through OpenLolo. "
         f"After approval it returns to <code>{hosts}</code>.</p>"
         f"<p>Approving lets it:</p><ul>{wants}</ul>"
-        "<p>You choose for how long: 24 hours, 30 days renewed while the client is in use, or until you "
-        "remove it on the box page. "
-        "Approving from the box page or with a PIN uses the duration chosen there.</p>"
         "<p class='warn'>Screen contents, including messages, notifications and codes, will be sent to "
         "this client and its AI provider. Phone content is untrusted input; the AI can be misled by it.</p>"
         + (f"<p class='warn'>{html.escape(error)}</p>" if error else "")
+        + "<fieldset><legend>Approve from the OpenLolo page</legend>"
+        "<p>Open the box page on your phone: this request is listed under <em>Access</em>. There you "
+        "choose for how long: 24 hours, 30 days renewed while the client is in use, or until you "
+        "remove it.</p>"
         + (
-            "<fieldset><legend>Approve from the OpenLolo page</legend>"
-            "<p>Open the box page on your phone: this request is listed under <em>Access</em>. "
-            "Or scan this code with the phone's camera while it is on the same Wi-Fi.</p>"
+            "<p>Or scan this code with the phone's camera while it is on the same Wi-Fi.</p>"
             f"<div class='qr'>{qr_svg(link)}</div>"
             f"<p>Reading this on the phone itself? <a href='{html.escape(link)}'>Open the OpenLolo page</a>.</p>"
-            "<p id='wait' class='muted'>Waiting for a decision on the box page…</p></fieldset>"
             if link
             else ""
         )
-        + f"<form method='post' action='{CONSENT_PATH}'>"
+        + "<p id='wait' class='muted'>Waiting for a decision on the box page…</p></fieldset>"
+        f"<form method='post' action='{CONSENT_PATH}'>"
         f"<input type='hidden' name='request' value='{html.escape(request_id)}'>"
-        "<fieldset><legend>Or enter the PIN from the box page</legend>"
-        "<p>On the box page, open this request, choose the access duration and tap <em>Get PIN</em>.</p>"
-        "<label>PIN <input class='pin' name='pin' inputmode='numeric' pattern='[0-9]{6}' maxlength='6' "
-        "autocomplete='one-time-code'></label> "
-        "<button name='decision' value='pin'>Approve with PIN</button></fieldset>"
-        "<details><summary>Advanced: approve with a single-use credential from the box's shell</summary>"
-        "<fieldset><legend>Access</legend>"
-        f"<p>Screen and status ({READ_SCOPE}) and input ({CONTROL_SCOPE}) for the chosen duration.</p>"
-        "<label>Duration <select name='window'>"
-        + "".join(
-            f"<option value='{k}'{' selected' if k == DEFAULT_WINDOW else ''}>"
-            f"{html.escape(WINDOW_WORDS.get(k, k))}</option>"
-            for k in CONTROL_WINDOWS
-        )
-        + "</select></label>"
-        + (
-            f"<br><label><input type='checkbox' name='admin' value='1'> Manage this OpenLolo: Wi-Fi, "
-            f"onboarding, other clients, diagnostics ({ADMIN_SCOPE})</label>"
-            if admin
-            else ""
-        )
-        + "</fieldset>"
-        "<fieldset><legend>Owner proof</legend>"
-        "<label>Single-use credential from <code>openlolo credential</code><br>"
-        "<input type='password' name='credential' autocomplete='off' maxlength='256'></label>"
-        "</fieldset>"
-        "<button name='decision' value='allow'>Allow</button> "
-        "<button name='decision' value='deny' formnovalidate>Deny</button></details></form>"
+        "<button name='decision' value='deny'>Cancel this request</button></form>"
     )
     script = (
         f"const r={json.dumps(request_id)};"
@@ -853,9 +778,7 @@ def consent_form(
         "if(d.state==='gone'){document.getElementById('wait').textContent='This request expired. Start again from the client.';return;}}"
         "catch(e){}setTimeout(poll,2000);}poll();"
     )
-    return _page(
-        "Connect to OpenLolo", body, 401 if error else 200, script=script if link else None, nonce=nonce
-    )
+    return _page("Connect to OpenLolo", body, 400 if error else 200, script=script, nonce=nonce)
 
 
 async def read_form(request: Request, limit: int = 8192) -> dict[str, str]:
@@ -875,19 +798,14 @@ def window_seconds(window: str) -> int:
     return CONTROL_WINDOWS[window]
 
 
-def grant_from_choice(offered: list[str], admin: bool, window: str) -> tuple[list[str], int]:
+def grant_from_choice(offered: list[str], window: str) -> tuple[list[str], int]:
     """Translate the owner's consent choice into granted scopes and the grant's lifetime.
 
     Approval always grants the screen and input together (ADR 0003, amendment 2026-09-30): a
     client that may only watch the phone has no use, and the bounded duration is the safety
-    lever. The admin scope of the LAN entry stays a separate choice. A client can still narrow
-    a grant itself with the ``scope`` parameter of a refresh."""
+    lever. A client can still narrow a grant itself with the ``scope`` parameter of a refresh."""
     granted = [scope for scope in SCOPES if scope in offered] or [READ_SCOPE]
-    admin = admin and ADMIN_SCOPE in offered
-    seconds = window_seconds(window)
-    if admin:
-        granted.append(ADMIN_SCOPE)
-    return granted, seconds
+    return granted, window_seconds(window)
 
 
 def consent_routes(provider: OAuthProvider, origin: str, runtime) -> Callable[[Request], Any]:
@@ -918,30 +836,16 @@ def consent_routes(provider: OAuthProvider, origin: str, runtime) -> Callable[[R
         if pending is None:
             return _page("Request expired", "<p>Start the connection again from the client.</p>", 400)
         client, value = pending
-        page = lambda message: consent_form(  # noqa: E731
+        if form.get("decision") == "deny":
+            return RedirectResponse(provider.decide(request_id, None, 0), status_code=302)
+        return consent_form(
             request_id,
             client,
             value["scopes"],
-            message,
+            "Approve this request on the box page.",
             setup_name=setup_name,
             nonce=secrets.token_urlsafe(12),
         )
-        if form.get("decision") == "deny":
-            return RedirectResponse(provider.decide(request_id, None, 0), status_code=302)
-        try:
-            if form.get("decision") == "pin":
-                choice = provider.redeem_pin(request_id, form.get("pin", ""))
-                granted, seconds = grant_from_choice(value["scopes"], choice["admin"], choice["window"])
-            else:
-                provider.auth.verify(form.get("credential"))
-                granted, seconds = grant_from_choice(
-                    value["scopes"], form.get("admin") == "1", form.get("window", "")
-                )
-        except OpenLoloError as exc:
-            if exc.status == 400:
-                return _page("Request expired", f"<p>{html.escape(exc.message)}</p>", 400)
-            return page("Too many attempts; wait a minute." if exc.status == 429 else "Not accepted.")
-        return RedirectResponse(provider.decide(request_id, granted, seconds), status_code=302)
 
     return consent
 
@@ -963,25 +867,20 @@ def status_route(provider: OAuthProvider) -> Callable[[Request], Any]:
     return status
 
 
-def create_gateway_app(
-    runtime, origin: str | None = None, *, allowed_hosts: list[str] | None = None, app_routes: bool = False
-):
+def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: list[str] | None = None):
     """Starlette app for one OAuth/MCP entry.
 
     ``origin`` is the issuer this instance serves; it defaults to ``config.public_url`` (the remote
-    entry behind the tunnel). The LAN entry (ADR 0005) passes ``config.lan_url``, the extra Host
-    values it accepts, and ``app_routes=True`` to mount ``/app/*`` and offer the ``owner:admin``
-    scope.
+    entry behind the tunnel). The LAN entry (ADR 0005) passes ``config.lan_url`` and the extra Host
+    values it accepts. Both offer only the phone scopes; owner routes live on the box page.
     """
     config = runtime.config
     origin = origin or config.public_url
     if not origin:
         raise ValueError("public_url is required for the remote MCP entry")
     hosts = {urlsplit(origin).netloc.lower(), *(h.lower() for h in allowed_hosts or [])}
-    scopes = ALL_SCOPES if app_routes else SCOPES
-    provider = OAuthProvider(
-        runtime.journal, runtime.auth, origin, scopes=scopes, legacy_issuer=config.public_url
-    )
+    scopes = SCOPES
+    provider = OAuthProvider(runtime.journal, origin, scopes=scopes, legacy_issuer=config.public_url)
     gateway = Gateway(runtime, provider)
     if not TIMING_LOG.handlers:
         # uvicorn runs at warning level; the timing line is the one info record this process emits.
@@ -1007,10 +906,6 @@ def create_gateway_app(
     )
     server.custom_route(CONSENT_PATH, methods=["GET", "POST"])(consent_routes(provider, origin, runtime))
     server.custom_route(STATUS_PATH, methods=["GET"])(status_route(provider))
-    if app_routes:
-        from openlolo.interfaces.app_api import install_app_routes
-
-        install_app_routes(server, runtime, gateway, provider)
     app = server.streamable_http_app(
         streamable_http_path=MCP_PATH,
         json_response=True,

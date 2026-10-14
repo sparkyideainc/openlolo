@@ -26,7 +26,6 @@ export function scopeText(scopes: readonly string[]): string {
 	const parts: string[] = [];
 	if (control) parts.push("See screen, tap, type");
 	else if (read) parts.push("See screen");
-	if (scopes.includes("owner:admin")) parts.push("box settings");
 	return parts.length === 0 ? "No access" : parts.join(" and ");
 }
 

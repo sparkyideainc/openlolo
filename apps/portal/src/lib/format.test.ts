@@ -35,8 +35,8 @@ describe("format", () => {
 		expect(text(true)).toBe("Yes");
 		expect(clientName({ client_name: null, client_id: "abc" })).toBe("abc");
 		expect(clientName({})).toBe("Unknown client");
-		expect(scopeText(["phone:read", "phone:control", "owner:admin"])).toBe(
-			"See screen, tap, type and box settings",
+		expect(scopeText(["phone:read", "phone:control"])).toBe(
+			"See screen, tap, type",
 		);
 		expect(scopeText(["phone:read"])).toBe("See screen");
 		expect(scopeText([])).toBe("No access");

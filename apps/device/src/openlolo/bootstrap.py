@@ -99,13 +99,11 @@ class Runtime:
 def build_door(runtime):
     """Build the OAuth provider and gateway for consents, clients, and the MCP bridge."""
     from openlolo.interfaces.mcp_http import Gateway, OAuthProvider
-    from openlolo.interfaces.mcp_server import ALL_SCOPES
+    from openlolo.interfaces.mcp_server import SCOPES
 
     config = runtime.config
     issuer = config.public_url or config.lan_url or "https://openlolo.invalid"
-    provider = OAuthProvider(
-        runtime.journal, runtime.auth, issuer, scopes=ALL_SCOPES, legacy_issuer=config.public_url
-    )
+    provider = OAuthProvider(runtime.journal, issuer, scopes=SCOPES, legacy_issuer=config.public_url)
     return provider, Gateway(runtime, provider)
 
 

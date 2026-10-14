@@ -70,7 +70,7 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 						client_id: "claude-desktop",
 						client_name: "Claude Desktop",
 						redirect_hosts: ["claude.ai"],
-						scopes: ["phone:read", "phone:control", "owner:admin"],
+						scopes: ["phone:read", "phone:control"],
 						expires_in: 240,
 						created: t - 120,
 					},
@@ -318,14 +318,6 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			await delay();
 			consents = consents.filter((c) => c.handle !== handle);
 			return { decided: allow ? "allow" : "deny" };
-		},
-		async pin() {
-			requireSession();
-			await delay();
-			return {
-				pin: String(Math.floor(100000 + Math.random() * 900000)),
-				expires_in: 30,
-			};
 		},
 		async revoke(clientId) {
 			requireSession();

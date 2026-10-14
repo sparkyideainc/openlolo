@@ -14,6 +14,7 @@ from support import (
     LAN_KEY,
     PUBLIC,
     lan_config,
+    owner_approve,
     register,
     running,
     start_authorization,
@@ -35,7 +36,7 @@ async def entries(tmp_path):
     runtime = Runtime(config)
     await runtime.start()
     public = create_gateway_app(runtime)
-    lan = create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:], app_routes=True)
+    lan = create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:])
     async with running(public), running(lan):
         yield runtime, public, lan
     await runtime.close()
@@ -59,7 +60,7 @@ async def test_lan_listener_pins_every_configured_host(entries):
 async def test_issuers_do_not_accept_each_others_grants(entries):
     runtime, public, lan = entries
     async with web(public, PUBLIC) as pc, web(lan, LAN) as lc:
-        # Approve a browser client on the remote entry with the HTML consent form.
+        # Approve a browser client on the remote entry from the box page.
         registered = await register(
             pc, callback=PUBLIC_CALLBACK, scope="phone:read phone:control", name="Claude"
         )
@@ -69,15 +70,7 @@ async def test_issuers_do_not_accept_each_others_grants(entries):
             pc, PUBLIC, public_client, callback=PUBLIC_CALLBACK, scope="phone:read"
         )
         assert started.status_code == 302 and request_id
-        form = {
-            "request": request_id,
-            "credential": runtime.auth.issue(),
-            "decision": "allow",
-            "window": "24h",
-        }
-        consented = await pc.post("/oauth/consent", data=form, headers={"Origin": PUBLIC})
-        assert consented.status_code == 302, consented.text
-        code = parse_qs(urlsplit(consented.headers["location"]).query)["code"][0]
+        code = parse_qs(urlsplit(owner_approve(runtime, request_id, window="24h")).query)["code"][0]
         issued = await tokens(pc, PUBLIC, public_client, code, verifier, callback=PUBLIC_CALLBACK)
         assert issued.status_code == 200, issued.text
         access = issued.json()["access_token"]
@@ -87,7 +80,8 @@ async def test_issuers_do_not_accept_each_others_grants(entries):
         assert accepted.status_code == 200, accepted.text
         rejected = await lc.post("/mcp", json=ping, headers={"Authorization": f"Bearer {access}"})
         assert rejected.status_code == 401, rejected.text
-        assert (await lc.get("/app/status", headers={"Authorization": f"Bearer {access}"})).status_code == 401
+        # Owner routes live on the box page only; the LAN entry has none.
+        assert (await lc.get("/app/status", headers={"Authorization": f"Bearer {access}"})).status_code == 404
 
         # A client registered on the LAN entry does not exist for the remote entry.
         lan_registered = await register(lc)
@@ -97,7 +91,7 @@ async def test_issuers_do_not_accept_each_others_grants(entries):
         assert foreign.status_code in {400, 401} and request_id is None, foreign.text
         own, request_id, _ = await start_authorization(lc, LAN, lan_client)
         assert own.status_code == 302 and request_id
-        # Each provider lists only its own clients; the owner's admin view spans both.
+        # Each provider lists only its own clients; the box page's view spans both.
         assert {r["client_id"] for r in public.provider.list_clients()} == {public_client}
         assert {r["client_id"] for r in lan.provider.list_clients()} == {lan_client}
         assert {r["issuer"] for r in lan.provider.list_clients(every_issuer=True)} == {PUBLIC, LAN}
@@ -111,7 +105,7 @@ async def test_real_tls_listener_serves_pinned_certificate(tmp_path):
     config = lan_config(tmp_path)
     runtime = Runtime(config)
     await runtime.start()
-    app = create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:], app_routes=True)
+    app = create_gateway_app(runtime, config.lan_url, allowed_hosts=config.lan_hosts[1:])
     server = SecondaryServer(
         uvicorn.Config(
             app,
@@ -149,9 +143,12 @@ async def test_real_tls_listener_serves_pinned_certificate(tmp_path):
             )
             assert pinned.status_code == 200 and pinned.json()["issuer"] == LAN
             assert pinned.headers["strict-transport-security"] == "max-age=31536000"
-            info = await c.get("/app/info", headers={"Host": "192.168.4.25:8443"})
-            assert info.status_code == 200 and info.json()["fingerprint"] == tls.fingerprint(LAN_CERT)
-            assert (await c.get("/app/info")).status_code == 403  # Host 127.0.0.1:<port> is not pinned.
+            by_address = await c.get(
+                "/.well-known/oauth-authorization-server", headers={"Host": "192.168.4.25:8443"}
+            )
+            assert by_address.status_code == 200
+            unpinned = await c.get("/.well-known/oauth-authorization-server")
+            assert unpinned.status_code == 403  # Host 127.0.0.1:<port> is not pinned.
     finally:
         server.should_exit = True
         await task
