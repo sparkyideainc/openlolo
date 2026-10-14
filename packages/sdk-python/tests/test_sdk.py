@@ -145,8 +145,10 @@ def screenshot_result(box):
 
 
 def test_addresses():
-    assert base_url("openlolo-ab12") == "https://openlolo-ab12.local"
-    assert base_url("OpenLolo-AB12.local") == "https://openlolo-ab12.local"
+    assert base_url("openlolo-ab12") == "https://openlolo-ab12.local:8443"
+    assert base_url("OpenLolo-AB12.local") == "https://openlolo-ab12.local:8443"
+    assert base_url("openlolo-ab12.local:9443") == "https://openlolo-ab12.local:9443"
+    assert base_url("192.168.4.68:8443") == "https://192.168.4.68:8443"
     assert base_url("https://pi.tailnet.ts.net/") == "https://pi.tailnet.ts.net"
     for bad in ("http://box.local", "https://u:p@box.local", "https://box.local/x"):
         with pytest.raises(ValueError):

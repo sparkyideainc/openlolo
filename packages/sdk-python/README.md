@@ -14,7 +14,9 @@ with Phone("openlolo-ab12") as phone:          # or "https://<box>.ts.net" for r
     phone.tap(0.5, 0.9)                          # or fractions of the screen
 ```
 
-Only the box name, a LAN address, or the remote URL is needed.
+Only the box name (it means `https://<name>.local:8443`, the LAN entry the installer sets up),
+a LAN address with its port, or the remote URL is needed. `examples/open_youtube.py` is a
+complete script.
 
 ## First run: approve on the box page
 

@@ -40,11 +40,20 @@ TYPE_LIMIT = 200  # openlolo_type_text keystrokes; longer or non-ASCII text goes
 FAILED = {"FAILED", "CANCELLED"}
 
 
+LAN_PORT = 8443  # The installer serves the LAN entry here (scripts/install.sh).
+
+
 def base_url(box: str) -> str:
-    """``openlolo-ab12``, ``openlolo-ab12.local`` or ``https://host[:port]`` -> ``https://host[:port]``."""
+    """The box's https origin.
+
+    ``openlolo-ab12`` and ``openlolo-ab12.local`` mean the LAN entry on port 8443; an address
+    with a port, or a full ``https://`` URL (the remote entry), is used as given."""
     box = box.strip()
     if "://" not in box:
-        box = "https://" + (box if "." in box or ":" in box else box + ".local")
+        host = box if "." in box or ":" in box else box + ".local"
+        if host.endswith(".local"):
+            host += f":{LAN_PORT}"
+        box = "https://" + host
     parts = urlsplit(box)
     if parts.scheme != "https" or not parts.hostname or parts.path not in ("", "/") or parts.query:
         raise ValueError(f"not a box address: {box!r} (use https://host or the box name)")
