@@ -4,6 +4,8 @@ python3-venv
 usbmuxd
 libusb-1.0-0
 network-manager
+# Applies deploy/polkit/50-openlolo.rules; Armbian minimal images do not ship it.
+polkitd
 # Setup access point: hostapd owns the radio while the box is in setup mode (ADR 0011 amendment).
 hostapd
 dnsmasq-base

@@ -1,6 +1,6 @@
 import pytest
 
-from openlolo.config import Config, public_origin
+from openlolo.config import Config, load_config, public_origin
 
 
 def test_public_url_normalized_and_optional():
@@ -63,10 +63,10 @@ def test_lan_url_normalized_with_derived_defaults(tmp_path):
     assert config.lan_key == tmp_path / "tls" / "lan.key"
     assert config.lan_files == (config.lan_cert, config.lan_key)
     assert config.setup_name == "OpenLolo-AB12"
-    assert config.board == "ab12"
-    assert Config(backend="simulated", setup_name="OpenLolo-CD34").board == "cd34"  # No lan_url needed.
-    assert Config(backend="simulated").board is None
-    assert Config(backend="simulated", setup_name="Mine").board is None
+    assert config.box_id == "ab12"
+    assert Config(backend="simulated", setup_name="OpenLolo-CD34").box_id == "cd34"  # No lan_url needed.
+    assert Config(backend="simulated").box_id is None
+    assert Config(backend="simulated", setup_name="Mine").box_id is None
     assert config.lan_hosts == ["openlolo-ab12.local:8443"]
     assert config.lan_bind == "0.0.0.0"
     with_ip = Config(
@@ -123,3 +123,12 @@ def test_wifi_interface_validation(name):
     with pytest.raises(ValueError):
         Config(backend="simulated", wifi_interface=name)
     assert Config(backend="simulated", wifi_interface="wlp2s0").wifi_interface == "wlp2s0"
+
+
+def test_board_profile_defaults_to_auto_and_loads_from_box_toml(tmp_path):
+    assert Config(backend="simulated").board == "auto"
+    path = tmp_path / "box.toml"
+    path.write_text('backend = "simulated"\nboard = "radxa-zero3w"\n')
+    assert load_config(path).board == "radxa-zero3w"
+    with pytest.raises(ValueError):
+        Config.model_validate({"backend": "simulated", "board": "orange-pi"})

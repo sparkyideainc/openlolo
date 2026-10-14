@@ -1,5 +1,7 @@
 # Copy to /etc/openlolo/box.toml. The API never binds to a LAN address.
 backend = "hardware"
+# Hardware profile, set by the installer: "radxa-zero3w" (Lolo Pocket) or "auto" for any other box.
+# board = "auto"
 state_dir = "/var/lib/openlolo"
 runtime_dir = "/run/openlolo"
 host = "127.0.0.1"
