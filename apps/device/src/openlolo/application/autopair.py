@@ -12,12 +12,19 @@ from openlolo.domain.models import Binding
 
 log = logging.getLogger("openlolo.autopair")
 
+# Longest cable long poll while nothing is pending; a pending retry or attempt shortens it.
+EVENT_WAIT = 25
+
 
 class AutoPair:
     """Trust-pair the cabled phone only during an explicitly opened setup window.
 
     iOS still requires the owner to unlock the phone and accept its Trust prompt. No label
     code or native app is involved in this CoreDevice pairing flow.
+
+    Event driven: outside the setup window it waits for the window to open and makes no worker
+    calls. Inside it, it follows the worker's usbmuxd attach and detach events (a long poll) and
+    acts on the serials those report; retries follow the rules in ``_pair_and_bind``.
     """
 
     def __init__(self, config, phone, provisioning, bindings, journal, clock=time.monotonic):
@@ -46,7 +53,9 @@ class AutoPair:
             device_tag(Binding(udid=udid, owner_confirmed=True, portrait_locked=True)) if udid else None
         )
 
-    async def tick(self) -> None:
+    async def tick(self, serials: list[str] | None = None) -> None:
+        """One step. ``serials`` are the phones on the cable from the last cable event; when
+        omitted they are read from the worker once."""
         if self.attempt is not None:
             if not self.attempt.done():
                 return
@@ -63,7 +72,9 @@ class AutoPair:
             return
         if self.clock() < self.retry_at:
             return
-        phones = [p.get("udid") for p in await self.phone.usb_phones() if p.get("udid")]
+        if serials is None:
+            serials = (await self.phone.usb_events(None, 0))["serials"]
+        phones = list(serials)
         if not phones:
             self._set("no_phone")
             return
@@ -90,7 +101,7 @@ class AutoPair:
             async def bind():
                 if self.bindings.read() is not None:
                     raise OpenLoloError("ALREADY_BOUND")
-                current = [p.get("udid") for p in await self.phone.usb_phones() if p.get("udid")]
+                current = (await self.phone.usb_events(None, 0))["serials"]
                 if current != [udid]:
                     raise OpenLoloError("DEVICE_DISCONNECTED", "The phone left the cable before binding")
                 return await self.phone.bind(binding)
@@ -122,11 +133,33 @@ class AutoPair:
                 if not isinstance(exc, OpenLoloError):
                     log.warning("USB autopair failed", exc_info=True)
 
+    def _wait_seconds(self) -> float:
+        """How long the next cable poll may block: until a retry falls due or an attempt may
+        have ended, never more than ``EVENT_WAIT``."""
+        if self.attempt is not None:
+            return 1.0
+        if self.retry_at > self.clock():
+            return min(max(self.retry_at - self.clock(), 0.5), EVENT_WAIT)
+        return EVENT_WAIT
+
     async def run(self):
+        changes = None
         while True:
-            with contextlib.suppress(Exception):
-                await self.tick()
-            await asyncio.sleep(2)
+            if not self.provisioning.active:
+                changes = None
+                with contextlib.suppress(Exception):
+                    await self.tick([])  # Updates the reported state; no worker call.
+                await self.provisioning.window_change()
+                continue
+            try:
+                cable = await self.phone.usb_events(changes, 0 if changes is None else self._wait_seconds())
+                changes = cable["changes"]
+                await self.tick(cable["serials"])
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                changes = None
+                await asyncio.sleep(2)  # Worker unavailable: retry at the old pace, setup only.
 
     def start(self):
         if self.task is None and self.config.setup_auto_pair:

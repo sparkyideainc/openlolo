@@ -26,6 +26,8 @@ BOUND_OPS = {
     "clipboard_set",
     "device_info",
 }
+# Longest ``usb_events`` long poll; the client's RPC timeout covers it.
+USB_EVENTS_MAX = 25
 
 
 class DeviceWorker:
@@ -62,6 +64,14 @@ class DeviceWorker:
             return await self.manager.unbind()
         if op == "discover":
             return await setup.discover(self.manager.transports["usb"], self.manager.transports["wifi"])
+        if op == "search":
+            return await self.manager.find()
+        if op == "usb_events":
+            since = request.get("since")
+            timeout = float(request.get("timeout", 0))
+            if since is not None and not isinstance(since, int) or not 0 <= timeout <= USB_EVENTS_MAX:
+                raise OpenLoloError("INVALID_REQUEST", status=400)
+            return await self.manager.usb_events(since, timeout)
         if op == "usb_phones":
             return {"usb": await setup.usb_phones(self.manager.transports["usb"])}
         if op == "wifi_addresses":

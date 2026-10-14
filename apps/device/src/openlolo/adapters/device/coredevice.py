@@ -22,7 +22,9 @@ class CoreDeviceClient:
 
     @property
     def hold(self):
-        return self.config.switch_hold_seconds
+        # A request while disconnected waits for one search window, then for a connect that
+        # started inside it; one Bonjour browse may overrun the window by a second.
+        return self.config.switch_hold_seconds * 2 + self.config.search_window_seconds + 1
 
     async def capture(self, binding, options):
         result = await rpc(
@@ -86,6 +88,13 @@ class CoreDeviceClient:
 
     async def discover(self):
         return await rpc(self.socket, {"op": "discover"}, 30)
+
+    async def search(self):
+        return await rpc(self.socket, {"op": "search"}, 5)
+
+    async def usb_events(self, since, timeout):
+        request = {"op": "usb_events", "since": since, "timeout": timeout}
+        return await rpc(self.socket, request, timeout + 5)
 
     async def usb_phones(self):
         return (await rpc(self.socket, {"op": "usb_phones"}, 15))["usb"]

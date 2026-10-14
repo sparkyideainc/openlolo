@@ -18,6 +18,7 @@ class State(str, Enum):
     WAITING_FOR_DEVICE = "waiting_for_device"
     TRUST_REQUIRED = "trust_required"
     WIFI_PAIRING_REQUIRED = "wifi_pairing_required"
+    PHONE_LOCKED = "phone_locked"
     DEVELOPER_MODE_REQUIRED = "developer_mode_required"
     DDI_REQUIRED = "ddi_required"
     MOUNTING_DDI = "mounting_ddi"
@@ -27,11 +28,14 @@ class State(str, Enum):
     SWITCHING = "switching"
 
 
-# Errors the owner must resolve on the phone or through explicit setup. The supervisor keeps
-# polling slowly in these states so a fix in Settings is picked up without a restart.
+# Errors the owner must resolve on the phone or through explicit setup. The supervisor does not
+# retry these on a timer: the next attempt follows a cable attach, a search window (top button,
+# a request, the phone advertising again) or an explicit recover. PHONE_LOCKED alone also allows
+# the rare background search, since unlocking needs no setup.
 OWNER_STATES = {
     "TRUST_REQUIRED": State.TRUST_REQUIRED,
     "WIFI_PAIRING_REQUIRED": State.WIFI_PAIRING_REQUIRED,
+    "PHONE_LOCKED": State.PHONE_LOCKED,
     "DEVELOPER_MODE_REQUIRED": State.DEVELOPER_MODE_REQUIRED,
     "DDI_REQUIRED": State.DDI_REQUIRED,
     "DDI_MOUNT_FAILED": State.DDI_REQUIRED,
@@ -41,9 +45,10 @@ OWNER_STATES = {
 
 STATE_MESSAGES = {
     State.DISCONNECTED: "No phone is connected",
-    State.WAITING_FOR_DEVICE: "Waiting for the bound phone to become reachable",
+    State.WAITING_FOR_DEVICE: "Press the top button or plug in the phone",
     State.TRUST_REQUIRED: "Unlock the bound phone and run explicit owner pairing",
     State.WIFI_PAIRING_REQUIRED: "Run explicit owner pairing over USB once before using Wi-Fi mode",
+    State.PHONE_LOCKED: "Unlock the phone: a locked phone refuses new Wi-Fi sessions",
     State.DEVELOPER_MODE_REQUIRED: "Enable Developer Mode on the phone (Settings > Privacy & Security)",
     State.DDI_REQUIRED: "The developer disk image is not mounted",
     State.MOUNTING_DDI: "Mounting the developer disk image",
@@ -67,6 +72,7 @@ class Connection:
     hid_active: bool = False
     product_version: str | None = None
     wifi_paired: bool | None = None
+    searching: bool = False  # A search window is open.
 
     def set(self, state: State, **changes):
         if self.state != state.value:
@@ -104,6 +110,8 @@ TRANSPORT_LOST_NAMES = {
     "IncompleteReadError",
     "EOFError",
 }
+# RemotePairing's refusal of a new Wi-Fi session from a phone locked for more than ~30 s.
+LOCKED_TEXT = "has not been unlocked recently"
 TRUST_NAMES = {
     "NotPairedError",
     "NotTrustedError",
@@ -135,6 +143,8 @@ def classify(exc: BaseException) -> OpenLoloError:
     name = type(exc).__name__
     if name in TRUST_NAMES:
         return OpenLoloError("TRUST_REQUIRED", STATE_MESSAGES[State.TRUST_REQUIRED])
+    if LOCKED_TEXT in str(exc):
+        return OpenLoloError("PHONE_LOCKED", STATE_MESSAGES[State.PHONE_LOCKED], 409)
     if name == "DeveloperModeIsNotEnabledError":
         return OpenLoloError("DEVELOPER_MODE_REQUIRED", STATE_MESSAGES[State.DEVELOPER_MODE_REQUIRED])
     if name in {"InvalidServiceError", "DeviceFeatureNotSupportedError"}:

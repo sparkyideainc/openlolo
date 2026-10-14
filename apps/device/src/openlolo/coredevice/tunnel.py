@@ -6,11 +6,44 @@ The stack is a process-wide singleton, so this worker keeps exactly one tunnel a
 """
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack
 
 from openlolo.domain.errors import OpenLoloError
 
+log = logging.getLogger("openlolo.coredevice.tunnel")
 _lock = asyncio.Lock()
+
+
+def quiet_delayed_ack() -> bool:
+    """Stop PyTCP's delayed-ACK timer from ticking on an idle connection.
+
+    pymobiledevice3 sets ``tcp.delayed_ack.delay_ms`` to 1 so request/response services are not
+    stalled by the timer, and PyTCP's ESTABLISHED timer handler re-arms that timer on every expiry
+    whether or not an ACK is owed. Each open session then wakes the loop 1000 times a second
+    forever: about 60% of a Cortex-A55 core with the phone connected and idle. Incoming data and
+    every outgoing segment arm the timer anyway, so an expiry with nothing to acknowledge can
+    simply cancel it. Returns False if the PyTCP internals are not the ones this was written for.
+    """
+    try:
+        from pmd_pytcp.protocols.tcp.session.tcp__session__tx import TcpTxEngine
+        from pmd_pytcp.protocols.tcp.tcp__seq import gt32
+    except ImportError:
+        return False
+    original = TcpTxEngine.delayed_ack
+    if getattr(original, "openlolo_quiet", False):
+        return True
+
+    def delayed_ack(self) -> None:
+        session = self._session
+        if not session._timer_armed("delayed_ack") and not gt32(session._rcv_seq.nxt, session._rcv_seq.una):
+            session._cancel_timer("delayed_ack")
+            return
+        original(self)
+
+    delayed_ack.openlolo_quiet = True  # ty: ignore[unresolved-attribute]
+    TcpTxEngine.delayed_ack = delayed_ack
+    return True
 
 
 class Tunnel:
@@ -33,6 +66,8 @@ class Tunnel:
             if userspace_tunnel.USERSPACE_ACTIVE:
                 raise OpenLoloError("TUNNEL_BUSY", "A previous tunnel is still shutting down")
             tunnel_service.USE_USERSPACE_TUNNEL = userspace
+            if userspace and not quiet_delayed_ack():
+                log.warning("PyTCP internals changed; the idle tunnel may wake 1000 times a second")
             stack = AsyncExitStack()
             try:
                 for closer in self.closers:

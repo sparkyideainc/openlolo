@@ -107,6 +107,14 @@ class FakeManager:
     async def report(self, generation, kind, value):
         self.calls.append(("report", kind, value))
 
+    async def find(self):
+        self.calls.append("search")
+        return {"state": "unavailable", "connection": {"state": "waiting_for_device", "searching": True}}
+
+    async def usb_events(self, since, timeout):
+        self.calls.append(("usb_events", since, timeout))
+        return {"changes": 1, "serials": ["00008110-000A1B2C3D4E5F60"], "listening": True}
+
     async def gesture(self, generation, points):
         self.calls.append(("gesture", generation, len(points)))
         return {"reports": len(points), "median_interval_ms": 33, "max_gap_ms": 40}
@@ -184,3 +192,17 @@ async def test_client_dispatches_onboarding_ops_with_owner_confirmation(tmp_path
         {"op": "mount_ddi"},
     ]
     assert timeouts == [30, 130, 40, 10]
+
+
+async def test_worker_search_and_usb_events_ops(runtime):
+    manager = FakeManager()
+    worker = DeviceWorker(runtime.config, manager)
+    result = await worker.dispatch({"op": "search"})
+    assert result["connection"]["searching"] is True and manager.calls == ["search"]
+    cable = await worker.dispatch({"op": "usb_events", "since": 0, "timeout": 25})
+    assert cable["serials"] and manager.calls[-1] == ("usb_events", 0, 25.0)
+    await worker.dispatch({"op": "usb_events", "since": None})
+    assert manager.calls[-1] == ("usb_events", None, 0.0)
+    for bad in ({"since": "x", "timeout": 1}, {"since": 0, "timeout": 26}, {"since": 0, "timeout": -1}):
+        with raises_code("INVALID_REQUEST"):
+            await worker.dispatch({"op": "usb_events", **bad})

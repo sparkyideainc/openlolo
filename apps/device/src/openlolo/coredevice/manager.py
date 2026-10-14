@@ -1,22 +1,37 @@
 """CoreDeviceManager: one bound phone, one active transport, one supervised persistent session.
 
 Higher layers call ``capture``/``begin``/``report``/``release_all``/``list_apps``/``device_info``
-and never learn whether the phone is on USB or Wi-Fi. A supervisor task discovers the phone,
-establishes the tunnel and services, watches for loss, and reconnects with bounded backoff.
+and never learn whether the phone is on USB or Wi-Fi. A supervisor task finds the phone,
+establishes the tunnel and services, watches for loss, and reconnects.
 
-With the ``auto`` transport the supervisor tries USB first and Wi-Fi second on every attempt,
-so a pulled cable moves the session to Wi-Fi as soon as the phone is found there. While on
-Wi-Fi it keeps polling usbmux; when the bound phone is back on the cable it waits for an idle
-moment (no input generation, no request holding the I/O lock) and moves the session to USB.
-Requests that arrive during such a switch wait ``switch_hold_seconds`` for the session to come
-back instead of failing. Only the bound UDID is ever considered on either path.
+The phone is found through events, not polling. usbmuxd pushes cable attach and detach events
+over one Listen connection; an attach of the bound phone connects over USB at once. Wi-Fi is
+searched inside a bounded search window (``search_window_seconds``) opened by an event: boot (once
+the box has a network, since the worker can start before Wi-Fi joins), the cable pulled, a Wi-Fi session lost, the top button (IPC ``search``), a request that needs the
+phone, or avahi seeing the bound phone advertise (an unlocked iPhone advertises at once).
+Windows coalesce: while one is open every trigger joins it. A window that finds nothing is
+followed by rare safety-net windows (``search_backoff_seconds``), only with the phone off the
+cable and the box on a network.
+
+A locked phone refuses new Wi-Fi sessions (PHONE_LOCKED); nothing retries until it advertises
+again, a request or the button asks, or the next safety-net window. A connected USB session is
+never probed: the cable and the tunnel report their own loss. A Wi-Fi session is probed only
+after ``probe_interval`` without a request, since a phone that leaves the network sends nothing.
+
+With the ``auto`` transport USB wins whenever the bound phone is on the cable. While on Wi-Fi
+an attach of the bound phone waits for an idle moment (no input generation, no request holding
+the I/O lock) and moves the session to USB. Requests that arrive during such a switch wait
+``switch_hold_seconds`` for the session to come back instead of failing. Only the bound UDID is
+ever considered on either path.
 """
 
 import asyncio
 import contextlib
+import logging
 import time
+from pathlib import Path
 
-from openlolo.coredevice import hid
+from openlolo.coredevice import announce, hid
 from openlolo.coredevice.hid import ReportGate
 from openlolo.coredevice.session import DeviceSession
 from openlolo.coredevice.state import OWNER_STATES, STATE_MESSAGES, Connection, State, classify
@@ -24,6 +39,8 @@ from openlolo.coredevice.transports import UsbTransport, WifiTransport, same_udi
 from openlolo.coredevice.tunnel import Tunnel
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Binding
+
+log = logging.getLogger("openlolo.coredevice")
 
 
 class Remount(Exception):
@@ -37,17 +54,66 @@ HOLD_STATES = {
     State.SWITCHING.value,
     State.MOUNTING_DDI.value,
 }
+# States in which the supervisor is busy with a session; a search window has nothing to find.
+BUSY_STATES = {
+    State.CONNECTING.value,
+    State.CONNECTED.value,
+    State.SWITCHING.value,
+    State.MOUNTING_DDI.value,
+}
+OWNER_STATE_VALUES = {state.value for state in OWNER_STATES.values()}
+# Consecutive transient failures retried with backoff before the supervisor waits for an event.
+RETRY_LIMIT = 3
+# Listen retry backoff while the presence-only fallback poll runs.
+LISTEN_RETRY_MIN, LISTEN_RETRY_MAX = 2.0, 60.0
+# A locked phone advertises in short bursts; act on at most one advertisement per this many
+# seconds. Restart avahi-browse this long after it exits (or is missing).
+ANNOUNCE_GAP, ANNOUNCE_RESTART = 15.0, 300.0
+# At boot the worker may start before Wi-Fi joins: the first search waits up to this long for a
+# default route, checking every NETWORK_POLL seconds (boot only; a cable attach ends the wait).
+BOOT_NETWORK_SECONDS, NETWORK_POLL = 90.0, 1.0
+# Touch-session idle check cadence while an input session is open.
+HID_IDLE_TICK = 5.0
+# Owner states with no safety-net windows or advertisement-driven attempts: only a setup step
+# fixes them. Unlocking needs none, and WAITING_FOR_DEVICE (an identity mismatch) is not one.
+NO_BACKGROUND_STATES = OWNER_STATE_VALUES - {State.PHONE_LOCKED.value, State.WAITING_FOR_DEVICE.value}
+
+
+def _key(udid: str) -> str:
+    return udid.replace("-", "").lower()
+
+
+def default_route() -> bool:
+    """Whether the box is on a network: a default route exists. In setup mode the radio is an
+    access point without one, so safety-net searches pause there."""
+    try:
+        lines = Path("/proc/net/route").read_text().splitlines()[1:]
+    except OSError:
+        return True
+    return any(len(fields) > 1 and fields[1] == "00000000" for fields in (line.split() for line in lines))
 
 
 class CoreDeviceManager:
-    def __init__(self, config, transports=None, tunnel_factory=Tunnel, session_factory=DeviceSession):
+    def __init__(
+        self,
+        config,
+        transports=None,
+        tunnel_factory=Tunnel,
+        session_factory=DeviceSession,
+        clock=time.monotonic,
+        announcements=None,
+        network_ok=default_route,
+    ):
         self.config = config
         cache = config.state_dir / "device" / "lockdown"
         self.transports = transports or {
             "usb": UsbTransport(cache),
-            "wifi": WifiTransport(config.discovery_seconds),
+            "wifi": WifiTransport(
+                config.discovery_seconds, config.state_dir / "device" / "wifi-address.json"
+            ),
         }
         self.tunnel_factory, self.session_factory = tunnel_factory, session_factory
+        self.clock = clock
         self.binding: Binding | None = None
         self.connection = Connection()
         self.gate = ReportGate()
@@ -55,6 +121,7 @@ class CoreDeviceManager:
         self.session = None
         self.task: asyncio.Task | None = None
         self.watchdog: asyncio.Task | None = None
+        self.listener: asyncio.Task | None = None
         self.lost = asyncio.Event()
         self.wake = asyncio.Event()
         self.mount_requested = False
@@ -62,20 +129,54 @@ class CoreDeviceManager:
         # Auto mode: a failed USB attempt disarms the move back to the cable until the phone
         # has been seen off the cable once, so a broken USB path cannot flap the session.
         self.usb_armed = True
+        # Cable state from usbmuxd Listen (or the fallback poll): serials on the cable, a counter
+        # of changes, and a counter of attaches of the bound phone.
+        self.cable: set[str] = set()
+        self.usb_changes = 0
+        self.attaches = 0
+        self.listening = False
+        # The current (or last) search window and counters for status and tests.
+        self.window: asyncio.Task | None = None
+        self.found: str | None = None  # Where the last window found the phone, until used.
+        self.windows = 0
+        self.browses = 0
+        # Safety-net windows since the last event-driven window or connect.
+        self.backoff = 0
+        self.network_ok = network_ok
+        # avahi advertisements of RemotePairing; None disables following them.
+        if announcements is None and "wifi" in self.transports and config.wifi_announcements:
+            announcements = announce.announcements
+        self.announcements = announcements
+        self.announcer: asyncio.Task | None = None
+        self.announced_at = float("-inf")
+        self.announced = 0
+        # Last time the session was known to work (connect or a request); the Wi-Fi probe waits
+        # for ``probe_interval`` after it.
+        self.last_ok = 0.0
+        # Set by ``connect``: the first search waits for the box to be on a network.
+        self.booting = False
+        # Pulsed on every state, cable or window change; waiters take the current event.
+        self._changed = asyncio.Event()
 
     # ----- lifecycle -----------------------------------------------------------------
 
     async def start(self):
         if self.watchdog is None:
             self.watchdog = asyncio.create_task(self._watchdog())
+        if self.listener is None and "usb" in self.transports:
+            self.listener = asyncio.create_task(self._usb_events())
+        if self.announcer is None and self.announcements is not None:
+            self.announcer = asyncio.create_task(self._follow_announcements())
 
     async def close(self):
         await self.disconnect()
-        if self.watchdog:
-            self.watchdog.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.watchdog
-            self.watchdog = None
+        for name in ("watchdog", "listener", "announcer"):
+            task = getattr(self, name)
+            setattr(self, name, None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     async def connect(self, binding: Binding) -> dict:
         if binding.transport != "auto" and binding.transport not in self.transports:
@@ -85,7 +186,10 @@ class CoreDeviceManager:
         self.connection = Connection(transport=None if binding.transport == "auto" else binding.transport)
         self.connection.set(State.WAITING_FOR_DEVICE)
         self.lost.clear()
+        self.wake.clear()
         self.usb_armed = True
+        self.found = None
+        self.booting = True
         self.task = asyncio.create_task(self._supervise())
         return self.status()
 
@@ -93,6 +197,7 @@ class CoreDeviceManager:
         await self._stop_supervisor()
         self.binding = None
         self.connection = Connection()
+        self._pulse()
         return self.status()
 
     async def unbind(self) -> dict:
@@ -108,20 +213,23 @@ class CoreDeviceManager:
         return self.binding is not None and self.binding.transport == "auto"
 
     def _candidates(self, failed: str | None = None) -> list[str]:
-        """Transports to try, in order. Auto mode prefers USB, except right after an attempt on
-        one path failed: the other path is tried first so a broken cable session does not
-        starve a working Wi-Fi one (or the reverse)."""
+        """Transports to look on. Auto mode uses both, except right after an attempt on USB
+        failed: then only Wi-Fi is searched, so a broken cable session does not starve a working
+        Wi-Fi one. USB comes back with the next attach of the bound phone."""
         assert self.binding is not None
         if not self._auto():
             return [self.binding.transport]
-        return ["wifi", "usb"] if failed == "usb" else ["usb", "wifi"]
+        return ["wifi"] if failed == "usb" else ["usb", "wifi"]
 
     async def _stop_supervisor(self):
+        window, self.window = self.window, None
         task, self.task = self.task, None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        for running in (task, window):
+            if running is not None:
+                running.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await running
+        self.connection.searching = False
         await self._teardown()
 
     async def _teardown(self):
@@ -138,18 +246,214 @@ class CoreDeviceManager:
 
     def _set(self, state: State, **changes):
         self.connection.set(state, **changes)
+        self._pulse()
+
+    def _pulse(self):
+        changed, self._changed = self._changed, asyncio.Event()
+        changed.set()
+
+    async def _changes(self, timeout: float | None = None) -> None:
+        """Wait for the next pulse (state, cable or window change), at most ``timeout``."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._changed.wait(), timeout)
+
+    # ----- cable events --------------------------------------------------------------
+
+    def _bound_on_cable(self) -> bool:
+        return self.binding is not None and _key(self.binding.udid) in {_key(s) for s in self.cable}
+
+    def _usb_update(self, serials) -> None:
+        current = set(serials)
+        if current == self.cable:
+            return
+        before = self._bound_on_cable()
+        self.cable = current
+        self.usb_changes += 1
+        after = self._bound_on_cable()
+        if after and not before:
+            self.attaches += 1
+        elif before and not after:
+            self.usb_armed = True
+            # Cable pulled: look for the phone on Wi-Fi, unless the session already runs there.
+            if not (self.connection.state == State.CONNECTED.value and self.connection.transport == "wifi"):
+                self.search()
+        self._pulse()
+
+    async def _usb_events(self):
+        """Follow usbmuxd attach and detach events. If Listen fails, poll only USB presence
+        every ``poll_seconds`` (never Bonjour) and retry Listen with a bounded backoff."""
+        usb: UsbTransport = self.transports["usb"]  # ty: ignore[invalid-assignment]
+        retry, warned = LISTEN_RETRY_MIN, False
+        while True:
+            try:
+                async with contextlib.aclosing(usb.watch()) as events:
+                    async for serials in events:
+                        if not self.listening:
+                            self.listening, retry, warned = True, LISTEN_RETRY_MIN, False
+                        self._usb_update(serials)
+                raise ConnectionError("usbmuxd closed the Listen connection")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.listening = False
+                if not warned:
+                    warned = True
+                    log.warning("usbmuxd Listen failed (%s); polling USB presence", type(exc).__name__)
+            until = self.clock() + retry
+            while self.clock() < until:
+                with contextlib.suppress(Exception):
+                    self._usb_update(await usb.serials())
+                await asyncio.sleep(usb.poll_seconds)
+            retry = min(retry * 2, LISTEN_RETRY_MAX)
+
+    async def usb_events(self, since: int | None, timeout: float) -> dict:
+        """Long poll for the setup-mode auto-pairing: the serials on the cable once the change
+        counter differs from ``since`` (at once when ``since`` is None), or at ``timeout``."""
+        deadline = self.clock() + timeout
+        while since == self.usb_changes and self.clock() < deadline:
+            await self._changes(deadline - self.clock())
+        return {"changes": self.usb_changes, "serials": sorted(self.cable), "listening": self.listening}
+
+    # ----- search windows ------------------------------------------------------------
+
+    def search(self, background: bool = False) -> asyncio.Task | None:
+        """Open a search window, or return the one already open (never extended by repeats).
+        None when nothing is bound or a session is up or being established. A window opened
+        by an event restarts the safety-net sequence."""
+        if self.binding is None or self.task is None:
+            return None
+        if self.window is not None and not self.window.done():
+            return self.window
+        if self.connection.state in BUSY_STATES:
+            return None
+        if not background:
+            self.backoff = 0
+        self.windows += 1
+        self.connection.searching = True
+        self.window = asyncio.create_task(
+            self._search_window(self.binding.udid, self.clock() + self.config.search_window_seconds)
+        )
+        self._pulse()
+        return self.window
+
+    async def _search_window(self, udid: str, deadline: float) -> str | None:
+        """Return the transport the bound phone was found on, or None at the deadline.
+
+        USB is checked once; then Bonjour browses run back to back. A browse never starts if it
+        would end more than one second past the deadline, and an attempt that returns early
+        (an mDNS error) still takes its full slot, so the attempts per window are bounded."""
+        names = self._candidates("usb" if self._auto() and not self.usb_armed else None)
+        try:
+            if "usb" in names and await self.transports["usb"].present(udid):
+                return self._found("usb")
+            if "wifi" not in names:
+                return None
+            wifi = self.transports["wifi"]
+            paired = getattr(wifi, "paired", None)
+            if callable(paired) and not paired(udid):
+                self.connection.wifi_paired = False
+                return None
+            browse = self.config.discovery_seconds
+            while self.clock() + browse <= deadline + 1:
+                started = self.clock()
+                self.browses += 1
+                if await wifi.present(udid):
+                    return self._found("wifi")
+                rest = started + browse - self.clock()
+                if rest > 0:
+                    await asyncio.sleep(rest)
+            return None
+        finally:
+            self.connection.searching = False
+            self._pulse()
+
+    def _found(self, name: str) -> str:
+        """Hand the find to the supervisor. CONNECTING is set here so a request woken by the
+        window's end holds for the connect instead of failing before the supervisor runs."""
+        self.found = name
+        self._set(State.CONNECTING, device_present=True, transport=name)
+        return name
+
+    # ----- advertisements and safety-net windows -------------------------------------
+
+    async def _follow_announcements(self):
+        """Open a window when avahi sees the bound phone advertise. If avahi-browse exits or is
+        missing, try again after ``ANNOUNCE_RESTART``; the safety-net windows cover the gap."""
+        assert self.announcements is not None
+        while True:
+            try:
+                async with contextlib.aclosing(self.announcements()) as items:
+                    async for item in items:
+                        self._announced(item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("RemotePairing announcements failed (%s)", type(exc).__name__)
+            await asyncio.sleep(ANNOUNCE_RESTART)
+
+    def _announced(self, item) -> None:
+        if self.binding is None or "wifi" not in self._candidates():
+            return
+        wifi: WifiTransport = self.transports["wifi"]  # ty: ignore[invalid-assignment]
+        try:
+            ours = wifi.matches(self.binding.udid, item.properties)
+        except Exception:
+            return
+        if not ours:
+            return
+        wifi.remember(self.binding.udid, item.address, item.port)
+        state = self.connection.state
+        if self._bound_on_cable() or state in BUSY_STATES:
+            return
+        if state in NO_BACKGROUND_STATES:
+            return
+        if self.clock() - self.announced_at < ANNOUNCE_GAP:
+            return
+        self.announced_at = self.clock()
+        self.announced += 1
+        self.search()
+
+    def _background_delay(self) -> float | None:
+        """Seconds until the next safety-net window, or None when none is due in this state."""
+        if self.binding is None or "wifi" not in self._candidates():
+            return None
+        if self.connection.state in NO_BACKGROUND_STATES:
+            return None
+        steps = self.config.search_backoff_seconds
+        return steps[min(self.backoff, len(steps) - 1)]
+
+    async def _network_up(self, seconds: float) -> bool:
+        """Wait until the box has a default route, at most ``seconds``. False when a cable
+        attach, a search window or ``recover`` ended the wait first."""
+        attaches, windows = self.attaches, self.windows
+        deadline = self.clock() + seconds
+        while not self.network_ok() and self.clock() < deadline:
+            if self.wake.is_set() or self.attaches != attaches or self.windows != windows:
+                return False
+            await self._changes(min(NETWORK_POLL, deadline - self.clock()))
+        return True
+
+    def _background_ok(self) -> bool:
+        return not self._bound_on_cable() and self.network_ok()
+
+    async def _await_window(self, window: asyncio.Task) -> str | None:
+        """The window's result without cancelling it when the caller is cancelled: other waiters
+        may share it."""
+        await asyncio.wait({window})
+        return None if window.cancelled() or window.exception() is not None else window.result()
 
     # ----- supervision ---------------------------------------------------------------
 
     async def _supervise(self):
         assert self.binding is not None
         udid, attempts = self.binding.udid, 0
-        failed = None
+        failed: str | None = None
+        search: bool | str | None = True
         while True:
             remount = switching = False
             name = None
             try:
-                name, transport = await self._wait_for_device(udid, failed)
+                name, transport = await self._wait_for_device(udid, failed, search)
                 failed = None
                 self._set(State.CONNECTING, device_present=True, transport=name)
                 provider, closers, details = await transport.open(udid)
@@ -174,6 +478,9 @@ class CoreDeviceManager:
                 await session.open()
                 self.session = session
                 attempts = 0
+                self.backoff = 0
+                self.booting = False
+                self.last_ok = self.clock()
                 self._set(State.CONNECTED, attempts=0, last_error=None)
                 switching = await self._watch(tunnel, session, name, udid)
                 if switching:
@@ -194,44 +501,97 @@ class CoreDeviceManager:
                 self.connection.attempts = attempts
             finally:
                 await self._teardown()
+            search = True
             if remount or switching:
+                search = False
                 continue
-            if self._auto() and failed is not None and attempts == 1:
-                continue  # First failure on one path: try the other path at once.
-            owner_action = State(self.connection.state) in set(OWNER_STATES.values())
-            delay = (
-                self.config.reconnect_max_seconds
-                if owner_action
-                else min(
+            owner = self.connection.state in OWNER_STATE_VALUES
+            locked = self.connection.state == State.PHONE_LOCKED.value
+            if self._auto() and failed is not None and attempts == 1 and not locked:
+                # First failure on one path: look on the other path at once. Not for a locked
+                # phone: it refuses on every path until it is unlocked.
+                continue
+            if failed is None:
+                # A session that was up was lost. Pause briefly so a flapping link cannot spin.
+                await self._pause(self.config.reconnect_min_seconds)
+                continue
+            if owner or attempts > RETRY_LIMIT:
+                # Only the owner or a new event can fix this; at most a rare safety-net window.
+                search = await self._event()
+                continue
+            await self._pause(
+                min(
                     self.config.reconnect_min_seconds * 2 ** max(attempts - 1, 0),
                     self.config.reconnect_max_seconds,
                 )
             )
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self.wake.wait(), delay)
-            self.wake.clear()
 
-    async def _wait_for_device(self, udid, failed=None):
-        """Return the name and object of the first candidate transport on which the bound phone
-        is reachable. USB is checked before Wi-Fi, so the cable wins whenever both are available."""
+    async def _pause(self, seconds: float) -> None:
+        """Back off, ending early on ``recover``/``request_mount`` or a new search window."""
+        windows, deadline = self.windows, self.clock() + seconds
+        while not self.wake.is_set() and self.windows == windows:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                return
+            await self._changes(remaining)
+
+    async def _event(self) -> str | None:
+        """Wait for the next reason to look for the phone: an attach of the bound phone, a
+        search window, ``recover``/``request_mount`` (returns "wake"), or the next safety-net
+        window (returns "background"). None means look without opening a window (an attach is a
+        USB-only check). A due safety-net window is skipped while the phone is on the cable or
+        the box has no network, and checked again one delay later."""
+        attaches, windows = self.attaches, self.windows
+        delay = self._background_delay()
+        due = None if delay is None else self.clock() + delay
+        while True:
+            if self.wake.is_set():
+                return "wake"
+            if self.attaches != attaches or self.windows != windows:
+                return None
+            if due is not None and delay is not None and self.clock() >= due:
+                if self._background_ok():
+                    self.backoff += 1
+                    return "background"
+                due = self.clock() + delay
+            await self._changes(None if due is None else max(0.0, due - self.clock()))
+
+    async def _wait_for_device(self, udid, failed=None, search: bool | str | None = True):
+        """Return the name and object of the transport on which the bound phone is reachable.
+
+        USB presence is checked first, so the cable wins whenever both are available. Wi-Fi is
+        only looked for through a search window: one is opened when ``search`` is set, and one
+        opened by anyone else is joined. Between windows nothing runs until the next event."""
         names = self._candidates(failed)
         while True:
-            for name in names:
-                transport = self.transports[name]
-                if await transport.present(udid):
-                    self.connection.device_present = True
-                    return name, transport
+            self.wake.clear()
+            if "usb" in names and await self.transports["usb"].present(udid):
+                self.found = None
+                self.connection.device_present = True
+                return "usb", self.transports["usb"]
+            window = self.window if self.window is not None and not self.window.done() else None
+            if window is None and search and self.found is None and self.booting:
+                self.booting = False
+                if not await self._network_up(BOOT_NETWORK_SECONDS):
+                    continue  # A cable attach, a window or recover ended the wait: look again.
+                window = self.window if self.window is not None and not self.window.done() else None
+            if window is None and search and self.found is None:
+                window = self.search(background=search == "background")
+            search = False
+            if window is not None:
+                await self._await_window(window)
+            found, self.found = self.found, None
+            if found is not None and found in names:
+                return found, self.transports[found]
+            # Nothing found: keep an owner-action state from the last failure so its message stays.
             self.connection.device_present = False
-            self._set(State.WAITING_FOR_DEVICE, transport=None if self._auto() else names[0])
+            if not (failed is not None and self.connection.state in OWNER_STATE_VALUES):
+                self._set(State.WAITING_FOR_DEVICE, transport=None if self._auto() else names[0])
             failed, names = None, self._candidates()
             if self._auto():
                 paired = getattr(self.transports["wifi"], "paired", None)
                 self.connection.wifi_paired = bool(paired(udid)) if callable(paired) else None
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    self.wake.wait(), min(self.transports[name].poll_seconds for name in names)
-                )
-            self.wake.clear()
+            search = await self._event()
 
     async def _watch(self, tunnel, session, name, udid) -> bool:
         """Block until the session is lost or, in auto mode on Wi-Fi, until the bound phone is
@@ -240,11 +600,13 @@ class CoreDeviceManager:
         waiters = [
             asyncio.create_task(tunnel.wait_closed()),
             asyncio.create_task(self.lost.wait()),
-            asyncio.create_task(self._probe(session)),
+            asyncio.create_task(self._hid_idle(session)),
         ]
+        if name != "usb":
+            waiters.append(asyncio.create_task(self._probe(session)))
         upgrade = None
         if self._auto() and name != "usb" and "usb" in self.transports:
-            upgrade = asyncio.create_task(self._usb_upgrade(udid))
+            upgrade = asyncio.create_task(self._usb_upgrade())
             waiters.append(upgrade)
         try:
             done, _pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
@@ -256,29 +618,46 @@ class CoreDeviceManager:
                 with contextlib.suppress(BaseException):
                     await waiter
 
-    async def _usb_upgrade(self, udid):
-        """Return once the bound phone is on USB and nothing is mid-flight. The presence check
-        is repeated every poll so a cable pulled again before the idle moment cancels the move."""
-        usb = self.transports["usb"]
+    async def _usb_upgrade(self):
+        """Return once the bound phone is on the cable (and USB is armed) and nothing is
+        mid-flight. Driven by cable events; the 0.1 s idle check runs only while the phone is on
+        the cable and input is in progress, and a cable pulled again cancels the move."""
         while True:
-            await asyncio.sleep(usb.poll_seconds)
-            if not await usb.present(udid):
-                self.usb_armed = True
-                continue
-            if not self.usb_armed:
-                continue
-            for _ in range(max(int(usb.poll_seconds / 0.1), 1)):
+            if self._bound_on_cable() and self.usb_armed:
                 if self.gate.generation is None and not self.io_lock.locked():
                     return
-                await asyncio.sleep(0.1)
+                await self._changes(0.1)
+            else:
+                await self._changes()
 
     async def _probe(self, session):
+        """Wi-Fi only. A phone that leaves the network sends no close, so after
+        ``probe_interval`` without a request ask it for device info; any request counts as
+        proof that the session works. Returns (ending the session) when the phone fails."""
         while True:
-            await asyncio.sleep(self.config.probe_interval)
+            idle = self.clock() - self.last_ok
+            if idle < self.config.probe_interval:
+                await asyncio.sleep(self.config.probe_interval - idle)
+                continue
             try:
-                await session.idle_check()
                 async with self.io_lock:
                     await session.probe()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return
+            self.last_ok = self.clock()
+
+    async def _hid_idle(self, session):
+        """Close the touch/keyboard session after ``hid_idle_seconds`` unused. Sleeps on state
+        changes while none is open, so an idle connection has no timer here."""
+        while True:
+            if not session.hid_active:
+                await self._changes()
+                continue
+            await asyncio.sleep(min(HID_IDLE_TICK, self.config.hid_idle_seconds))
+            try:
+                await session.idle_check()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -286,7 +665,12 @@ class CoreDeviceManager:
             self.connection.hid_active = session.hid_active
 
     async def _watchdog(self):
+        """Release a held input generation when its lease expires. Sleeps on state changes while
+        no generation is open, so an idle worker has no 0.5 s timer."""
         while True:
+            if self.gate.generation is None:
+                await self._changes()
+                continue
             await asyncio.sleep(0.5)
             if self.gate.expired():
                 self.gate.release()
@@ -301,19 +685,36 @@ class CoreDeviceManager:
         if binding != self.binding:
             raise OpenLoloError("IDENTITY_MISMATCH", "The request does not match the bound phone")
 
+    def _connected(self) -> bool:
+        return self.session is not None and self.connection.state == State.CONNECTED.value
+
+    async def _hold(self, states, seconds: float, fresh_only: bool = False) -> None:
+        deadline = self.clock() + seconds
+        while (
+            self.connection.state in states
+            and not (fresh_only and self.connection.attempts)
+            and self.clock() < deadline
+        ):
+            await self._changes(deadline - self.clock())
+
     async def _session(self):
         """The connected session. Right after a loss or during a transport switch the request
         waits for the supervisor to bring the session back, bounded by ``switch_hold_seconds``;
-        once a reconnect attempt has failed the wait is skipped."""
-        deadline = time.monotonic() + self.config.switch_hold_seconds
-        while (
-            self.connection.state in HOLD_STATES
-            and self.connection.attempts == 0
-            and time.monotonic() < deadline
-        ):
-            await asyncio.sleep(0.05)
-        if self.session is None or self.connection.state != State.CONNECTED.value:
-            raise OpenLoloError("DEVICE_DISCONNECTED", STATE_MESSAGES[State(self.connection.state)])
+        once a reconnect attempt has failed that wait is skipped. If the phone is not connected
+        the request opens (or joins) one search window, waits for it, and holds for a connect
+        that started inside it; concurrent requests share the window."""
+        await self._hold(HOLD_STATES, self.config.switch_hold_seconds, fresh_only=True)
+        if not self._connected():
+            window = self.search()
+            if window is not None:
+                await self._await_window(window)
+            await self._hold(BUSY_STATES - {State.CONNECTED.value}, self.config.switch_hold_seconds)
+        if not self._connected():
+            state = State(self.connection.state)
+            if state == State.PHONE_LOCKED:
+                raise OpenLoloError("PHONE_LOCKED", STATE_MESSAGES[state])
+            raise OpenLoloError("DEVICE_DISCONNECTED", STATE_MESSAGES[state])
+        self.last_ok = self.clock()
         return self.session
 
     def status(self) -> dict:
@@ -336,7 +737,9 @@ class CoreDeviceManager:
             if png and session.hid_active and self.config.hid_stop_before_capture:
                 await session.stop_hid()
                 self.connection.hid_active = False
-            return await session.screenshot(binding, options, self.config.capture_deadline)
+            frame = await session.screenshot(binding, options, self.config.capture_deadline)
+        self._pulse()  # A streamed screenshot may have opened the input stream: wake its idle timer.
+        return frame
 
     async def begin(self, binding, kinds=None) -> str:
         """Open an input generation. The media-gated touch/keyboard session is opened only when
@@ -351,7 +754,9 @@ class CoreDeviceManager:
             else:
                 await session.ensure_buttons()
         self.connection.hid_active = session.hid_active
-        return self.gate.begin()
+        generation = self.gate.begin()
+        self._pulse()  # Wakes the lease watchdog.
+        return generation
 
     async def report(self, generation: str, kind: str, value: list):
         self.gate.accept(generation, kind, value)
@@ -428,12 +833,13 @@ class CoreDeviceManager:
         self.gate.release()
         self.lost.set()
         self.wake.set()
-        deadline = time.monotonic() + (
-            self.config.recover_wait_seconds if wait_seconds is None else wait_seconds
-        )
-        while time.monotonic() < deadline:
-            await asyncio.sleep(0.2)
-            if self.connection.state == State.CONNECTED.value and self.session is not None:
+        self._pulse()
+        deadline = self.clock() + (self.config.recover_wait_seconds if wait_seconds is None else wait_seconds)
+        # Let the supervisor act on the wake (drop the session) before testing for a new one.
+        await asyncio.sleep(0)
+        while self.clock() < deadline:
+            await self._changes(deadline - self.clock())
+            if self._connected():
                 break
         return self.status()
 
@@ -441,6 +847,13 @@ class CoreDeviceManager:
         self.mount_requested = True
         self.lost.set()
         self.wake.set()
+        self._pulse()
+        return self.status()
+
+    async def find(self) -> dict:
+        """Open (or join) one search window without waiting for it: the top button and IPC
+        ``search``. A no-op while connected or with nothing bound."""
+        self.search()
         return self.status()
 
     async def list_apps(self, binding) -> list[dict]:

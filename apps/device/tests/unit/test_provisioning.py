@@ -210,6 +210,52 @@ async def test_button_flag_opens_the_window(tmp_path):
     assert prov.state == ProvisioningState.SETUP_MODE and len(calls(net, "start_setup_ap")) == 2
 
 
+async def test_pair_button_flag_opens_one_search_per_press(tmp_path):
+    import os
+
+    net = FakeNetwork(["home"])
+    flag = tmp_path / "pair-button"
+    searches = []
+
+    async def search():
+        searches.append(True)
+        return {}
+
+    prov = Provisioning(config(tmp_path), net, clock=Clock(), pair_flag=flag, search=search)
+    await prov.tick()
+    assert searches == []
+    flag.touch()
+    await prov.tick()
+    await prov.tick()  # The same press is not replayed.
+    assert searches == [True] and not flag.exists() and prov.state == ProvisioningState.IDLE
+    flag.touch()
+    stamp = prov.pair_seen + 5
+    os.utime(flag, (stamp, stamp))
+    await prov.tick()
+    assert searches == [True, True]
+
+    async def failing():
+        raise OpenLoloError("WORKER_UNAVAILABLE")
+
+    prov.search = failing
+    flag.touch()
+    os.utime(flag, (stamp + 5, stamp + 5))
+    await prov.tick()  # Logged, never raised into the supervisor.
+
+
+async def test_window_change_wakes_on_open_and_close(tmp_path):
+    prov, _ = build(tmp_path, FakeNetwork(["home"]))
+    waiter = asyncio.create_task(prov.window_change())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    await prov.enter("api")
+    await asyncio.wait_for(waiter, 1)
+    waiter = asyncio.create_task(prov.window_change())
+    await asyncio.sleep(0)
+    await prov.exit()
+    await asyncio.wait_for(waiter, 1)
+
+
 async def test_disabled_provisioning(tmp_path):
     net = FakeNetwork()
     prov, _ = build(tmp_path, net, provisioning=False)

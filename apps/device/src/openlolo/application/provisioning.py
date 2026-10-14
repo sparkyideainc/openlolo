@@ -41,11 +41,23 @@ def slug(ssid: str) -> str:
 
 
 class Provisioning:
-    def __init__(self, config, network, *, clock=time.monotonic, button_flag: Path | None = None):
+    def __init__(
+        self,
+        config,
+        network,
+        *,
+        clock=time.monotonic,
+        button_flag: Path | None = None,
+        pair_flag: Path | None = None,
+        search=None,
+    ):
         self.config, self.network = config, network
         self.setup_name = config.setup_name or "OpenLolo"
         self.clock = clock
         self.button_flag = button_flag
+        # Top-button press (written by the button daemon): one phone search window per press.
+        self.pair_flag, self.search = pair_flag, search
+        self.pair_seen = 0.0
         self.state = ProvisioningState.IDLE if config.provisioning else ProvisioningState.DISABLED
         self.since = clock()
         self.boot = self.since  # run() resets it; tick() may also be driven directly.
@@ -57,9 +69,26 @@ class Provisioning:
         self.worker: asyncio.Task | None = None
         self.grace_used = False
         self.button_seen = 0.0
-        self.window = False  # Setup window open: the temporary Wi-Fi network is active.
+        self._window = False
+        self._window_changed = asyncio.Event()
 
     # -- observation ---------------------------------------------------------------
+
+    @property
+    def window(self) -> bool:
+        """Setup window open: the temporary Wi-Fi network is active."""
+        return self._window
+
+    @window.setter
+    def window(self, value: bool) -> None:
+        if value != self._window:
+            self._window = value
+            changed, self._window_changed = self._window_changed, asyncio.Event()
+            changed.set()
+
+    async def window_change(self) -> None:
+        """Wait until the setup window opens or closes."""
+        await self._window_changed.wait()
 
     @property
     def active(self) -> bool:
@@ -211,6 +240,7 @@ class Provisioning:
         ):
             await self.finish("timeout")
             return
+        await self._pair_button()
         if self.button_flag is not None:
             try:
                 stamp = self.button_flag.stat().st_mtime
@@ -237,6 +267,25 @@ class Provisioning:
                 await self._auto_enter("offline after boot")
             elif status.get("ssid"):
                 self.grace_used = True  # Online once: never auto-enter again this boot.
+
+    async def _pair_button(self) -> None:
+        """One phone search per new mtime of the pair-button flag. The flag is consumed like the
+        setup button's, so a restart never replays an old press; a failed search is logged."""
+        if self.pair_flag is None or self.search is None:
+            return
+        try:
+            stamp = self.pair_flag.stat().st_mtime
+        except OSError:
+            return
+        if stamp <= self.pair_seen:
+            return
+        self.pair_seen = stamp
+        with contextlib.suppress(OSError):
+            self.pair_flag.unlink()
+        try:
+            await self.search()
+        except Exception as exc:
+            log.warning("phone search not started (button): %s", getattr(exc, "code", type(exc).__name__))
 
     async def _auto_enter(self, reason: str) -> None:
         """Boot-time entry; a network failure is logged and retried on the next tick."""
