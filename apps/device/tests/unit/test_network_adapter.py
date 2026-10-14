@@ -1,6 +1,6 @@
 import pytest
 
-from openlolo.adapters.system.network import LEGACY_HOTSPOT, NetworkManager
+from openlolo.adapters.system.network import NetworkManager
 from openlolo.domain.errors import OpenLoloError
 
 
@@ -96,14 +96,6 @@ async def test_forget_protects_foreign_profiles():
     assert len(runner.calls) == 2
 
 
-async def test_legacy_hotspot_profile_is_removed_quietly():
-    """A box upgraded from a SoftAP release still has openlolo-setup; deleting it must never fail."""
-    net, runner = manager({("nmcli", "con", "delete"): (10, "Error: unknown connection")})
-    await net.remove_legacy_hotspot()
-    assert runner.calls == [("nmcli", "con", "delete", LEGACY_HOTSPOT)]
-    assert not hasattr(net, "start_hotspot") and not hasattr(net, "stop_hotspot")
-
-
 async def test_status_parses_escaped_nmcli_output():
     net, runner = manager(
         {
@@ -183,19 +175,6 @@ async def test_status_falls_back_to_profile_ssid_without_active_row():
     )
     status = await net.status()
     assert status["ssid"] is None and not runner.argv("nmcli", "-t", "-f", "802-11-wireless.ssid")
-
-
-async def test_saved_hides_the_legacy_hotspot_profile():
-    net, runner = manager(
-        {
-            ("nmcli", "-t", "-f", "NAME,TYPE", "con", "show"): (
-                0,
-                f"home:802-11-wireless\n{LEGACY_HOTSPOT}:802-11-wireless\neth0:802-3-ethernet",
-            )
-        }
-    )
-    assert await net.saved() == [{"name": "home", "mode": "infrastructure"}]
-    assert runner.calls == [("nmcli", "-t", "-f", "NAME,TYPE", "con", "show")]
 
 
 async def test_scan_dedupes_by_ssid_keeping_best_signal(monkeypatch):

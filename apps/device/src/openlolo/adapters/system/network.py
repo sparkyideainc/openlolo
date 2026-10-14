@@ -15,7 +15,6 @@ from openlolo.adapters.system.setup_ap import SetupAccessPoint
 from openlolo.domain.errors import OpenLoloError
 
 PREFIX = "openlolo-"
-LEGACY_HOTSPOT = "openlolo-setup"  # Profile left behind by releases with SoftAP setup mode.
 
 
 async def run(*args, timeout: float = 2, quiet: bool = True) -> tuple[int, str]:
@@ -177,7 +176,7 @@ class NetworkManager(SystemHealth):
         result = []
         for line in (await self._nmcli("-t", "-f", "NAME,TYPE", "con", "show")).splitlines():
             fields = _split(line)
-            if len(fields) >= 2 and fields[1] == "802-11-wireless" and fields[0] != LEGACY_HOTSPOT:
+            if len(fields) >= 2 and fields[1] == "802-11-wireless":
                 result.append({"name": fields[0], "mode": "infrastructure"})
         return result
 
@@ -235,10 +234,4 @@ class NetworkManager(SystemHealth):
 
     async def restore_connection(self, name: str) -> None:
         """Bring the previously active station profile back after a failed LAN reconfiguration."""
-        if name == LEGACY_HOTSPOT:
-            return
         await self._nmcli("-w", "30", "con", "up", name, timeout=35)
-
-    async def remove_legacy_hotspot(self) -> None:
-        """Delete the SoftAP profile a pre-ADR-0006 release may have left; harmless when absent."""
-        await self.run("nmcli", "con", "delete", LEGACY_HOTSPOT, timeout=5)

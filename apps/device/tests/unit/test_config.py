@@ -36,23 +36,9 @@ def test_mcp_port_must_not_collide():
         Config(backend="simulated", host="0.0.0.0", public_url="https://pi.tailnet.ts.net")
 
 
-def test_legacy_keys_and_legacy_binding_are_ignored(tmp_path):
+def test_unreadable_binding_reads_as_none(tmp_path):
     from openlolo.adapters.storage.binding import BindingStore
 
-    config = Config.model_validate(
-        {
-            "backend": "simulated",
-            "media_python": "/old",
-            "cleanup_deadline": 4,
-            "bluetooth_adapter": "hci0",  # Removed Bluetooth channel (and its label-code gate).
-            "setup_requires_usb": False,
-            "calibration_host": "192.168.4.47",  # Retired Safari calibration listener.
-            "calibration_port": 8081,
-            "allowed_origins": ["http://127.0.0.1:8080"],  # Retired control desk.
-        }
-    )
-    assert not hasattr(config, "media_python") and not hasattr(config, "bluetooth_adapter")
-    assert not hasattr(config, "calibration_host")
     (tmp_path / "binding.json").write_text(
         '{"usb_identity":"old-phone","owner_confirmed":true,"portrait_locked":true}'
     )
@@ -77,11 +63,6 @@ def test_lan_url_normalized_with_derived_defaults(tmp_path):
         backend="simulated", lan_url="https://openlolo-ab12.local:8443", lan_extra_hosts=["192.168.4.25"]
     )
     assert with_ip.lan_hosts == ["openlolo-ab12.local:8443", "192.168.4.25:8443"]
-    # setup_ssid named the SoftAP hotspot before ADR 0006; an old box.toml still loads.
-    legacy = Config.model_validate(
-        {"backend": "simulated", "lan_url": "https://openlolo-ab12.local:8443", "setup_ssid": "Old"}
-    )
-    assert legacy.setup_name == "OpenLolo-AB12" and not hasattr(legacy, "setup_ssid")
 
 
 def test_lan_defaults_when_disabled_and_port_443():

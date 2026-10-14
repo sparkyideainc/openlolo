@@ -35,15 +35,15 @@ class Journal:
             CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS oauth_clients (
                 client_id TEXT PRIMARY KEY, value TEXT NOT NULL, approved INTEGER NOT NULL,
-                created REAL NOT NULL, last_used REAL);
+                created REAL NOT NULL, last_used REAL, issuer TEXT);
             CREATE TABLE IF NOT EXISTS oauth_grants (
                 digest TEXT PRIMARY KEY, kind TEXT NOT NULL, client_id TEXT NOT NULL,
                 family TEXT NOT NULL, value TEXT NOT NULL, expires REAL NOT NULL,
                 revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS owner_labels (owner TEXT PRIMARY KEY, label TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS portal_sessions (digest TEXT PRIMARY KEY, expires_at REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC, id DESC);
         """)
-        self._migrate()
         # Changes on every write and never repeats, across restarts too: seeded from the clock but
         # always past the last persisted value. The box page watches it in the status digest to
         # refetch history.
@@ -54,19 +54,6 @@ class Journal:
         self.secret = bytes.fromhex(
             self.db.execute("SELECT value FROM secrets WHERE name='fingerprint'").fetchone()[0]
         )
-        self.db.commit()
-
-    def _migrate(self):
-        """Idempotent, additive schema changes for databases created by older releases."""
-        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(oauth_clients)")}
-        if "issuer" not in columns:
-            self.db.execute("ALTER TABLE oauth_clients ADD COLUMN issuer TEXT")
-        self.db.execute("CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC, id DESC)")
-        # The Bluetooth companion-app channel is gone: its per-phone keys and label-code secret with it.
-        self.db.execute("DROP TABLE IF EXISTS app_keys")
-        self.db.execute("DELETE FROM secrets WHERE name IN ('setup_code', 'setup')")
-        # Single-use shell credentials (`openlolo credential`) are gone; owners approve on the box page.
-        self.db.execute("DROP TABLE IF EXISTS logins")
         self.db.commit()
 
     def _persist_revision(self) -> None:

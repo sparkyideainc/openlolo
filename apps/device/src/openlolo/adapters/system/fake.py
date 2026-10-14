@@ -71,6 +71,3 @@ class FakeNetwork:
 
     async def restore_connection(self, name):
         self.calls.append(("restore_connection", name))
-
-    async def remove_legacy_hotspot(self):
-        self.calls.append(("remove_legacy_hotspot",))

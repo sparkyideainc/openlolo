@@ -98,9 +98,6 @@ UV_PROJECT_ENVIRONMENT="$release_dir/.device-venv" "$uv_bin" sync --frozen --no-
 .venv/bin/python -c 'import openlolo.interfaces.cli'
 .device-venv/bin/python -c 'import openlolo.coredevice.worker; import pymobiledevice3.remote.core_device.hid_service, pymobiledevice3.remote.userspace_tunnel'
 [ -e /etc/openlolo/box.toml ] || install -m 0644 "$source_dir/config/box.example.toml" /etc/openlolo/box.toml
-# Earlier templates pinned the renewed lease at 60 s; the lease now lapses after this much idle
-# time, and the template default is 90. Only the untouched template line is rewritten.
-sed -i 's/^lease_seconds = 60$/lease_seconds = 90/' /etc/openlolo/box.toml
 if [ "$board" != auto ] && ! grep -qE '^[[:space:]]*board[[:space:]]*=' /etc/openlolo/box.toml; then
   printf '\n# Hardware profile detected by the installer.\nboard = "%s"\n' "$board" >> /etc/openlolo/box.toml
 fi
@@ -186,21 +183,12 @@ if [ "$board" = radxa-zero3w ]; then
   if [ -f "$cpufreq" ] && grep -q '^GOVERNOR=' "$cpufreq" && ! grep -qx 'GOVERNOR=schedutil' "$cpufreq"; then
     sed -i 's/^GOVERNOR=.*/GOVERNOR=schedutil/' "$cpufreq"
   fi
-  # Bluetooth is unused since the BLE channel was removed. Armbian's aic-bluetooth.service
+  # OpenLolo does not use Bluetooth. Armbian's aic-bluetooth.service
   # requires bluetooth.service and would start it again at boot.
   for unit in aic-bluetooth.service bluetooth.service; do
     systemctl disable --now "$unit" 2>/dev/null || true
   done
 fi
-# Remove the pre-CoreDevice units and the patched-usbmuxd drop-in if a previous release installed them.
-for old in openlolo-hid openlolo-media; do
-  systemctl disable --now "$old.service" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$old.service"
-done
-if [ -e /etc/systemd/system/usbmuxd.service.d/openlolo.conf ]; then
-  mv /etc/systemd/system/usbmuxd.service.d/openlolo.conf /etc/openlolo/usbmuxd-legacy-dropin.conf.disabled
-fi
-rm -f /etc/udev/rules.d/70-openlolo.rules /etc/dbus-1/system.d/openlolo.conf
 systemctl stop openlolo-api.service openlolo-device.service 2>/dev/null || true
 rm -rf "$root/current.old"
 [ ! -e "$root/current" ] && [ ! -L "$root/current" ] || mv "$root/current" "$root/current.old"
