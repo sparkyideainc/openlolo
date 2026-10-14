@@ -45,7 +45,6 @@ async def box(tmp_path, monkeypatch):
         state_dir=tmp_path / "state",
         runtime_dir=tmp_path / "run",
         allowed_hosts=["testserver"],
-        allowed_origins=["http://testserver"],
         lan_url=url,
         lan_cert=LAN_CERT,
         lan_key=LAN_KEY,

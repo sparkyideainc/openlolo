@@ -16,7 +16,6 @@ async def runtime(tmp_path):
         state_dir=tmp_path / "state",
         runtime_dir=tmp_path / "run",
         allowed_hosts=["testserver"],
-        allowed_origins=["http://testserver"],
     )
     runtime = Runtime(config)
     await runtime.start()

@@ -64,14 +64,12 @@ class Security:
         try:
             if request.headers.get("host") not in self.runtime.config.allowed_hosts:
                 raise OpenLoloError("HOST_REJECTED", status=403)
-            origin = request.headers.get("origin")
-            if origin and origin not in self.runtime.config.allowed_origins:
+            # Only in-process callers reach this API; a browser never does, so any Origin is foreign.
+            if "origin" in request.headers:
                 raise OpenLoloError("ORIGIN_REJECTED", status=403)
             if request.method not in {"GET", "HEAD"}:
                 if not request.headers.get("content-type", "").startswith("application/json"):
                     raise OpenLoloError("JSON_REQUIRED", status=415)
-                if origin is None and request.headers.get("x-openlolo-client") != "cli":
-                    raise OpenLoloError("ORIGIN_REQUIRED", status=403)
             await self.app(scope, receive, secure_send)
         except OpenLoloError as exc:
             await JSONResponse({"error": exc.as_dict()}, status_code=exc.status)(scope, receive, secure_send)
@@ -83,7 +81,8 @@ def create_app(runtime):
     phone, auth = runtime.phone, runtime.auth
 
     def owner(request):
-        return auth.owner(request.cookies.get("openlolo_session"))
+        scheme, _, session = request.headers.get("authorization", "").partition(" ")
+        return auth.owner(session if scheme.lower() == "bearer" else None)
 
     async def error_handler(request, exc):
         if isinstance(exc, OpenLoloError):

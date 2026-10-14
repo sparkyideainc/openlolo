@@ -48,6 +48,7 @@ def test_legacy_keys_and_legacy_binding_are_ignored(tmp_path):
             "setup_requires_usb": False,
             "calibration_host": "192.168.4.47",  # Retired Safari calibration listener.
             "calibration_port": 8081,
+            "allowed_origins": ["http://127.0.0.1:8080"],  # Retired control desk.
         }
     )
     assert not hasattr(config, "media_python") and not hasattr(config, "bluetooth_adapter")

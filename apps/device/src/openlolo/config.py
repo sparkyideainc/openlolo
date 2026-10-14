@@ -21,6 +21,8 @@ LEGACY_KEYS = {
     # The Safari calibration grid and its listener were retired with the control desk.
     "calibration_host",
     "calibration_port",
+    # Browser origins of the retired control desk; the Phone API is only called in-process.
+    "allowed_origins",
 }
 
 
@@ -32,11 +34,10 @@ class Config(StrictModel):
     state_dir: Path = Path("/var/lib/openlolo")
     runtime_dir: Path = Path("/run/openlolo")
     # The Phone API is called in-process only (MCP gateway bridges, the box page); these name the
-    # Host and Origin those in-process requests carry. No socket listens on them.
+    # Host those in-process requests carry. No socket listens on them.
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1024, le=65535)
     allowed_hosts: list[str] = ["127.0.0.1:8080", "localhost:8080"]
-    allowed_origins: list[str] = ["http://127.0.0.1:8080", "http://localhost:8080"]
     # Seconds without owner activity after which the control lease lapses and held input is released.
     lease_seconds: float = Field(default=90, ge=1, le=600)
     queue_size: int = Field(default=16, ge=1, le=64)

@@ -12,23 +12,28 @@ async def client(runtime):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=create_app(runtime)),
         base_url="http://testserver",
-        headers={"Origin": "http://testserver"},
     )
 
 
-def login(c, runtime):
-    """What a gateway bridge or the box page does: open an in-process session."""
-    c.cookies.set("openlolo_session", runtime.auth.open_session())
+def login(c, runtime) -> str:
+    """What a gateway bridge or the box page does: open an in-process session, send it as a bearer."""
+    session = runtime.auth.open_session()
+    c.headers["Authorization"] = f"Bearer {session}"
+    return session
 
 
 async def test_session_origin_host_and_content_type(runtime):
     async with await client(runtime) as c:
         assert (await c.get("/api/status")).status_code == 401
+        session = runtime.auth.open_session()
+        # The retired browser cookie is not a credential any more.
+        assert (await c.get("/api/status", cookies={"openlolo_session": session})).status_code == 401
+        assert (await c.get("/api/status", headers={"Authorization": session})).status_code == 401
         login(c, runtime)
         assert (await c.get("/api/status")).status_code == 200
-        assert (
-            await c.post("/api/screenshot", json={}, headers={"Origin": "http://evil.test"})
-        ).status_code == 403
+        # No browser ever reaches this API: any Origin is refused, even the box's own.
+        for origin in ("http://evil.test", "http://testserver"):
+            assert (await c.post("/api/screenshot", json={}, headers={"Origin": origin})).status_code == 403
         assert (await c.get("/api/status", headers={"Host": "evil.test"})).status_code == 403
         assert (
             await c.post("/api/screenshot", content="{}", headers={"Content-Type": "text/plain"})
@@ -38,7 +43,7 @@ async def test_session_origin_host_and_content_type(runtime):
         for path in ("/", "/app.js", "/api/calibration"):
             assert (await c.get(path)).status_code == 404
         assert (await c.post("/api/login", json={"credential": "x"})).status_code in {404, 405}
-        runtime.auth.logout(c.cookies["openlolo_session"])
+        runtime.auth.logout(c.headers["Authorization"].removeprefix("Bearer "))
         assert (await c.get("/api/status")).status_code == 401
 
 

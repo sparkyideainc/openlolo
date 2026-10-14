@@ -601,8 +601,7 @@ class Gateway:
             http = httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=self.api),
                 base_url=self.base_url,
-                headers={"X-OpenLolo-Client": "cli"},
-                cookies={"openlolo_session": session},
+                headers={"Authorization": f"Bearer {session}"},
             )
             client = PhoneClient(http, transport="streamable-http")
             self.bridges[token.client_id] = (session, client)
