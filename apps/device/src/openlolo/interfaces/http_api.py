@@ -187,10 +187,9 @@ def create_app(runtime):
             raise OpenLoloError("INVALID_REQUEST", "Cancellation requires a target operation ID", 400)
         coordinator = runtime.coordinator
         # Stop is always available to an authenticated local owner, including after lease loss.
-        # Renew is a deprecated no-op that only reports status.
-        if command not in {"acquire", "pause", "renew"}:
+        if command not in {"acquire", "pause"}:
             coordinator.check(who, token, allow_paused=True)
-        if command not in {"acquire", "renew", "release", "pause", "resume", "cancel"}:
+        if command not in {"acquire", "release", "pause", "resume", "cancel"}:
             raise OpenLoloError("UNKNOWN_OPERATION", status=404)
         record, fresh = runtime.journal.reserve(
             data["operation_id"], who, command, {"target": data.get("target")}
@@ -202,7 +201,6 @@ def create_app(runtime):
             return JSONResponse(result)
         methods = {
             "acquire": lambda: phone.acquire_control(who),
-            "renew": lambda: phone.renew_control(who, token),
             "release": lambda: phone.release_control(who, token),
             "pause": phone.pause,
             "resume": lambda: phone.resume(who, token),
@@ -215,7 +213,7 @@ def create_app(runtime):
                 result = await result
             public = {k: v for k, v in result.items() if k != "lease_token"}
             record = runtime.journal.update(data["operation_id"], "SUCCEEDED", public)
-            if command in {"acquire", "renew"}:
+            if command == "acquire":
                 record["control"] = result
             return JSONResponse(record)
         except OpenLoloError as exc:

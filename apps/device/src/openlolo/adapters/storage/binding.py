@@ -17,8 +17,7 @@ class BindingStore:
         self.path = state_dir / "binding.json"
 
     def read(self) -> Binding | None:
-        """A binding file from the pre-CoreDevice releases is not migrated implicitly: it reads
-        as no binding, so the owner rebinds with a transport."""
+        """An unreadable binding file reads as no binding, so the owner rebinds."""
         if not self.path.exists():
             return None
         try:

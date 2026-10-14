@@ -73,6 +73,6 @@ def test_setup_card_rotate_replaces_the_password(box, monkeypatch, capsys):
 def test_clients_lists_oauth_clients_only(box, monkeypatch, capsys):
     out = run(monkeypatch, capsys, box, "clients", "list")
     listed = json.loads(out.out)
-    assert listed == {"clients": []}  # No paired-phone list: app keys left with the Bluetooth channel.
+    assert listed == {"clients": []}
     with pytest.raises(SystemExit):
         run(monkeypatch, capsys, box, "clients", "revoke", "0123456789abcdef")

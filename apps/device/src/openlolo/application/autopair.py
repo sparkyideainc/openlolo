@@ -19,8 +19,7 @@ EVENT_WAIT = 25
 class AutoPair:
     """Trust-pair the cabled phone only during an explicitly opened setup window.
 
-    iOS still requires the owner to unlock the phone and accept its Trust prompt. No label
-    code or native app is involved in this CoreDevice pairing flow.
+    iOS still requires the owner to unlock the phone and accept its Trust prompt.
 
     Event driven: outside the setup window it waits for the window to open and makes no worker
     calls. Inside it, it follows the worker's usbmuxd attach and detach events (a long poll) and
