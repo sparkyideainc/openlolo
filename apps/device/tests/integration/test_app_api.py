@@ -2,7 +2,6 @@
 
 import asyncio
 import html
-import json
 import re
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -106,31 +105,6 @@ async def test_no_client_can_be_granted_owner_admin(box):
         assert row["renewed_while_used"] is False and row["never_expires"] is False
         # The LAN entry has no owner routes, whatever the token.
         assert (await c.get("/app/status", headers=bearer(issued.json()))).status_code == 404
-
-        # A grant stored before this change keeps working without its admin scope.
-        for row in runtime.journal.db.execute(
-            "SELECT digest, value FROM oauth_grants WHERE kind IN ('access','refresh') AND client_id=?",
-            (client_id,),
-        ).fetchall():
-            value = json.loads(row["value"])
-            value["scopes"] = [*value["scopes"], "owner:admin"]
-            with runtime.journal.db:
-                runtime.journal.db.execute(
-                    "UPDATE oauth_grants SET value=? WHERE digest=?", (json.dumps(value), row["digest"])
-                )
-        loaded = await lan.provider.load_access_token(issued.json()["access_token"])
-        assert loaded is not None and loaded.scopes == ["phone:read", "phone:control"]
-        refreshed = await c.post(
-            "/token",
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": issued.json()["refresh_token"],
-                "client_id": client_id,
-                "resource": LAN + "/mcp",
-            },
-        )
-        assert refreshed.status_code == 200, refreshed.text
-        assert refreshed.json()["scope"] == "phone:read phone:control"
 
         # Cancel on the consent page returns the client an access_denied redirect.
         _, request_id, _ = await start_authorization(c, LAN, client_id)
@@ -246,7 +220,7 @@ async def test_network_routes(box, monkeypatch):
         entered = await c.post("/app/network/setup_mode", json={"enabled": True})
         assert entered.status_code == 200 and entered.json()["state"] == "setup_mode"
         assert entered.json()["setup_name"] == "OpenLolo-TEST" and entered.json()["reason"] == "api"
-        assert "channel" not in entered.json()  # No Bluetooth channel to report.
+        assert "channel" not in entered.json()
         assert (await c.get("/app/info")).json()["setup_mode"] is True
         assert (await c.get("/app/status")).json()["setup_mode"] is True
         # Setup mode is the local WPA2 access point (ADR 0011): the setup AP is up.

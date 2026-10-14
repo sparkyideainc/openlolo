@@ -9,22 +9,6 @@ from pydantic import Field, model_validator
 
 from openlolo.domain.models import StrictModel
 
-# Keys from earlier releases; ignored so an existing /etc/openlolo/box.toml keeps loading.
-# setup_ssid named the older SoftAP hotspot; bluetooth_adapter and setup_requires_usb belonged to
-# the removed Bluetooth companion-app channel and its label-code pairing gate.
-LEGACY_KEYS = {
-    "media_python",
-    "cleanup_deadline",
-    "setup_ssid",
-    "bluetooth_adapter",
-    "setup_requires_usb",
-    # The Safari calibration grid and its listener were retired with the control desk.
-    "calibration_host",
-    "calibration_port",
-    # Browser origins of the retired control desk; the phone core is only called in-process.
-    "allowed_origins",
-}
-
 
 class Config(StrictModel):
     backend: Literal["simulated", "hardware"] = "hardware"
@@ -111,13 +95,6 @@ class Config(StrictModel):
     setup_timeout_seconds: float = Field(default=600, ge=60, le=3600)
     setup_grace_seconds: float = Field(default=120, ge=10, le=3600)
     wifi_interface: str = "wlan0"
-
-    @model_validator(mode="before")
-    @classmethod
-    def drop_legacy(cls, data):
-        if isinstance(data, dict):
-            return {k: v for k, v in data.items() if k not in LEGACY_KEYS}
-        return data
 
     @model_validator(mode="after")
     def local(self):

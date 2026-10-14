@@ -252,10 +252,7 @@ def create_server(
 
     @server.tool(annotations=CONTROL)
     async def openlolo_control(
-        command: Annotated[
-            Literal["acquire", "renew", "release", "resume"],
-            Field(description="renew is deprecated: it changes nothing and only returns status."),
-        ],
+        command: Literal["acquire", "release", "resume"],
         operation_id: OperationId = None,
     ) -> CallToolResult:
         """Control is taken by your first action and lapses after 90 s without activity; call release when you finish. Acquire is optional and does not unpause; resume only to unpause on purpose."""

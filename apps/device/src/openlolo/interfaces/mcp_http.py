@@ -72,11 +72,6 @@ CONTROL_WINDOWS = {"24h": 24 * 3600, "30d": REFRESH_SECONDS, "never": NEVER_SECO
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
-def phone_scopes(scopes: list[str]) -> list[str]:
-    """Stored grant scopes minus any no longer grantable (owner:admin before the box page owned it)."""
-    return [scope for scope in scopes if scope in SCOPES]
-
-
 def _token() -> str:
     return secrets.token_urlsafe(32)
 
@@ -86,8 +81,7 @@ class OAuthProvider:
 
     Grants and clients are bound to the issuer that created them, so a token minted by the
     remote (`public_url`) entry is never accepted by the LAN entry or vice versa even though both
-    instances share one journal. Rows written before issuer binding existed belong to
-    ``legacy_issuer`` (the remote entry).
+    instances share one journal.
     """
 
     def __init__(
@@ -96,17 +90,15 @@ class OAuthProvider:
         issuer: str,
         *,
         scopes: list[str] | None = None,
-        legacy_issuer: str | None = None,
     ):
         self.db = journal.db
         self.issuer = issuer
         self.resource = issuer + MCP_PATH
         self.scopes = list(scopes or SCOPES)
-        self.legacy_issuer = legacy_issuer
         self.registrations: list[float] = []
 
     def _owns(self, issuer: str | None) -> bool:
-        return (issuer if issuer is not None else self.legacy_issuer) == self.issuer
+        return issuer == self.issuer
 
     # -- storage helpers -------------------------------------------------------------
 
@@ -210,7 +202,7 @@ class OAuthProvider:
                     "created": row["created"],
                     "last_used": row["last_used"],
                     "active_until": {g["kind"]: g["expires"] for g in grants},
-                    "issuer": row["issuer"] if row["issuer"] is not None else self.legacy_issuer,
+                    "issuer": row["issuer"],
                     "scopes": sorted({s for value in refresh for s in value.get("scopes", [])}),
                     "renewed_while_used": any(value["sliding"] for value in refresh),
                     "never_expires": any(value["never"] for value in refresh),
@@ -304,7 +296,7 @@ class OAuthProvider:
                     "client_name": client.client_name,
                     "redirect_hosts": sorted({str(u.host or "") for u in client.redirect_uris or []}),
                     "scopes": value["scopes"],
-                    "issuer": value.get("issuer", self.legacy_issuer),
+                    "issuer": value.get("issuer"),
                     # A script using the device grant; its user code is shown on both sides.
                     "kind": "device" if value.get("device") else "oauth",
                     "user_code": value.get("user_code"),
@@ -326,7 +318,7 @@ class OAuthProvider:
         if value.get("device"):
             return self._decide_device(handle, client, value, granted, window)
         params = AuthorizationParams.model_validate(value["params"])
-        issuer = value.get("issuer", self.legacy_issuer)
+        issuer = value.get("issuer")
         with self.db:
             self.db.execute("DELETE FROM oauth_grants WHERE digest=?", (handle,))
         if not granted:
@@ -480,7 +472,7 @@ class OAuthProvider:
         return RefreshToken(
             token=refresh_token,
             client_id=client.client_id,
-            scopes=phone_scopes(value["scopes"]),
+            scopes=value["scopes"],
             expires_at=int(row["expires"]),
             resource=self.resource,
         )
@@ -513,7 +505,7 @@ class OAuthProvider:
         family_expires = now + REFRESH_SECONDS if sliding else value["family_expires"]
         issued = self._issue(
             client.client_id,
-            scopes or phone_scopes(value["scopes"]),
+            scopes or value["scopes"],
             row["family"],
             family_expires,
             now,
@@ -542,7 +534,7 @@ class OAuthProvider:
         return AccessToken(
             token=token,
             client_id=row["client_id"],
-            scopes=phone_scopes(value["scopes"]),
+            scopes=value["scopes"],
             expires_at=int(row["expires"]),
             resource=self.resource,
         )
@@ -933,7 +925,7 @@ def create_gateway_app(runtime, origin: str | None = None, *, allowed_hosts: lis
         raise ValueError("public_url is required for the remote MCP entry")
     hosts = {urlsplit(origin).netloc.lower(), *(h.lower() for h in allowed_hosts or [])}
     scopes = SCOPES
-    provider = OAuthProvider(runtime.journal, origin, scopes=scopes, legacy_issuer=config.public_url)
+    provider = OAuthProvider(runtime.journal, origin, scopes=scopes)
     gateway = Gateway(runtime, provider)
     if not TIMING_LOG.handlers:
         # uvicorn runs at warning level; the timing line is the one info record this process emits.

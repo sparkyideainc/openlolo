@@ -33,7 +33,7 @@ class Coordinator:
     submitted action, a capture, acquire, resume) moves the deadline to ``lease_seconds`` after it,
     and a submitted action holds the lease until it finishes, then counts from its end. One
     watcher sleeps until the deadline and wakes only for a new or dropped lease; with no lease it
-    never wakes. Clients never renew."""
+    never wakes."""
 
     def __init__(self, journal, device, capacity=16, lease_seconds=90):
         self.journal, self.device = journal, device
@@ -113,10 +113,6 @@ class Coordinator:
             self.lease = Lease(owner, secrets.token_urlsafe(32), time.monotonic() + self.lease_seconds)
             self.changed.set()
             return self.lease_status(owner, include_token=True)
-
-    def renew(self, owner, token):
-        """Deprecated no-op for clients that still renew on a timer: status only, deadline unchanged."""
-        return self.lease_status(owner, include_token=True)
 
     def lease_status(self, owner=None, include_token=False):
         lease = self.lease

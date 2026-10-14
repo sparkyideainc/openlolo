@@ -389,9 +389,6 @@ class Phone:
     async def acquire_control(self, owner):
         return await self.coordinator.acquire(owner)
 
-    def renew_control(self, owner, token):
-        return self.coordinator.renew(owner, token)
-
     async def release_control(self, owner, token):
         self.coordinator.check(owner, token, allow_paused=True)
         await self.coordinator.drop_control()

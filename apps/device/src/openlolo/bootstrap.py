@@ -77,7 +77,6 @@ class Runtime:
         await self.coordinator.start()
         self.door_gateway.start()
         if self.config.backend != "simulated":
-            await self.network.remove_legacy_hotspot()
             self.provisioning.start()
             self.autopair.start()
 
@@ -98,7 +97,7 @@ def build_door(runtime):
 
     config = runtime.config
     issuer = config.public_url or config.lan_url or "https://openlolo.invalid"
-    provider = OAuthProvider(runtime.journal, issuer, scopes=SCOPES, legacy_issuer=config.public_url)
+    provider = OAuthProvider(runtime.journal, issuer, scopes=SCOPES)
     return provider, Gateway(runtime, provider)
 
 

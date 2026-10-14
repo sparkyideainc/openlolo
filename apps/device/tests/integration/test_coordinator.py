@@ -128,13 +128,6 @@ async def test_release_frees_at_once_and_busy_until_then(runtime, lease):
     assert other != lease and runtime.coordinator.lease.owner == "other"
 
 
-async def test_renew_is_a_no_op(runtime, lease):
-    expires = runtime.coordinator.lease.expires
-    await asyncio.sleep(0.02)
-    status = runtime.phone.renew_control("owner", "anything")
-    assert status["owned"] and runtime.coordinator.lease.expires == expires
-
-
 async def test_pause_still_works_and_does_not_stop_expiry(runtime):
     coordinator = runtime.coordinator
     coordinator.lease_seconds = 0.2

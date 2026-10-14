@@ -240,9 +240,6 @@ async def test_bridge_screenshots_keep_control_and_release_hands_over(runtime):
         await holder.action(str(uuid4()), {"kind": "key", "key": "enter"}, False)
     assert paused.value.code == "PAUSED"
     await holder.control("resume", str(uuid4()))
-    # renew is a harmless no-op.
-    renewed = await holder.control("renew", str(uuid4()))
-    assert renewed["state"] == "SUCCEEDED" and runtime.coordinator.lease.expires >= expires
     released = await holder.control("release", str(uuid4()))
     assert released["state"] == "SUCCEEDED" and holder.lease is None and runtime.coordinator.lease is None
     # Released twice, or after a lapse: already free, not an error.
