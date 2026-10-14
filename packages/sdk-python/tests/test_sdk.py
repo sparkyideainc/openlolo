@@ -159,6 +159,9 @@ def test_addresses():
 
 def test_first_run_approves_caches_privately_and_second_run_does_not_ask(box, tmp_path):
     with phone_for(box, tmp_path, name="nightly.py") as phone:
+        assert not phone.approved and phone.fingerprint is None
+        phone.connect()
+        assert phone.approved
         phone.open_app("com.apple.mobilenotes").type("hello").tap(0.5, 0.5).swipe(0.5, 0.8, 0.5, 0.2).home()
     assert box.device_requests == 1
     names = [name for name, _ in box.calls]

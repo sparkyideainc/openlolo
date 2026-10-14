@@ -180,6 +180,16 @@ class Phone:
 
     # -- lifecycle -----------------------------------------------------------------------
 
+    @property
+    def approved(self) -> bool:
+        """True when this machine holds a grant for the box (it may still have been removed there)."""
+        return bool(self.auth.data.get("refresh_token"))
+
+    @property
+    def fingerprint(self) -> str | None:
+        """SHA-256 of the box's LAN certificate pinned at approval; None on the remote entry."""
+        return self.auth.fingerprint
+
     def connect(self) -> "Phone":
         """Make sure a grant exists now (approving if needed) instead of on the first call."""
         self.auth.token()
