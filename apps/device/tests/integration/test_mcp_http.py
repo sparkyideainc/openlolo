@@ -81,7 +81,7 @@ async def register(c, scope="phone:read phone:control"):
     return r.json()["client_id"]
 
 
-async def authorize(c, runtime, client_id, *, window="1h", scope="phone:read phone:control"):
+async def authorize(c, runtime, client_id, *, window="24h", scope="phone:read phone:control"):
     verifier, challenge = pkce()
     r = await c.get(
         "/authorize",
@@ -103,6 +103,7 @@ async def authorize(c, runtime, client_id, *, window="1h", scope="phone:read pho
     assert page.status_code == 200 and "Claude" in page.text and "claude.ai" in page.text
     request_id = parse_qs(urlsplit(consent).query)["request"][0]
     assert "name='control'" not in page.text and "name='window'" in page.text
+    assert "<option value='30d' selected>" in page.text  # 30 days is preselected.
     form = {"request": request_id, "credential": runtime.auth.issue(), "decision": "allow", "window": window}
     r = await c.post(CONSENT_PATH, data=form, headers={"Origin": PUBLIC})
     assert r.status_code == 302, r.text
@@ -193,7 +194,7 @@ async def test_control_scope_flow_rotation_reuse_and_revocation(remote, caplog):
     TIMING_LOG.addHandler(caplog.handler)  # the entry logger does not propagate to the root logger
     async with web(app) as c:
         client_id = await register(c)
-        code, verifier = await authorize(c, runtime, client_id, window="1h")
+        code, verifier = await authorize(c, runtime, client_id, window="24h")
         issued = await tokens(c, client_id, code, verifier)
         assert issued["scope"] == "phone:read phone:control"
 
@@ -385,3 +386,127 @@ async def test_expired_access_token_and_pending_client_pruning(remote):
         runtime.journal.db.commit()
         listed = {row["client_id"] for row in app.provider.list_clients()}
         assert client_id in listed and pending not in listed
+
+
+class FakeClock:
+    """Stands in for the provider's time module, so grant lifetimes can be stepped through."""
+
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        return self.now
+
+    @staticmethod
+    def monotonic():
+        return time.monotonic()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from openlolo.interfaces import mcp_http
+
+    fake = FakeClock()
+    monkeypatch.setattr(mcp_http, "time", fake)
+    return fake
+
+
+async def refresh(c, client_id, token):
+    return await c.post(
+        "/token", data={"grant_type": "refresh_token", "refresh_token": token, "client_id": client_id}
+    )
+
+
+def client_row(app, client_id):
+    [row] = [r for r in app.provider.list_clients() if r["client_id"] == client_id]
+    return row
+
+
+DAY = 24 * 3600
+
+
+async def test_renewed_grant_slides_on_refresh_and_lapses_when_unused(remote, clock):
+    runtime, app = remote
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id, window="30d")
+        issued = await tokens(c, client_id, code, verifier)
+        row = client_row(app, client_id)
+        assert row["renewed_while_used"] is True and row["last_used"] == clock.now
+        assert row["active_until"]["refresh"] == clock.now + 30 * DAY
+
+        clock.now += 20 * DAY  # Used again before the 30 days run out: the end moves.
+        renewed = await refresh(c, client_id, issued["refresh_token"])
+        assert renewed.status_code == 200, renewed.text
+        row = client_row(app, client_id)
+        assert row["active_until"]["refresh"] == clock.now + 30 * DAY and row["last_used"] == clock.now
+
+        clock.now += 30 * DAY + 1  # Unused for 30 days: gone.
+        lapsed = await refresh(c, client_id, renewed.json()["refresh_token"])
+        assert lapsed.status_code == 400 and lapsed.json()["error"] == "invalid_grant"
+
+
+async def test_24_hour_grant_keeps_its_end(remote, clock):
+    runtime, app = remote
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id, window="24h")
+        issued = await tokens(c, client_id, code, verifier)
+        end = clock.now + DAY
+        row = client_row(app, client_id)
+        assert row["renewed_while_used"] is False and row["never_expires"] is False
+
+        clock.now += DAY / 2
+        renewed = await refresh(c, client_id, issued["refresh_token"])
+        assert renewed.status_code == 200, renewed.text
+        assert renewed.json()["expires_in"] <= 900
+        assert client_row(app, client_id)["active_until"]["refresh"] == end
+
+        clock.now = end + 1
+        assert (await refresh(c, client_id, renewed.json()["refresh_token"])).status_code == 400
+
+
+async def test_never_grant_outlasts_long_idle_periods(remote, clock):
+    runtime, app = remote
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id, window="never")
+        issued = await tokens(c, client_id, code, verifier)
+        assert issued["expires_in"] <= 900  # Access tokens stay short; only the grant has no end.
+        row = client_row(app, client_id)
+        assert row["never_expires"] is True and row["renewed_while_used"] is False
+        end = row["active_until"]["refresh"]
+        assert end > clock.now + 99 * 365 * DAY
+
+        clock.now += 400 * DAY  # Over a year without use.
+        renewed = await refresh(c, client_id, issued["refresh_token"])
+        assert renewed.status_code == 200, renewed.text
+        assert client_row(app, client_id)["active_until"]["refresh"] == end
+
+
+async def test_box_page_revoke_ends_access_and_refresh_at_once(remote, tmp_path):
+    from openlolo.interfaces.setup_portal import CLIENT_HEADER, create_setup_portal
+
+    runtime, app = remote
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id, window="30d")
+        issued = await tokens(c, client_id, code, verifier)
+        assert await app.provider.load_access_token(issued["access_token"]) is not None
+
+        portal = create_setup_portal(runtime, web=tmp_path / "portal")
+        phone = httpx.ASGITransport(app=portal, client=("192.168.1.77", 50000))
+        async with httpx.AsyncClient(transport=phone, base_url="http://openlolo-test.local") as page:
+            listed = (await page.get("/app/clients")).json()["clients"]
+            assert [r["client_id"] for r in listed if not r["self"]] == [client_id]
+            revoked = await page.post(
+                f"/app/clients/{client_id}/revoke", json={}, headers={CLIENT_HEADER: "portal"}
+            )
+            assert revoked.status_code == 200, revoked.text
+
+        assert await app.provider.load_access_token(issued["access_token"]) is None
+        replay = await refresh(c, client_id, issued["refresh_token"])
+        assert replay.status_code in {400, 401} and replay.json()["error"] in {
+            "invalid_grant",
+            "invalid_client",
+        }

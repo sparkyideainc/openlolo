@@ -91,6 +91,10 @@ export interface Client {
 	created?: number;
 	last_used?: number | null;
 	active_until?: Record<string, number>;
+	/** The grant's end moves to 30 days after each use. */
+	renewed_while_used?: boolean;
+	/** Lasts until the owner removes the client. */
+	never_expires?: boolean;
 	issuer?: string | null;
 	scopes?: string[];
 	self?: boolean;
@@ -143,7 +147,7 @@ export interface DiscoveredPhone {
 	[key: string]: unknown;
 }
 
-export type ConsentWindow = "1h" | "8h" | "24h" | "30d";
+export type ConsentWindow = "24h" | "30d" | "never";
 export type SetupKind =
 	| "bind"
 	| "transport"

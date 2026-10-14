@@ -135,14 +135,12 @@ export function expiresText(seconds: unknown): string {
 
 export function windowText(window: string): string {
 	switch (window) {
-		case "1h":
-			return "1 hour";
-		case "8h":
-			return "8 hours";
 		case "24h":
 			return "24 hours";
 		case "30d":
 			return "30 days";
+		case "never":
+			return "Never";
 		default:
 			return window;
 	}
@@ -166,12 +164,12 @@ export function activeUntil(client: Client, now = new Date()): Date | null {
 	return new Date(Math.max(...values) * 1000);
 }
 
-/** Second line of an Access row: what the client may do and until when. */
+/** Second line of an Access row: when the client last used the box and until when. */
 export function clientSubtitle(client: Client, now = new Date()): string {
 	const until = activeUntil(client, now);
-	if (until)
-		return `${shortScopeText(client.scopes ?? [])} · ${untilText(until, now)}`;
-	return "No active session";
+	if (!until) return "No active session";
+	const used = relativeText(client.last_used, now).toLowerCase();
+	return `Used ${used} · ${client.never_expires ? "no end" : untilText(until, now)}`;
 }
 
 export function consentFrom(consent: Consent): string {

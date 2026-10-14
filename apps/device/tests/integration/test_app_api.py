@@ -133,17 +133,21 @@ async def test_admin_registration_consent_and_admin_window(lan):
         ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
         assert (await c.post("/mcp", json=ping, headers=bearer(issued.json()))).status_code == 200
 
-        # Without admin registration the admin checkbox is ignored and 30d falls back to 1h.
+        # Without admin registration the admin checkbox is ignored; a window not offered is refused.
         plain = await register(c, scope="phone:read phone:control", name="Reader")
         plain_id = plain.json()["client_id"]
         _, request_id, verifier = await start_authorization(c, LAN, plain_id)
-        consented = await consent_form(c, LAN, request_id, runtime.auth.issue(), admin=True, window="30d")
+        refused = await consent_form(c, LAN, request_id, runtime.auth.issue(), window="8h")
+        assert refused.status_code == 401 and "Not accepted." in refused.text
+        consented = await consent_form(c, LAN, request_id, runtime.auth.issue(), admin=True, window="24h")
         assert consented.status_code == 302, consented.text
         code = parse_qs(urlsplit(consented.headers["location"]).query)["code"][0]
         issued = (await tokens(c, LAN, plain_id, code, verifier)).json()
         assert issued["scope"] == "phone:read phone:control"
         [row] = [r for r in app.provider.list_clients() if r["client_id"] == plain_id]
-        assert abs(row["active_until"]["refresh"] - (time.time() + 3600)) < 60
+        assert abs(row["active_until"]["refresh"] - (time.time() + 24 * 3600)) < 60
+        assert row["renewed_while_used"] is False and row["never_expires"] is False
+        assert row["last_used"] is not None
 
         # Deny returns the client an access_denied redirect without needing a credential.
         _, request_id, _ = await start_authorization(c, LAN, plain_id)
@@ -401,14 +405,14 @@ async def test_owner_decides_pending_consents_of_the_remote_entry(lan):
         assert (await c.get("/app/status", headers=headers)).json()["pending_consents"] == 1
         assert await status_of(pc, request_id) == {"state": "pending"}
 
-        # Owner allows control for 8h from the box page; the browser's poll picks up the redirect once.
-        choice = {"decision": "allow", "control": True, "window": "8h"}
+        # Owner allows control for 30 days from the box page; the browser's poll picks up the redirect once.
+        choice = {"decision": "allow", "control": True, "window": "30d"}
         decided = await c.post(f"/app/consents/{pending['handle']}", json=choice, headers=headers)
         assert decided.status_code == 200, decided.text
         assert decided.json() == {
             "decided": "allow",
             "scopes": ["phone:read", "phone:control"],
-            "window": 8 * 3600,
+            "window": REFRESH_SECONDS,
         }
         assert (await c.get("/app/status", headers=headers)).json()["pending_consents"] == 0
         assert (await c.get("/app/consents", headers=headers)).json() == {"consents": []}
@@ -428,7 +432,7 @@ async def test_owner_decides_pending_consents_of_the_remote_entry(lan):
         assert (
             row["approved"] and row["issuer"] == PUBLIC and row["scopes"] == ["phone:control", "phone:read"]
         )
-        assert abs(refresh_window(public.provider, client_id) - 8 * 3600) < 60
+        assert abs(refresh_window(public.provider, client_id) - REFRESH_SECONDS) < 60
         ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
         assert (await pc.post("/mcp", json=ping, headers=bearer(exchanged.json()))).status_code == 200
 
@@ -496,8 +500,10 @@ async def test_pin_from_the_box_page_completes_one_request(lan, monkeypatch):
         client_id, request_id, verifier = await public_request(pc)
         handle = digest(request_id)
         _, other_request, _ = await public_request(pc, name="Other agent")
+        bad = await c.post(f"/app/consents/{handle}/pin", json={"window": "8h"}, headers=headers)
+        assert bad.status_code == 422 and bad.json()["error"]["code"] == "INVALID_WINDOW"
         other = await c.post(
-            f"/app/consents/{digest(other_request)}/pin", json={"control": True}, headers=headers
+            f"/app/consents/{digest(other_request)}/pin", json={"window": "24h"}, headers=headers
         )
         pin = (
             await c.post(
@@ -527,16 +533,18 @@ async def test_pin_from_the_box_page_completes_one_request(lan, monkeypatch):
         # A PIN older than 30 seconds is refused; re-minting replaces it.
         client_id, request_id, verifier = await public_request(pc, name="Late")
         handle = digest(request_id)
-        pin = (await c.post(f"/app/consents/{handle}/pin", json={"control": True}, headers=headers)).json()[
+        pin = (await c.post(f"/app/consents/{handle}/pin", json={"window": "24h"}, headers=headers)).json()[
             "pin"
         ]
         real = time.time
         monkeypatch.setattr(time, "time", lambda: real() + PIN_SECONDS + 1)
         late = await pin_form(pc, request_id, pin)
         assert late.status_code == 401 and "Not accepted." in late.text
-        again = (await c.post(f"/app/consents/{handle}/pin", json={"admin": True}, headers=headers)).json()[
-            "pin"
-        ]
+        again = (
+            await c.post(
+                f"/app/consents/{handle}/pin", json={"admin": True, "window": "24h"}, headers=headers
+            )
+        ).json()["pin"]
         assert (await pin_form(pc, request_id, pin)).status_code == 401  # The old PIN stays dead.
         approved = await pin_form(pc, request_id, again)
         assert approved.status_code == 302, approved.text

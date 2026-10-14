@@ -22,7 +22,11 @@ export function clientRows(client: Client): [string, string][] {
 	const until = activeUntil(client);
 	rows.push([
 		"Active",
-		until ? `Until ${dateText(until.getTime() / 1000)}` : "No session",
+		!until
+			? "No session"
+			: client.never_expires
+				? "Until you remove it"
+				: `${client.renewed_while_used ? "Renewed while used, until" : "Until"} ${dateText(until.getTime() / 1000)}`,
 	]);
 	if (scopes.includes("owner:admin")) rows.push(["Box settings", "Allowed"]);
 	const hosts = [

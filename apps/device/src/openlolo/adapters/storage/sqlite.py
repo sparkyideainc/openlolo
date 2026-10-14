@@ -36,12 +36,13 @@ class Journal:
             CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS oauth_clients (
                 client_id TEXT PRIMARY KEY, value TEXT NOT NULL, approved INTEGER NOT NULL,
-                created REAL NOT NULL);
+                created REAL NOT NULL, last_used REAL);
             CREATE TABLE IF NOT EXISTS oauth_grants (
                 digest TEXT PRIMARY KEY, kind TEXT NOT NULL, client_id TEXT NOT NULL,
                 family TEXT NOT NULL, value TEXT NOT NULL, expires REAL NOT NULL,
                 revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS owner_labels (owner TEXT PRIMARY KEY, label TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS portal_sessions (digest TEXT PRIMARY KEY, expires_at REAL NOT NULL);
         """)
         self._migrate()
         # Changes on every write and never repeats, across restarts too: seeded from the clock but
@@ -216,6 +217,19 @@ class Journal:
         return self._public(
             self.db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
         )
+
+    def record_owner(self, udid: str) -> bool:
+        """Remember the bound iPhone; pairing a different one ends every box-page session.
+
+        The first pairing keeps them: the owner signs in on the setup Wi-Fi before the box
+        has a phone. Returns whether sessions were ended."""
+        with self.db:
+            row = self.db.execute("SELECT value FROM secrets WHERE name='owner_udid'").fetchone()
+            self.db.execute("INSERT OR REPLACE INTO secrets VALUES ('owner_udid', ?)", (udid,))
+            if row is None or row[0] == udid:
+                return False
+            self.db.execute("DELETE FROM portal_sessions")
+        return True
 
     def profile(self, device):
         row = self.db.execute("SELECT value FROM profiles WHERE device=?", (device,)).fetchone()

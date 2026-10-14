@@ -25,7 +25,8 @@ installViewportGap();
 const queryClient = new QueryClient({
 	queryCache: new QueryCache({
 		onError: (error) => {
-			// The box restarted or the session expired: go back through the connect screen.
+			// The session ended (unused for 30 days, signed out, or another iPhone paired): go back
+			// through the connect screen.
 			if (
 				isApiError(error) &&
 				error.status === 401 &&
