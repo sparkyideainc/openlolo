@@ -171,6 +171,34 @@ async def test_session_survives_portal_restart(portal, runtime, web, clock):
         assert (await c.get("/setup/status")).json()["session"] is True
 
 
+async def test_session_renewal_resends_the_cookie(portal, runtime, clock):
+    async with browser(portal) as c:
+        opened = await c.post("/setup/session", headers=WRITE)
+        assert f"Max-Age={setup_portal.SESSION_SECONDS}" in opened.headers["set-cookie"]
+        clock.now += 60
+        assert "set-cookie" not in (await c.get("/app/status")).headers  # Within the hour: no write
+        clock.now += setup_portal.SESSION_RENEW_SECONDS
+        renewed = await c.get("/app/status")
+        assert renewed.status_code == 200
+        assert len(renewed.headers.get_list("content-length")) <= 1
+        cookie = renewed.headers["set-cookie"]
+        assert cookie.startswith(f"{SESSION_COOKIE}=") and f"Max-Age={setup_portal.SESSION_SECONDS}" in cookie
+        assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+        clock.now += setup_portal.SESSION_SECONDS - 1  # Renewed: still signed in near the old end.
+        unplug(runtime)
+        assert (await c.get("/setup/status")).json()["session"] is True
+
+
+async def test_rebinding_another_phone_signs_the_page_out(portal, runtime):
+    async with browser(portal) as c:
+        await c.post("/setup/session", headers=WRITE)
+        current = runtime.bindings.read()
+        await runtime.phone.bind(current)  # Same phone: nothing ends.
+        assert (await c.get("/setup/status")).json()["session"] is True
+        await runtime.phone.bind(current.model_copy(update={"udid": "another-phone"}))
+        assert (await c.get("/setup/status")).json()["session"] is False
+
+
 async def test_setup_ap_clients_need_only_the_cable(portal, runtime):
     await runtime.provisioning.enter(reason="test")
     async with ap(portal) as c:

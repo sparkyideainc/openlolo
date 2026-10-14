@@ -403,6 +403,7 @@ class Phone:
         verification = await self.device.verify(binding)
         await self.device.release_all()
         self.bindings.write(binding)
+        self.journal.record_owner(binding.udid)
         self.frame = None
         connection = await self.device.connect(binding)
         return {"device": device_tag(binding), "bound": True, "verification": verification, **connection}

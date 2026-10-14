@@ -30,8 +30,10 @@ log = logging.getLogger("openlolo.portal")
 WEB = Path(__file__).resolve().parents[1] / "web" / "portal"
 AP_NET = ipaddress.ip_network("192.168.4.0/24")
 SESSION_COOKIE = "openlolo_portal"
-SESSION_SECONDS = 86_400
-SESSION_LIMIT = 64  # Stored box-page sessions; issuing past it drops the oldest.
+SESSION_SECONDS = 30 * 86_400  # Renewed while used: each use moves the end to now + 30 days.
+SESSION_RENEW_SECONDS = 3600  # Write a renewed end at most once an hour per session.
+SESSION_LIMIT = 64  # Stored box-page sessions; issuing past it drops the least recently used.
+RENEWED_SCOPE_KEY = "openlolo.renewed_session"
 CLIENT_HEADER = "x-openlolo-client"
 PORTAL_CLIENT = "portal"
 PORTAL_IDENTITY = "Box page"  # Journal owner label for operations started from the page.
@@ -58,8 +60,9 @@ def _digest(token: str) -> str:
 class PortalSessions:
     """Box-page sessions in the journal database, so a restart or reboot keeps the owner signed in.
 
-    Only the SHA-256 digest of a token is stored. A factory reset deletes the database, and
-    with it every session."""
+    A session lasts SESSION_SECONDS from its last use. Only the SHA-256 digest of a token is
+    stored. A factory reset deletes the database, and pairing a different iPhone ends every
+    session (``Journal.record_owner``)."""
 
     def __init__(self, db, clock=time.time):
         self.db = db
@@ -73,7 +76,7 @@ class PortalSessions:
             self.db.execute(
                 "INSERT INTO portal_sessions VALUES (?,?)", (_digest(token), now + SESSION_SECONDS)
             )
-            # Every session lasts SESSION_SECONDS, so the latest expiries are the newest sessions.
+            # Every use pushes the end out by the same span, so the latest ends are the most recently used.
             self.db.execute(
                 "DELETE FROM portal_sessions WHERE digest NOT IN "
                 "(SELECT digest FROM portal_sessions ORDER BY expires_at DESC LIMIT ?)",
@@ -82,12 +85,28 @@ class PortalSessions:
         return token
 
     def check(self, token: str | None) -> bool:
+        return self.renew(token) is not None
+
+    def renew(self, token: str | None) -> bool | None:
+        """None for no valid session; else whether this use moved the session's end.
+
+        A read on most requests: the end is written only once it is SESSION_RENEW_SECONDS old."""
         if not token:
-            return False
+            return None
+        now = self.clock()
+        key = _digest(token)
         row = self.db.execute(
-            "SELECT 1 FROM portal_sessions WHERE digest=? AND expires_at>?", (_digest(token), self.clock())
+            "SELECT expires_at FROM portal_sessions WHERE digest=? AND expires_at>?", (key, now)
         ).fetchone()
-        return row is not None
+        if row is None:
+            return None
+        if row[0] > now + SESSION_SECONDS - SESSION_RENEW_SECONDS:
+            return False
+        with self.db:
+            self.db.execute(
+                "UPDATE portal_sessions SET expires_at=? WHERE digest=?", (now + SESSION_SECONDS, key)
+            )
+        return True
 
     def revoke(self, token: str | None) -> None:
         if token:
@@ -166,7 +185,11 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
         return request.cookies.get(SESSION_COOKIE)
 
     def has_session(request: Request) -> bool:
-        return sessions.check(session_token(request))
+        token = session_token(request)
+        renewed = sessions.renew(token)
+        if renewed:
+            request.scope[RENEWED_SCOPE_KEY] = token  # Headers re-sends the cookie with a fresh max-age.
+        return renewed is not None
 
     def require_local(request: Request):
         address = peer(request)
@@ -365,6 +388,10 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
             async def secure_send(message):
                 if message["type"] == "http.response.start":
                     headers = list(message.get("headers", []))
+                    renewed = scope.get(RENEWED_SCOPE_KEY)
+                    if renewed and not any(k == b"set-cookie" for k, _ in headers):
+                        cookie = set_cookie(Response(), renewed).raw_headers
+                        headers.extend(h for h in cookie if h[0] == b"set-cookie")
                     headers.extend(
                         [
                             (

@@ -1,4 +1,5 @@
-// Settings: the box card, Wi-Fi, activity, the setup window, replacing the phone, diagnostics.
+// Settings: the box card, Wi-Fi, activity, the setup window, replacing the phone, diagnostics,
+// signing out.
 
 import { Input } from "@openlolo/ui/components/input";
 import { Label } from "@openlolo/ui/components/label";
@@ -8,6 +9,7 @@ import {
 	Download,
 	FileText,
 	Info,
+	LogOut,
 	Plus,
 	Smartphone,
 	SquarePlus,
@@ -99,6 +101,19 @@ function Settings() {
 			await navigate({
 				to: "/offline",
 				search: { next: "/setup" },
+				replace: true,
+			});
+		},
+		onError: (error) => toast.error(error.message),
+	});
+	const signOut = useMutation({
+		mutationFn: () => api.closeSession(),
+		onSuccess: async () => {
+			toast.info("Signed out. Signing in again needs the iPhone on the cable.");
+			queryClient.clear();
+			await navigate({
+				to: "/connect",
+				search: { next: undefined },
 				replace: true,
 			});
 		},
@@ -223,6 +238,17 @@ function Settings() {
 						</span>
 					</a>
 				) : null}
+			</Section>
+			<Section
+				title="This page"
+				footer="You stay signed in for 30 days after your last visit, also across restarts."
+			>
+				<ButtonRow
+					title="Sign out"
+					leading={<IconBadge icon={<LogOut />} fill="grey" />}
+					disabled={signOut.isPending}
+					onClick={() => signOut.mutate()}
+				/>
 			</Section>
 			<InstallSheet
 				open={install}

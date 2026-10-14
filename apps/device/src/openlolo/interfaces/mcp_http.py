@@ -66,9 +66,16 @@ MAX_BODY = 65536
 PIN_SECONDS = 30
 PIN_ATTEMPTS = 5
 STATUS_PATH = "/oauth/consent/status"
-CONTROL_WINDOWS = {"1h": 3600, "8h": 8 * 3600, "24h": 24 * 3600}
-# An owner-administering client may keep control for the refresh-family lifetime (ADR 0005).
-ADMIN_WINDOWS = {**CONTROL_WINDOWS, "30d": REFRESH_SECONDS}
+# How long an approval lasts, the same choices for every client (ADR 0005). "24h" has a fixed end.
+# "30d" is renewed while used: every refresh moves the end to now + REFRESH_SECONDS, so a client
+# unused for 30 days loses access. "never" lasts until the owner removes the client (or resets
+# the box); its end is a date no box will reach. Grants issued with the retired 1h and 8h windows
+# keep their stored end. An unknown choice, such as one from a stale page, gets 24 hours.
+NEVER_SECONDS = 100 * 365 * 24 * 3600
+CONTROL_WINDOWS = {"24h": 24 * 3600, "30d": REFRESH_SECONDS, "never": NEVER_SECONDS}
+DEFAULT_WINDOW = "30d"
+SHORT_WINDOW = "24h"
+WINDOW_WORDS = {"24h": "24 hours", "30d": "30 days, renewed while used", "never": "Until I remove it"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
@@ -191,6 +198,14 @@ class OAuthProvider:
                 "AND expires>? GROUP BY kind",
                 (row["client_id"], now),
             ).fetchall()
+            refresh = [
+                json.loads(g["value"])
+                for g in self.db.execute(
+                    "SELECT value FROM oauth_grants WHERE client_id=? AND kind='refresh' "
+                    "AND revoked=0 AND expires>?",
+                    (row["client_id"], now),
+                ).fetchall()
+            ]
             result.append(
                 {
                     "client_id": row["client_id"],
@@ -198,19 +213,12 @@ class OAuthProvider:
                     "redirect_uris": [str(u) for u in info.redirect_uris or []],
                     "approved": bool(row["approved"]),
                     "created": row["created"],
+                    "last_used": row["last_used"],
                     "active_until": {g["kind"]: g["expires"] for g in grants},
                     "issuer": row["issuer"] if row["issuer"] is not None else self.legacy_issuer,
-                    "scopes": sorted(
-                        {
-                            s
-                            for g in self.db.execute(
-                                "SELECT value FROM oauth_grants WHERE client_id=? AND kind='refresh' "
-                                "AND revoked=0 AND expires>?",
-                                (row["client_id"], now),
-                            ).fetchall()
-                            for s in json.loads(g["value"]).get("scopes", [])
-                        }
-                    ),
+                    "scopes": sorted({s for value in refresh for s in value.get("scopes", [])}),
+                    "renewed_while_used": any(value.get("sliding") for value in refresh),
+                    "never_expires": any(value.get("never") for value in refresh),
                 }
             )
         return result
@@ -345,6 +353,8 @@ class OAuthProvider:
                 "redirect_uri": str(params.redirect_uri),
                 "redirect_uri_provided_explicitly": params.redirect_uri_provided_explicitly,
                 "window": window,
+                "sliding": window == REFRESH_SECONDS,
+                "never": window >= NEVER_SECONDS,
             },
             time.time() + CODE_SECONDS,
             issuer=issuer,
@@ -413,7 +423,7 @@ class OAuthProvider:
         value = json.loads(row["value"])
         return {
             "admin": bool(value.get("admin")),
-            "window": str(value.get("window", "1h")),
+            "window": str(value.get("window", SHORT_WINDOW)),
         }
 
     async def load_authorization_code(
@@ -447,15 +457,34 @@ class OAuthProvider:
         value = json.loads(row["value"])
         now = time.time()
         family = secrets.token_hex(16)
-        family_expires = now + min(REFRESH_SECONDS, value["window"])
-        return self._issue(client.client_id, value["scopes"], family, family_expires, now)
+        family_expires = now + min(NEVER_SECONDS, value["window"])
+        sliding, never = bool(value.get("sliding")), bool(value.get("never"))
+        return self._issue(client.client_id, value["scopes"], family, family_expires, now, sliding, never)
 
-    def _issue(self, client_id: str, scopes: list[str], family: str, family_expires: float, now: float):
+    def _issue(
+        self,
+        client_id: str,
+        scopes: list[str],
+        family: str,
+        family_expires: float,
+        now: float,
+        sliding: bool = False,
+        never: bool = False,
+    ):
         access, refresh = _token(), _token()
         access_expires = min(now + ACCESS_SECONDS, family_expires)
-        value = {"scopes": scopes, "family_expires": family_expires}
+        value: dict[str, Any] = {"scopes": scopes, "family_expires": family_expires}
+        if sliding:
+            value["sliding"] = True
+        if never:
+            value["never"] = True
+        # Tokens are issued at the code exchange and every refresh (about every ACCESS_SECONDS
+        # while a client works), so this is "last used" without a write per MCP request.
+        with self.db:
+            self.db.execute("UPDATE oauth_clients SET last_used=? WHERE client_id=?", (now, client_id))
         self._store("access", access, client_id, family, value, access_expires)
-        self._store("refresh", refresh, client_id, family, value, min(now + REFRESH_SECONDS, family_expires))
+        # The refresh token lives as long as its family: 24 hours, 30 days from this use, or no end.
+        self._store("refresh", refresh, client_id, family, value, family_expires)
         return OAuthToken(
             access_token=access,
             expires_in=max(1, int(access_expires - now)),
@@ -497,8 +526,10 @@ class OAuthProvider:
             self.db.execute(
                 "UPDATE oauth_grants SET revoked=1 WHERE digest=?", (digest(refresh_token.token),)
             )
+        sliding, never = bool(value.get("sliding")), bool(value.get("never"))
+        family_expires = now + REFRESH_SECONDS if sliding else value["family_expires"]
         return self._issue(
-            client.client_id, scopes or value["scopes"], row["family"], value["family_expires"], now
+            client.client_id, scopes or value["scopes"], row["family"], family_expires, now, sliding, never
         )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
@@ -766,14 +797,15 @@ def consent_form(
     name = html.escape(client.client_name or client.client_id)
     hosts = ", ".join(sorted({html.escape(str(u.host or "")) for u in client.redirect_uris or []}))
     admin = ADMIN_SCOPE in scopes
-    windows = ADMIN_WINDOWS if admin else CONTROL_WINDOWS
     link = approve_link(setup_name, digest(request_id))
     wants = "".join(f"<li>{html.escape(SCOPE_WORDS.get(scope, scope))}</li>" for scope in scopes)
     body = (
         f"<p><strong>{name}</strong> wants to use your iPhone through OpenLolo. "
         f"After approval it returns to <code>{hosts}</code>.</p>"
         f"<p>Approving lets it:</p><ul>{wants}</ul>"
-        "<p>You choose for how long. Approving from the box page or with a PIN uses the duration chosen there.</p>"
+        "<p>You choose for how long: 24 hours, 30 days renewed while the client is in use, or until you "
+        "remove it on the box page. "
+        "Approving from the box page or with a PIN uses the duration chosen there.</p>"
         "<p class='warn'>Screen contents, including messages, notifications and codes, will be sent to "
         "this client and its AI provider. Phone content is untrusted input; the AI can be misled by it.</p>"
         + (f"<p class='warn'>{html.escape(error)}</p>" if error else "")
@@ -798,7 +830,11 @@ def consent_form(
         "<fieldset><legend>Access</legend>"
         f"<p>Screen and status ({READ_SCOPE}) and input ({CONTROL_SCOPE}) for the chosen duration.</p>"
         "<label>Duration <select name='window'>"
-        + "".join(f"<option value='{k}'>{k}</option>" for k in windows)
+        + "".join(
+            f"<option value='{k}'{' selected' if k == DEFAULT_WINDOW else ''}>"
+            f"{html.escape(WINDOW_WORDS.get(k, k))}</option>"
+            for k in CONTROL_WINDOWS
+        )
         + "</select></label>"
         + (
             f"<br><label><input type='checkbox' name='admin' value='1'> Manage this OpenLolo: Wi-Fi, "
@@ -847,8 +883,7 @@ def grant_from_choice(offered: list[str], admin: bool, window: str) -> tuple[lis
     a grant itself with the ``scope`` parameter of a refresh."""
     granted = [scope for scope in SCOPES if scope in offered] or [READ_SCOPE]
     admin = admin and ADMIN_SCOPE in offered
-    windows = ADMIN_WINDOWS if admin else CONTROL_WINDOWS
-    seconds = windows.get(window, CONTROL_WINDOWS["1h"])
+    seconds = CONTROL_WINDOWS.get(window, CONTROL_WINDOWS[SHORT_WINDOW])
     if admin:
         granted.append(ADMIN_SCOPE)
     return granted, seconds

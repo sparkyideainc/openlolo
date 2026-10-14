@@ -26,6 +26,12 @@ import {
 } from "@/lib/format";
 import { useTick } from "@/lib/hooks";
 
+const WINDOW_NOTES: Record<ConsentWindow, string> = {
+	"24h": "Access ends 24 hours after you approve.",
+	"30d": "Renewed while used: access ends after 30 days without use.",
+	never: "Access lasts until you remove the client on this page.",
+};
+
 export function RequestDialog({
 	consent,
 	open,
@@ -36,28 +42,23 @@ export function RequestDialog({
 	onOpenChange: (open: boolean) => void;
 }) {
 	const queryClient = useQueryClient();
-	const [window, setWindow] = useState<ConsentWindow>("8h");
+	const [window, setWindow] = useState<ConsentWindow>("30d");
 	const [admin, setAdmin] = useState(false);
 	const [pin, setPin] = useState<string | null>(null);
 	const [openedAt, setOpenedAt] = useState(() => Date.now());
 	const tick = useTick(open);
 	useEffect(() => {
 		if (open) {
-			setWindow("8h");
+			setWindow("30d");
 			setAdmin(false);
 			setPin(null);
 			setOpenedAt(Date.now());
 		}
 	}, [open]);
-	useEffect(() => {
-		if (!admin && window === "30d") setWindow("24h");
-	}, [admin, window]);
 
 	const scopes = consent?.scopes ?? [];
 	const offersAdmin = scopes.includes("owner:admin");
-	const windows: ConsentWindow[] = admin
-		? ["1h", "8h", "24h", "30d"]
-		: ["1h", "8h", "24h"];
+	const windows: ConsentWindow[] = ["24h", "30d", "never"];
 	const done = () => {
 		void queryClient.invalidateQueries({ queryKey: keys.consents });
 		void queryClient.invalidateQueries({ queryKey: keys.clients });
@@ -122,7 +123,7 @@ export function RequestDialog({
 							value={expiresText(remaining).replace("Expires ", "")}
 						/>
 					</Section>
-					<Section title="Allow for" bare>
+					<Section title="Allow for" bare footer={WINDOW_NOTES[window]}>
 						<ToggleGroup
 							value={[window]}
 							onValueChange={(value) => {
@@ -179,7 +180,9 @@ export function RequestDialog({
 							disabled={busy}
 							onClick={() => decide.mutate(true)}
 						>
-							Allow for {windowText(window)}
+							{window === "never"
+								? "Allow until removed"
+								: `Allow for ${windowText(window)}`}
 						</BusyButton>
 						<BusyButton
 							look="plain"

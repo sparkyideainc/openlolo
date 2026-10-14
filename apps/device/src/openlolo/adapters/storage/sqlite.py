@@ -62,6 +62,8 @@ class Journal:
         columns = {row["name"] for row in self.db.execute("PRAGMA table_info(oauth_clients)")}
         if "issuer" not in columns:
             self.db.execute("ALTER TABLE oauth_clients ADD COLUMN issuer TEXT")
+        if "last_used" not in columns:
+            self.db.execute("ALTER TABLE oauth_clients ADD COLUMN last_used REAL")
         self.db.execute("CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC, id DESC)")
         # The Bluetooth companion-app channel is gone: its per-phone keys and label-code secret with it.
         self.db.execute("DROP TABLE IF EXISTS app_keys")
@@ -217,6 +219,19 @@ class Journal:
         return self._public(
             self.db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
         )
+
+    def record_owner(self, udid: str) -> bool:
+        """Remember the bound iPhone; pairing a different one ends every box-page session.
+
+        The first pairing keeps them: the owner signs in on the setup Wi-Fi before the box
+        has a phone. Returns whether sessions were ended."""
+        with self.db:
+            row = self.db.execute("SELECT value FROM secrets WHERE name='owner_udid'").fetchone()
+            self.db.execute("INSERT OR REPLACE INTO secrets VALUES ('owner_udid', ?)", (udid,))
+            if row is None or row[0] == udid:
+                return False
+            self.db.execute("DELETE FROM portal_sessions")
+        return True
 
     def profile(self, device):
         row = self.db.execute("SELECT value FROM profiles WHERE device=?", (device,)).fetchone()

@@ -58,7 +58,9 @@ describe("format", () => {
 		expect(expiresText(45)).toBe("Expires in 45 s");
 		expect(expiresText(61)).toBe("Expires in 2 minutes");
 		expect(expiresText(60)).toBe("Expires in 1 minute");
-		expect(windowText("8h")).toBe("8 hours");
+		expect(windowText("24h")).toBe("24 hours");
+		expect(windowText("30d")).toBe("30 days");
+		expect(windowText("never")).toBe("Never");
 	});
 
 	it("clients and consents", () => {
@@ -72,6 +74,12 @@ describe("format", () => {
 		expect(activeUntil(client, now)?.getTime()).toBe(until * 1000);
 		expect(clientSubtitle(client, now)).toMatch(
 			/^Screen and input · until 1:00/,
+		);
+		expect(
+			clientSubtitle({ ...client, last_used: at(now) - 300 }, now),
+		).toMatch(/^Used 5 min ago · until 1:00/);
+		expect(clientSubtitle({ ...client, never_expires: true }, now)).toBe(
+			"Screen and input · no end",
 		);
 		expect(clientSubtitle({ client_id: "c", active_until: {} }, now)).toBe(
 			"No active session",
