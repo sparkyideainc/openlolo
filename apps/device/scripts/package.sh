@@ -36,6 +36,7 @@ git -C "$repo" archive --format=tar --prefix="$name/" "$ref:apps/device" | tar -
 command -v bun >/dev/null 2>&1 || { echo 'bun is required to build the box page (apps/portal)' >&2; exit 1; }
 (cd "$repo" && bun run --filter portal build >/dev/null) || { echo 'Box page build failed' >&2; exit 1; }
 rm -rf "$tmp/$name/src/openlolo/web/portal"
+mkdir -p "$tmp/$name/src/openlolo/web"  # web/ holds only the box page build now.
 cp -R "$repo/apps/device/src/openlolo/web/portal" "$tmp/$name/src/openlolo/web/portal"
 printf 'release=%s\ncommit=%s\nref=%s\nbuilt=%s\n' "$release" "$(git -C "$repo" rev-parse "$ref")" "$ref" \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp/$name/RELEASE"
