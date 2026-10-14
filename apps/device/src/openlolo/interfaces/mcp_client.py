@@ -3,62 +3,18 @@
 import asyncio
 import contextlib
 import time
-from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
 import anyio
 import httpx
 
-# Long-edge pixel bound for images the bridge returns: the screenshot tool default and every
-# post-action observation. Touch coordinates are normalized, so a smaller image loses nothing
-# but transfer time; pass a larger max_size to openlolo_screenshot when small text matters.
-OBSERVATION_MAX_SIZE = 1536
-# Pre-dispatch refusals that are not argument mistakes, so the model does not "fix and resend".
-REJECTED_INSTRUCTIONS = {
-    "CONTROL_BUSY": "Another client controls the phone right now; nothing ran. Wait for its lease to "
-    "lapse (see status.control.remaining_seconds) and retry, or report it.",
-    "LEASE_EXPIRED": "Control lapsed after a pause in activity; nothing ran. The screen may have changed: "
-    "take a fresh screenshot, then act again. The next action takes control if the phone is free.",
-    "PAUSED": "Input is paused; nothing ran. Only resume through openlolo_control when the user intends it.",
-}
-# A token from before the lease lapsed while another client took the phone: same advice.
-REJECTED_INSTRUCTIONS["CONTROL_NOT_OWNED"] = REJECTED_INSTRUCTIONS["LEASE_EXPIRED"]
-
-
-class BridgeError(Exception):
-    def __init__(
-        self,
-        code: str,
-        operation_id: str | None = None,
-        status: int | None = None,
-        *,
-        rejected: bool = False,
-    ):
-        super().__init__(code)
-        self.code, self.operation_id, self.status = code, operation_id, status
-        # The API refused the mutation before recording it: nothing reached the phone.
-        self.rejected = rejected
-
-    def public(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"code": self.code}
-        if self.rejected:
-            result.update(
-                dispatched=False,
-                instruction=REJECTED_INSTRUCTIONS.get(
-                    self.code,
-                    "Rejected before dispatch; nothing ran on the phone and no operation was "
-                    "recorded. Correct the arguments and send the request again.",
-                ),
-            )
-        elif self.operation_id:
-            result.update(
-                operation_id=self.operation_id, instruction="Inspect operation_status; do not replay input."
-            )
-        return result
-
-
-# The box no longer holds the lease under these: the bridge forgets its token and acquires anew.
-LOST_CONTROL = {"LEASE_EXPIRED", "CONTROL_NOT_OWNED"}
+from openlolo.interfaces.local_phone import (  # noqa: F401 - re-exported for the HTTP bridge
+    LOST_CONTROL,
+    OBSERVATION_MAX_SIZE,
+    REJECTED_INSTRUCTIONS,
+    BridgeError,
+)
 
 
 class PhoneClient:
@@ -109,6 +65,32 @@ class PhoneClient:
         result.get("profile", {}).get("calibration", {}).pop("samples", None)
         result["mcp"] = {"transport": self.transport}
         return result
+
+    async def capabilities(self):
+        return await self.request("GET", "capabilities")
+
+    async def apps(self, query: str = "", include_hidden: bool = True):
+        params = urlencode({"query": query, "include_hidden": str(include_hidden).lower()})
+        return await self.request("GET", "apps?" + params)
+
+    async def app_profiles(self):
+        return await self.request("GET", "profiles")
+
+    async def app_profile(self, bundle_id: str):
+        return await self.request("GET", "profiles/" + bundle_id)
+
+    async def device_info(self):
+        return await self.request("GET", "device")
+
+    async def clipboard(self):
+        return await self.request("GET", "clipboard")
+
+    async def discover(self):
+        return await self.request("GET", "discover", timeout=40)
+
+    async def setup(self, kind: str, operation_id: str, payload: dict):
+        body = {"operation_id": operation_id, "lease_token": self.lease, "payload": payload}
+        return await self.request("POST", f"setup/{kind}", body, timeout=30)
 
     async def _control(self, command: str, operation_id: str, target: str | None = None):
         payload = {"operation_id": operation_id, "lease_token": self.lease}

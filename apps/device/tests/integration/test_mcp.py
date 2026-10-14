@@ -9,11 +9,23 @@ from mcp import Client
 
 from openlolo.domain.errors import OpenLoloError
 from openlolo.interfaces.http_api import create_app
-from openlolo.interfaces.mcp_client import BridgeError, PhoneClient
+from openlolo.interfaces.local_phone import BridgeError, LocalPhone
+from openlolo.interfaces.mcp_client import PhoneClient
 from openlolo.interfaces.mcp_server import create_server
+
+BRIDGE = {"kind": "local"}
+
+
+@pytest.fixture(autouse=True, params=["http", "local"])
+def bridge_kind(request):
+    """Every test runs through the HTTP bridge and the in-process one until the first is gone."""
+    BRIDGE["kind"] = request.param
+    return request.param
 
 
 async def bridge_for(runtime, **kwargs):
+    if BRIDGE["kind"] == "local":
+        return LocalPhone(runtime.phone, owner=f"client:{uuid4()}", **kwargs)
     session = runtime.auth.open_session()
     http = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=create_app(runtime)),
@@ -287,7 +299,9 @@ async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):
     await late.close()
 
 
-async def test_lost_action_response_is_not_replayed(runtime):
+async def test_lost_action_response_is_not_replayed(runtime, bridge_kind):
+    if bridge_kind == "local":
+        pytest.skip("HTTP transport only")
     asgi = httpx.ASGITransport(app=create_app(runtime))
     submissions = []
 

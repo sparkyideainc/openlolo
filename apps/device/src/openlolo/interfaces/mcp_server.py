@@ -1,10 +1,9 @@
-"""MCP tools backed exclusively by the authenticated OpenLolo HTTP API; served by the OAuth gateway."""
+"""MCP tools backed by one PhoneBridge per caller; served by the OAuth gateway."""
 
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal, Protocol
-from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from mcp.server import MCPServer
@@ -12,11 +11,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from pydantic import Field
 
 from openlolo import __version__
-from openlolo.interfaces.mcp_client import (
-    OBSERVATION_MAX_SIZE,
-    BridgeError,
-    PhoneClient,
-)
+from openlolo.interfaces.local_phone import OBSERVATION_MAX_SIZE, BridgeError
 
 Coordinate = Annotated[float, Field(ge=0, le=1)]
 READ_SCOPE, CONTROL_SCOPE = "phone:read", "phone:control"
@@ -27,11 +22,38 @@ ADMIN_SCOPE = "owner:admin"
 ALL_SCOPES = [*SCOPES, ADMIN_SCOPE]
 
 
+class PhoneBridge(Protocol):
+    """One caller's way to the phone: owner identity, lease token, journaled mutations."""
+
+    lease: str | None
+
+    async def status(self) -> dict: ...
+    async def capabilities(self) -> dict: ...
+    async def apps(self, query: str = "", include_hidden: bool = True) -> dict: ...
+    async def app_profiles(self) -> dict: ...
+    async def app_profile(self, bundle_id: str) -> dict: ...
+    async def device_info(self) -> dict: ...
+    async def clipboard(self) -> dict: ...
+    async def discover(self) -> dict: ...
+    async def operation(self, operation_id: str) -> dict: ...
+    async def screenshot(self, options: dict | None = None) -> dict: ...
+    async def control(self, command: str, operation_id: str, target: str | None = None) -> dict: ...
+    async def ensure_control(self) -> None: ...
+    def forget(self, exc: BridgeError) -> None: ...
+    async def action(self, operation_id: str, action: dict, observe: bool, settle: float = 0) -> dict: ...
+    async def link(
+        self, operation_id: str, bundle_id: str, link: str, params: dict, observe: bool, settle: float = 0
+    ) -> dict: ...
+    async def full_page(self, operation_id: str, options: dict) -> dict: ...
+    async def setup(self, kind: str, operation_id: str, payload: dict) -> dict: ...
+    async def close(self) -> None: ...
+
+
 class BridgeResolver(Protocol):
-    """Supplies the PhoneClient for the current caller once the required scope is confirmed.
+    """Supplies the PhoneBridge for the current caller once the required scope is confirmed.
     ``exempt`` skips the per-client rate limit; only Pause passes it."""
 
-    async def bridge(self, scope: str, *, exempt: bool = False) -> PhoneClient: ...
+    async def bridge(self, scope: str, *, exempt: bool = False) -> PhoneBridge: ...
 
 
 Duration = Annotated[float, Field(ge=0.03, le=2)]
@@ -90,7 +112,7 @@ async def tool_result(work: Awaitable[dict]) -> CallToolResult:
 
 
 def create_server(
-    bridge: PhoneClient | None = None,
+    bridge: PhoneBridge | None = None,
     *,
     resolver: BridgeResolver | None = None,
     **server_options,
@@ -138,14 +160,14 @@ def create_server(
         **server_options,
     )
 
-    async def phone(scope: str, exempt: bool = False) -> PhoneClient:
+    async def phone(scope: str, exempt: bool = False) -> PhoneBridge:
         if resolver is not None:
             return await resolver.bridge(scope, exempt=exempt)
         assert bridge is not None
         return bridge
 
     async def run(
-        scope: str, call: Callable[[PhoneClient], Awaitable[dict]], *, exempt: bool = False
+        scope: str, call: Callable[[PhoneBridge], Awaitable[dict]], *, exempt: bool = False
     ) -> CallToolResult:
         async def work():
             return await call(await phone(scope, exempt))
@@ -160,7 +182,7 @@ def create_server(
     @server.tool(annotations=READ)
     async def openlolo_capabilities() -> CallToolResult:
         """Read supported input and per-device validated shortcuts before using them."""
-        return await run(READ_SCOPE, lambda p: p.request("GET", "capabilities"))
+        return await run(READ_SCOPE, lambda p: p.capabilities())
 
     @server.tool(annotations=READ)
     async def openlolo_apps(
@@ -168,31 +190,30 @@ def create_server(
         include_hidden: bool = False,
     ) -> CallToolResult:
         """Find installed apps (bundle identifier, name, version, has_profile). Pass query, e.g. "youtube", to match name or bundle identifier and keep the result small; an empty query lists everything."""
-        params = urlencode({"query": query, "include_hidden": str(include_hidden).lower()})
-        return await run(READ_SCOPE, lambda p: p.request("GET", "apps?" + params))
+        return await run(READ_SCOPE, lambda p: p.apps(query, include_hidden))
 
     @server.tool(annotations=READ)
     async def openlolo_app_profiles() -> CallToolResult:
         """List apps that have a profile: deep links and task workflows the box has recorded for them. Check here before navigating an app by hand."""
-        return await run(READ_SCOPE, lambda p: p.request("GET", "profiles"))
+        return await run(READ_SCOPE, lambda p: p.app_profiles())
 
     @server.tool(annotations=READ)
     async def openlolo_app_profile(
         bundle_id: Annotated[str, Field(min_length=3, max_length=255, pattern=r"^[A-Za-z0-9.\-]+$")],
     ) -> CallToolResult:
         """Read one app profile: deep links (open with openlolo_open_link), workflows as landmark steps with an expect check each, stop conditions, quirks, and which text tool to use. Follow a matching workflow step by step, one screenshot per step."""
-        return await run(READ_SCOPE, lambda p: p.request("GET", "profiles/" + bundle_id))
+        return await run(READ_SCOPE, lambda p: p.app_profile(bundle_id))
 
     @server.resource("openlolo://apps/{bundle_id}", mime_type="application/json")
     async def app_profile_resource(bundle_id: str) -> str:
         """App profile as a resource, same content as openlolo_app_profile."""
         client = await phone(READ_SCOPE)
-        return json.dumps(await client.request("GET", "profiles/" + bundle_id))
+        return json.dumps(await client.app_profile(bundle_id))
 
     @server.tool(annotations=READ)
     async def openlolo_device_info() -> CallToolResult:
         """Read model, iOS version, lock state, display size and the active transport for the bound phone."""
-        return await run(READ_SCOPE, lambda p: p.request("GET", "device"))
+        return await run(READ_SCOPE, lambda p: p.device_info())
 
     @server.tool(annotations=READ)
     async def openlolo_screenshot(
@@ -220,7 +241,7 @@ def create_server(
             "stitch": output != "pages",
         }
 
-        async def call(p: PhoneClient) -> dict:
+        async def call(p: PhoneBridge) -> dict:
             data = await p.full_page(operation(operation_id), options)
             if output == "stitched":
                 for page in data.get("pages") or []:
@@ -362,7 +383,7 @@ def create_server(
     @server.tool(annotations=READ)
     async def openlolo_clipboard() -> CallToolResult:
         """Read the phone clipboard text, e.g. after Cmd+C or a Copy tap on the phone; a text-extraction path without OCR."""
-        return await run(READ_SCOPE, lambda p: p.request("GET", "clipboard"))
+        return await run(READ_SCOPE, lambda p: p.clipboard())
 
     @server.tool(annotations=INPUT)
     async def openlolo_key(
