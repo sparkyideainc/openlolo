@@ -1,10 +1,43 @@
 # Plan: call the phone core in-process (remove the internal HTTP hop)
 
-Status: draft, revised 2026-10-14 after PRs #6-#8 merged. Base: `main` at `8e3f7b5` (merge of PR #8).
+Status: implemented 2026-10-14 (section 0); revised after PRs #6-#8 merged. Base: `main` at `8e3f7b5` (merge of PR #8).
 No code has changed for this plan. The merged delta since the first draft (refresh-token grace window
 in `OAuthProvider`, device-grant form limits, endurance script, SDK example) does not touch
 `mcp_client.py`, `http_api.py`, `app_api.py`, `setup_portal.py`, `mcp_server.py`, `auth.py`,
 `application/` or `bootstrap.py`, and every fact in 1.2 was re-checked on `8e3f7b5`.
+
+## 0. Outcome (implemented on this branch)
+
+All steps 0-6 landed in one PR, one commit per step. Checks from `apps/device`: ruff, ruff format
+and ty clean; **253 passed**, none skipped (243 on `main`, target 251 or more).
+
+| Acceptance (simulator, p50, 50 samples) | Target | `main` (HTTP bridge) | This branch |
+|---|---|---|---|
+| tap, observe=false, settle=0 | at most 140 ms | 204.0 ms | **133.0 ms** |
+| tap + observation, phone-sized frame | at most 160 ms | 215.7 ms | **138.4 ms** |
+| screenshot, phone-sized frame | at most 7.0 ms | 8.57 ms | **3.59 ms** |
+| MCP `openlolo_tap` end to end, settle 0 | (not set) | 214.8 ms | **139.9 ms** |
+
+Measured with `apps/device/scripts/bench_bridge.py` (the `main` column with the session's
+scratch benchmark before the switch). Before `PhoneClient` was deleted, a contract test ran one
+scenario (acquire, tap, replay, conflict, send_text, launch, open_link, refused link, full page,
+pause, resume, renew, release) through both bridges and found identical journal rows (kind,
+state, result, minus timestamps and ids).
+
+Deviations from the design below, all deliberate:
+- `BACKEND_FAILED` is never `dispatched=false`, even before submit (3.5): from inside one phone
+  call the adapter cannot prove nothing was recorded, so it errs toward "inspect, do not replay".
+- `LinkRequest.params` allows 8 keys, not 16 (a profile deep link declares at most 8).
+- `body()` moved to `interfaces/json_body.py`, not `app_api.py`: `setup_portal` imports it at
+  module load and must not pull in the MCP SDK.
+- `host`, `port` and `allowed_hosts` stay in `Config` (unused) so older `box.toml` files still
+  load; they left `box.example.toml`.
+- Grep check 1 still matches `setup_portal.open_session`, the box page's own cookie session,
+  which is unrelated. Grep check 3 matches `API_UNREACHABLE` in `tests/unit/test_endurance.py`,
+  an SDK-side error of the endurance script, not the removed bridge.
+
+Not done: acceptance 5 (the same numbers on the Radxa ZERO 3W). The script runs there with the
+simulated backend once the branch is installed.
 
 ## 1. Where we are
 
