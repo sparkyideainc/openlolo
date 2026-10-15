@@ -2,10 +2,11 @@ import asyncio
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from openlolo.application.shortcuts import validate_shortcut
 from openlolo.domain.errors import OpenLoloError
-from openlolo.domain.models import Action, CaptureOptions
+from openlolo.domain.models import SEND_TEXT_BYTES, Action, CaptureOptions, LinkRequest
 
 
 async def test_duplicate_pointer_returns_record_after_new_frame(runtime, lease):
@@ -118,3 +119,28 @@ async def test_transport_switch_rebinds_and_invalidates_frame(runtime, lease):
     bad = str(uuid4())
     runtime.phone.setup(bad, "owner", lease, "transport", {"transport": "serial"})
     assert (await settle(runtime, bad))["result"]["code"] == "INVALID_REQUEST"
+
+
+async def test_send_text_is_bounded_in_bytes_before_anything_is_recorded(runtime, lease):
+    # 10,000 characters is the advertised limit, but two-byte characters pass it at 20 KB.
+    text = "é" * (SEND_TEXT_BYTES // 2 + 1)
+    op = str(uuid4())
+    with pytest.raises(OpenLoloError) as error:
+        runtime.phone.action(op, "owner", lease, Action(kind="send_text", text=text))
+    assert error.value.code == "REQUEST_TOO_LARGE" and error.value.status == 413
+    with pytest.raises(OpenLoloError, match="operation not found"):
+        runtime.journal.get(op, "owner")
+    fits = runtime.phone.action(str(uuid4()), "owner", lease, Action(kind="send_text", text="é" * 8000))
+    assert fits["state"] in {"QUEUED", "DISPATCHED", "SUCCEEDED"}
+
+
+def test_link_params_are_bounded():
+    base = {"operation_id": str(uuid4()), "bundle_id": "net.whatsapp.WhatsApp", "link": "chat"}
+    LinkRequest.model_validate({**base, "params": {f"p{i}": "x" * 2048 for i in range(8)}})
+    for params in (
+        {f"p{i}": "x" for i in range(9)},
+        {"p": "x" * 2049},
+        {"k" * 41: "x"},
+    ):
+        with pytest.raises(ValidationError):
+            LinkRequest.model_validate({**base, "params": params})

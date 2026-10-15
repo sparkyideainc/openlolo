@@ -1,9 +1,9 @@
 """Owner JSON routes (``/app/*``, ADR 0005 contract).
 
 The routes are served on the box page only: ``setup_portal`` runs them behind its own session
-as the page's identity (ADR 0012). Phone operations
-go through the same per-client bridge the MCP tools use, so leases, journaling, pause and
-revocation apply identically whichever way a request arrived.
+as the page's identity (ADR 0012). Phone operations go through the same gateway bridge the MCP
+tools use, so leases, journaling, pause and rate limits apply identically whichever way a
+request arrived.
 """
 
 from collections.abc import Awaitable, Callable
@@ -17,8 +17,8 @@ from starlette.responses import JSONResponse, Response
 
 from openlolo.adapters.system.network import run as run_command
 from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.http_api import body
-from openlolo.interfaces.mcp_client import LOST_CONTROL, BridgeError
+from openlolo.interfaces.json_body import body
+from openlolo.interfaces.local_phone import LOST_CONTROL, BridgeError
 from openlolo.interfaces.mcp_server import ADMIN_SCOPE, ALL_SCOPES, CONTROL_SCOPE, READ_SCOPE
 
 APP_PREFIX = "/app"
@@ -56,7 +56,7 @@ def guarded(handler: Callable[[Request], Awaitable[Any]]) -> Handler:
         try:
             result = await handler(request)
         except BridgeError as exc:
-            # Bridged Phone API errors keep their HTTP status; gateway-level ones map by code.
+            # Phone core errors keep their status; gateway-level ones map by code.
             status = exc.status or {"LOGIN_REQUIRED": 401, "SCOPE_REQUIRED": 403, "RATE_LIMITED": 429}.get(
                 exc.code, 409
             )
@@ -137,7 +137,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
     @add("/capabilities", ["GET"])
     async def capabilities(request: Request):
         client = await gateway.bridge(READ_SCOPE)
-        return await client.request("GET", "capabilities")
+        return await client.capabilities()
 
     @add("/pause", ["POST"])
     async def pause(request: Request):
@@ -208,7 +208,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
     @add("/discover", ["GET"])
     async def discover(request: Request):
         client = await gateway.bridge(ADMIN_SCOPE)
-        return await client.request("GET", "discover", timeout=40)
+        return await client.discover()
 
     @add("/setup/{kind}", ["POST"])
     async def setup(request: Request):
@@ -221,16 +221,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         for attempt in range(2):
             await client.ensure_control()
             try:
-                result = await client.request(
-                    "POST",
-                    f"setup/{kind}",
-                    {
-                        "operation_id": data["operation_id"],
-                        "lease_token": client.lease,
-                        "payload": data.get("payload", {}),
-                    },
-                    timeout=30,
-                )
+                result = await client.setup(kind, data["operation_id"], data.get("payload", {}))
                 break
             except BridgeError as exc:
                 # A token that lapsed since the page's last step is refused before anything is

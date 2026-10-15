@@ -1,13 +1,9 @@
-# Copy to /etc/openlolo/box.toml. The Phone API has no listener; host, port and allowed_* name
-# the Host of its in-process callers (MCP entries, box page).
+# Copy to /etc/openlolo/box.toml.
 backend = "hardware"
 # Hardware profile, set by the installer: "radxa-zero3w" (Lolo Pocket) or "auto" for any other box.
 # board = "auto"
 state_dir = "/var/lib/openlolo"
 runtime_dir = "/run/openlolo"
-host = "127.0.0.1"
-port = 8080
-allowed_hosts = ["127.0.0.1:8080", "localhost:8080"]
 lease_seconds = 90
 queue_size = 16
 capture_deadline = 20

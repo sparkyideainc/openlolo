@@ -58,8 +58,8 @@ curl -fsSL https://openlolo.com/install.sh | sudo sh
 sh scripts/package.sh                      # dist/openlolo-device-YYYYMMDD-<commit>.tar.gz
 ```
 
-The internal Phone API has no listener: the MCP entries and the box page call it in-process,
-each with its own session, so every door shares the leases, the journal and Pause. The box
+The MCP entries and the box page call the phone core in-process, one bridge per caller owned
+by its OAuth client (or the box page), so every door shares the leases, the journal and Pause. The box
 page (port 80) is the owner surface; the MCP entries (remote and LAN) are the only other doors.
 
 ## Device connection

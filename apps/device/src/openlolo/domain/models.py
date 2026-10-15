@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +18,9 @@ Transport = Literal["usb", "wifi", "auto"]
 BUTTONS = ("home", "lock", "volume_up", "volume_down", "mute", "siri")
 TYPE_TEXT_LIMIT = 200  # keystrokes through the virtual keyboard
 SEND_TEXT_LIMIT = 10_000  # characters through the clipboard
+SEND_TEXT_BYTES = 16_384  # UTF-8 bytes through the clipboard, whatever the character count
+LINK_PARAMS = 8  # a profile deep link declares at most this many placeholders
+LINK_PARAM_KEY, LINK_PARAM_VALUE = 40, 2048  # the filled URL is capped at 2048 characters anyway
 
 
 class Binding(StrictModel):
@@ -147,7 +150,9 @@ class ActionRequest(MutationRequest):
 class LinkRequest(MutationRequest):
     bundle_id: str = Field(max_length=255, pattern=r"^[A-Za-z0-9.\-]+$")
     link: str = Field(max_length=40, pattern=r"^[a-z][a-z0-9_]*$")
-    params: dict[str, str] = Field(default_factory=dict)
+    params: dict[
+        Annotated[str, Field(max_length=LINK_PARAM_KEY)], Annotated[str, Field(max_length=LINK_PARAM_VALUE)]
+    ] = Field(default_factory=dict, max_length=LINK_PARAMS)
 
 
 class FullPageRequest(MutationRequest):

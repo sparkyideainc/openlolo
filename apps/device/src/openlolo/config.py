@@ -17,8 +17,8 @@ class Config(StrictModel):
     board: Literal["auto", "radxa-zero3w"] = "auto"
     state_dir: Path = Path("/var/lib/openlolo")
     runtime_dir: Path = Path("/run/openlolo")
-    # The Phone API is called in-process only (MCP gateway bridges, the box page); these name the
-    # Host those in-process requests carry. No socket listens on them.
+    # Unused since the MCP entries and the box page call the phone core in-process; still accepted
+    # so box.toml files written by older releases load.
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1024, le=65535)
     allowed_hosts: list[str] = ["127.0.0.1:8080", "localhost:8080"]

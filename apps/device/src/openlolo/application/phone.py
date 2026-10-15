@@ -1,4 +1,5 @@
 import base64
+import inspect
 import time
 from collections import OrderedDict
 
@@ -8,7 +9,7 @@ from openlolo.application.shortcuts import validate_shortcut
 from openlolo.domain.apps import match_apps
 from openlolo.domain.capabilities import capabilities
 from openlolo.domain.errors import OpenLoloError
-from openlolo.domain.models import Action, Binding, CaptureOptions, FullPageOptions
+from openlolo.domain.models import SEND_TEXT_BYTES, Action, Binding, CaptureOptions, FullPageOptions
 from openlolo.domain.profiles import ProfileStore
 
 TOUCH_KINDS = {"tap", "long_press", "swipe"}
@@ -300,6 +301,11 @@ class Phone:
             raise OpenLoloError("FRAME_EXPIRED", "Capture a new portrait screenshot before touch input")
 
     def action(self, operation_id, owner, token, action):
+        if action.kind == "send_text" and len(action.text.encode()) > SEND_TEXT_BYTES:
+            # Refused before the lease check and the journal, whichever door it came through.
+            raise OpenLoloError(
+                "REQUEST_TOO_LARGE", f"send_text takes at most {SEND_TEXT_BYTES} UTF-8 bytes", 413
+            )
         self.coordinator.check(owner, token)
         recorded = self.journal.existing(operation_id, owner, action.kind, action.model_dump())
         if recorded is not None:
@@ -393,6 +399,45 @@ class Phone:
 
     def resume(self, owner, token):
         return self.coordinator.resume(owner, token)
+
+    async def control(self, operation_id, owner, command, token=None, target=None):
+        """One journaled control command. Pause needs no lease (the safety exception); the
+        others need the caller's current token, paused or not. Renew is a deprecated no-op that
+        only reports status. A replayed operation ID returns its record; a replayed successful
+        acquire also returns the caller's lease, token included."""
+        if command == "cancel" and target is None:
+            raise OpenLoloError("INVALID_REQUEST", "Cancellation requires a target operation ID", 400)
+        coordinator = self.coordinator
+        if command not in {"acquire", "pause", "renew"}:
+            coordinator.check(owner, token, allow_paused=True)
+        if command not in {"acquire", "renew", "release", "pause", "resume", "cancel"}:
+            raise OpenLoloError("UNKNOWN_OPERATION", status=404)
+        record, fresh = self.journal.reserve(operation_id, owner, command, {"target": target})
+        if not fresh:
+            if command == "acquire" and record["state"] == "SUCCEEDED":
+                record = {**record, "control": coordinator.lease_status(owner, include_token=True)}
+            return record
+        methods = {
+            "acquire": lambda: self.acquire_control(owner),
+            "renew": lambda: self.renew_control(owner, token),
+            "release": lambda: self.release_control(owner, token),
+            "pause": self.pause,
+            "resume": lambda: self.resume(owner, token),
+            "cancel": lambda: self.cancel(target, owner),
+        }
+        self.journal.update(operation_id, "DISPATCHED")
+        try:
+            result = methods[command]()
+            if inspect.isawaitable(result):
+                result = await result
+        except OpenLoloError as exc:
+            self.journal.update(operation_id, "FAILED", exc.as_dict())
+            raise
+        public = {k: v for k, v in result.items() if k != "lease_token"}
+        record = self.journal.update(operation_id, "SUCCEEDED", public)
+        if command in {"acquire", "renew"}:
+            record["control"] = result
+        return record
 
     def operation_status(self, operation_id, owner):
         return self.journal.get(operation_id, owner)

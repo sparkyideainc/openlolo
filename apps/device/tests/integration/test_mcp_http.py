@@ -277,6 +277,49 @@ async def test_control_scope_flow_rotation_reuse_and_revocation(remote, caplog):
         assert app.provider.list_clients() == []
 
 
+async def test_pause_is_never_rate_limited(remote, monkeypatch):
+    runtime, app = remote
+    monkeypatch.setattr(mcp_http, "CALLS_PER_MINUTE", 3)
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id)
+        issued = await tokens(c, client_id, code, verifier)
+    client, http = await connect(app, issued["access_token"])
+    async with http, client:
+        for _ in range(3):
+            assert not (await client.call_tool("openlolo_status", {})).is_error
+        limited = await client.call_tool("openlolo_status", {})
+        assert limited.is_error and limited.structured_content["error"]["code"] == "RATE_LIMITED"
+        for _ in range(3):
+            paused = await client.call_tool("openlolo_pause", {})
+            assert not paused.is_error, paused.structured_content
+        assert runtime.coordinator.paused
+
+
+async def test_a_client_keeps_its_owner_across_bridge_drops(remote):
+    """The owner is the client, not a session: after its bridge is dropped (a restart, the old
+    8-hour session end) the same client still reads its own operations, under one label."""
+    runtime, app = remote
+    async with web(app) as c:
+        client_id = await register(c)
+        code, verifier = await authorize(c, runtime, client_id)
+        issued = await tokens(c, client_id, code, verifier)
+    client, http = await connect(app, issued["access_token"])
+    async with http, client:
+        op = str(uuid4())
+        pressed = await client.call_tool(
+            "openlolo_key", {"key": "enter", "operation_id": op, "observe": False}
+        )
+        assert not pressed.is_error, pressed.structured_content
+        await app.gateway._drop(client_id)
+        assert runtime.coordinator.lease is None
+        looked_up = await client.call_tool("openlolo_operation_status", {"operation_id": op})
+        assert not looked_up.is_error and looked_up.structured_content["state"] == "SUCCEEDED"
+    owner = mcp_http.owner_of(client_id)
+    labels = runtime.journal.db.execute("SELECT label FROM owner_labels WHERE owner=?", (owner,)).fetchall()
+    assert owner.startswith("client:") and [tuple(row) for row in labels] == [("Claude",)]
+
+
 async def test_no_scope_request_offers_registered_scopes(remote):
     runtime, app = remote
     async with web(app) as c:

@@ -3,24 +3,16 @@ import base64
 import json
 from uuid import uuid4
 
-import httpx
 import pytest
 from mcp import Client
 
 from openlolo.domain.errors import OpenLoloError
-from openlolo.interfaces.http_api import create_app
-from openlolo.interfaces.mcp_client import BridgeError, PhoneClient
+from openlolo.interfaces.local_phone import BridgeError, LocalPhone
 from openlolo.interfaces.mcp_server import create_server
 
 
 async def bridge_for(runtime, **kwargs):
-    session = runtime.auth.open_session()
-    http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(runtime)),
-        base_url="http://testserver",
-        headers={"Authorization": f"Bearer {session}"},
-    )
-    return PhoneClient(http, **kwargs)
+    return LocalPhone(runtime.phone, owner=f"client:{uuid4()}", **kwargs)
 
 
 async def acquire(client):
@@ -284,40 +276,30 @@ async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):
     await late.close()
 
 
-async def test_lost_action_response_is_not_replayed(runtime):
-    asgi = httpx.ASGITransport(app=create_app(runtime))
-    submissions = []
-
-    class LoseResponse(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request):
-            response = await asgi.handle_async_request(request)
-            if request.url.path == "/api/actions":
-                submissions.append(request)
-                raise httpx.ReadError("Response lost after dispatch")
-            return response
-
-    session = runtime.auth.open_session()
-    http = httpx.AsyncClient(
-        transport=LoseResponse(),
-        base_url="http://testserver",
-        headers={"Authorization": f"Bearer {session}"},
-    )
-    bridge = PhoneClient(http)
+async def test_failure_after_submit_keeps_the_operation_and_is_not_replayed(runtime, monkeypatch):
+    bridge = await bridge_for(runtime)
     await bridge.control("acquire", str(uuid4()))
+    real = runtime.coordinator.outcome
+    calls = []
+
+    async def lost(operation_id, timeout):
+        calls.append(operation_id)
+        raise RuntimeError("wait lost after dispatch")
+
+    monkeypatch.setattr(runtime.coordinator, "outcome", lost)
     op = str(uuid4())
     with pytest.raises(BridgeError) as error:
         await bridge.action(op, {"kind": "key", "key": "tab"}, False)
-    assert error.value.public()["operation_id"] == op
-    for _ in range(100):
-        state = (await bridge.operation(op))["state"]
-        if state == "SUCCEEDED":
-            break
-        await asyncio.sleep(0.01)
-    assert state == "SUCCEEDED" and len(submissions) == 1
-    runtime.auth.logout(session)
+    public = error.value.public()
+    assert public["operation_id"] == op and "dispatched" not in public and calls == [op]
+    monkeypatch.setattr(runtime.coordinator, "outcome", real)
+    await runtime.coordinator.outcome(op, 3)
+    assert (await bridge.operation(op))["state"] == "SUCCEEDED"
+    tabs = [v for k, v in runtime.phone.device.reports if k == "keyboard" and 43 in v]
+    assert len(tabs) == 1
+    await bridge.close()
     with pytest.raises(BridgeError, match="LOGIN_REQUIRED"):
         await bridge.status()
-    await bridge.close()
 
 
 async def test_bridge_cancellation_stops_input(runtime):

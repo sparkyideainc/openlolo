@@ -32,7 +32,6 @@ class Journal:
                 fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT,
                 created REAL NOT NULL, updated REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS profiles (device TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS sessions (digest TEXT PRIMARY KEY, expires REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS oauth_clients (
                 client_id TEXT PRIMARY KEY, value TEXT NOT NULL, approved INTEGER NOT NULL,
                 created REAL NOT NULL, last_used REAL, issuer TEXT);

@@ -184,6 +184,15 @@ class Coordinator:
         self.queue.put_nowait(Work(run, future))
         return await future
 
+    async def outcome(self, operation_id, timeout):
+        """Wait until queued or running work for this operation ends, or ``timeout`` passes.
+
+        Never cancels the work, on timeout or when the waiter itself is cancelled. Every path
+        writes the journal before it settles the work's future, so read the journal after."""
+        work = self.pending.get(operation_id)
+        if work is not None:
+            await asyncio.wait({work.future}, timeout=timeout)
+
     async def cancel(self, operation_id, owner):
         operation = self.journal.get(operation_id, owner)
         work = self.pending.get(operation_id)
