@@ -16,6 +16,19 @@ class FakeTransport:
         self.sent.append((data, ip, port))
 
 
+class FakeFrame:
+    """A decoded frame: ``reformat`` returns a frame of the requested size (PyAV is Linux-only)."""
+
+    def __init__(self, width, height):
+        self.width, self.height = width, height
+        self.reformats = []
+
+    def reformat(self, width=None, height=None, format=None, interpolation=None):
+        self.reformats.append((width, height, format, interpolation))
+        size = (width or self.width, height or self.height)
+        return SimpleNamespace(to_image=lambda: Image.new("RGB", size))
+
+
 def decoder():
     rsd = SimpleNamespace(service=SimpleNamespace(address=("fd00::1", 1)))
     screen = ScreenDecoder(rsd, SimpleNamespace(stream_frame_ttl=1.0), lambda: None)
@@ -93,12 +106,29 @@ def test_catch_up_asks_for_a_keyframe_while_behind_and_stops_when_one_is_decoded
 def test_grab_reports_the_age_when_the_frame_was_picked():
     async def run():
         screen = decoder()
-        frame = SimpleNamespace(to_image=lambda: Image.new("RGB", (4, 4)))
-        screen.latest, screen.latest_arrival = frame, time.monotonic() - 0.2
+        screen.latest, screen.latest_arrival = FakeFrame(64, 48), time.monotonic() - 0.2
         screen.pending.append((time.monotonic(), b"d", False))
-        image, age = await screen.grab()
-        assert image.size == (4, 4) and 0.2 <= age < 0.3
+        _, age, _ = await screen.grab()
+        assert 0.2 <= age < 0.3
         screen.latest_arrival = time.monotonic() - 2.0  # past stream_frame_ttl
         assert await screen.grab() is None
+
+    asyncio.run(run())
+
+
+def test_grab_crops_the_padding_and_scales_to_fit_without_upscaling():
+    async def run():
+        screen = decoder()
+        screen.set_content(60, 40)
+        frame = FakeFrame(64, 48)
+        screen.latest, screen.latest_arrival = frame, time.monotonic()
+        image, _, native = await screen.grab(30)
+        assert (image.mode, image.size, native) == ("RGB", (30, 20), (60, 40))
+        assert frame.reformats[-1] == (32, 24, "rgb24", "BILINEAR")  # the padded frame, same scale
+        image, _, native = await screen.grab(1536)
+        assert (image.size, native) == ((60, 40), (60, 40))
+        screen.content = None
+        image, _, native = await screen.grab(None)
+        assert (image.size, native) == ((64, 48), (64, 48))
 
     asyncio.run(run())

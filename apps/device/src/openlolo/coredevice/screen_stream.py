@@ -172,18 +172,32 @@ class ScreenDecoder:
             await asyncio.sleep(0.01)
         return True
 
-    async def grab(self):
-        """Latest decoded frame as a PIL image cropped to content size, with its lag behind the
-        screen when it was picked (``frame_age``), or None if too stale. The age is taken before
-        conversion so the caller's encoding time does not count as lag."""
+    async def grab(self, max_size: int | None = None):
+        """Latest decoded frame as an RGB image of the content, scaled to fit ``max_size`` (never
+        up), with its lag behind the screen when it was picked (``frame_age``) and the native
+        content size; None if too stale. The age is taken first, so conversion time does not
+        count as lag."""
         frame, age = self.latest, self.frame_age()
         if frame is None or age > self.config.stream_frame_ttl:
             return None
-        image = await asyncio.get_running_loop().run_in_executor(None, frame.to_image)
-        if self.content is not None:
-            width, height = self.content
-            image = image.crop((0, 0, min(width, image.width), min(height, image.height)))
-        return image, age
+        image, native = await asyncio.get_running_loop().run_in_executor(None, self._render, frame, max_size)
+        return image, age, native
+
+    def _render(self, frame, max_size: int | None):
+        # Scale in swscale while converting from YUV: ~5x cheaper on the Radxa than converting at
+        # full size and resizing in PIL. The decoded frame is padded past the content on the
+        # right and bottom, so scale the whole frame by the content's factor and crop.
+        width, height = self.content or (frame.width, frame.height)
+        width, height = min(width, frame.width), min(height, frame.height)
+        scale = min(1.0, max_size / max(width, height)) if max_size else 1.0
+        size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        if scale < 1.0:
+            rgb = frame.reformat(
+                round(frame.width * scale), round(frame.height * scale), "rgb24", interpolation="BILINEAR"
+            )
+        else:
+            rgb = frame.reformat(format="rgb24")
+        return rgb.to_image().crop((0, 0, *size)), (width, height)
 
     async def stop(self) -> None:
         async with self._lock:

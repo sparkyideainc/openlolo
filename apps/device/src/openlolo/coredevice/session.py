@@ -270,15 +270,11 @@ class DeviceSession:
         # usually takes one keyframe round trip. A cold stream starts behind, so allow the start
         # window; a frame still more than stream_frame_ttl behind falls back to a discrete capture.
         await decoder.catch_up(self.config.stream_start_seconds)
-        grabbed = await decoder.grab()
+        grabbed = await decoder.grab(options.max_size)
         if grabbed is None:
             return None
-        image, age = grabbed
-        native_width, native_height = image.size
+        image, age, (native_width, native_height) = grabbed
         epoch = geometry_epoch(native_width, native_height, device_tag(binding))
-        image = image.convert("RGB")
-        if options.max_size:
-            image.thumbnail((options.max_size, options.max_size))
         buffer = io.BytesIO()
         if options.format == "jpeg":
             image.save(buffer, format="JPEG", quality=self.config.stream_jpeg_quality)
