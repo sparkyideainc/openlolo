@@ -173,15 +173,17 @@ class ScreenDecoder:
         return True
 
     async def grab(self):
-        """Latest decoded frame as a PIL image cropped to content size, or None if too stale."""
-        frame = self.latest
-        if frame is None or self.frame_age() > self.config.stream_frame_ttl:
+        """Latest decoded frame as a PIL image cropped to content size, with its lag behind the
+        screen when it was picked (``frame_age``), or None if too stale. The age is taken before
+        conversion so the caller's encoding time does not count as lag."""
+        frame, age = self.latest, self.frame_age()
+        if frame is None or age > self.config.stream_frame_ttl:
             return None
         image = await asyncio.get_running_loop().run_in_executor(None, frame.to_image)
         if self.content is not None:
             width, height = self.content
             image = image.crop((0, 0, min(width, image.width), min(height, image.height)))
-        return image
+        return image, age
 
     async def stop(self) -> None:
         async with self._lock:

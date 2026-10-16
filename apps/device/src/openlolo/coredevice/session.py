@@ -270,9 +270,10 @@ class DeviceSession:
         # usually takes one keyframe round trip. A cold stream starts behind, so allow the start
         # window; a frame still more than stream_frame_ttl behind falls back to a discrete capture.
         await decoder.catch_up(self.config.stream_start_seconds)
-        image = await decoder.grab()
-        if image is None:
+        grabbed = await decoder.grab()
+        if grabbed is None:
             return None
+        image, age = grabbed
         native_width, native_height = image.size
         epoch = geometry_epoch(native_width, native_height, device_tag(binding))
         image = image.convert("RGB")
@@ -284,7 +285,6 @@ class DeviceSession:
         else:
             image.save(buffer, format="PNG", compress_level=1)
         width, height = image.size
-        age = decoder.frame_age()
         logger.info("stream screenshot in %.2fs (frame age %.2fs)", time.monotonic() - started, age)
         metadata = FrameMetadata(
             geometry_epoch=epoch,

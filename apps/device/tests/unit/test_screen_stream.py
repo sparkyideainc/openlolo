@@ -1,6 +1,9 @@
 import asyncio
 import struct
+import time
 from types import SimpleNamespace
+
+from PIL import Image
 
 from openlolo.coredevice.screen_stream import ScreenDecoder, picture_loss, receiver_report
 
@@ -83,5 +86,19 @@ def test_catch_up_asks_for_a_keyframe_while_behind_and_stops_when_one_is_decoded
         screen.key_decoded = 0.0
         assert not await screen.catch_up(0.05)  # nothing lands: report not caught up
         screen.task.cancel()
+
+    asyncio.run(run())
+
+
+def test_grab_reports_the_age_when_the_frame_was_picked():
+    async def run():
+        screen = decoder()
+        frame = SimpleNamespace(to_image=lambda: Image.new("RGB", (4, 4)))
+        screen.latest, screen.latest_arrival = frame, time.monotonic() - 0.2
+        screen.pending.append((time.monotonic(), b"d", False))
+        image, age = await screen.grab()
+        assert image.size == (4, 4) and 0.2 <= age < 0.3
+        screen.latest_arrival = time.monotonic() - 2.0  # past stream_frame_ttl
+        assert await screen.grab() is None
 
     asyncio.run(run())
