@@ -266,6 +266,10 @@ class DeviceSession:
         decoder = self.decoder
         if decoder is None or not await decoder.wait_frame(self.config.stream_start_seconds):
             return None
+        # A tap's result can be on screen before the decoder reaches it: catch up first, which
+        # usually takes one keyframe round trip. A cold stream starts behind, so allow the start
+        # window; a frame still more than stream_frame_ttl behind falls back to a discrete capture.
+        await decoder.catch_up(self.config.stream_start_seconds)
         image = await decoder.grab()
         if image is None:
             return None
@@ -292,7 +296,7 @@ class DeviceSession:
             received_at=time.time(),
             request_seconds=time.monotonic() - started,
             source_age_seconds=round(age, 3),
-            source_clock="pi hevc decode; frame age measured",
+            source_clock="pi hevc decode; age = lag behind screen",
             media_type=f"image/{options.format}",
         )
         return Frame(metadata, buffer.getvalue())
