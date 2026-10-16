@@ -193,3 +193,11 @@ Measured on the Radxa ZERO 3W with the iPhone 13 (iOS 27.0.1) over Wi-Fi unless 
 
 Out of scope: decode on demand (decoding only around screenshots). With hardware decode it no
 longer pays for itself; revisit only if a board without a hardware decoder needs it.
+
+Also out of scope: hardware scaling and JPEG. The RK3566's RGA (`/dev/video0`, `v4l2convert`) and
+VEPU JPEG encoder (`/dev/video3`, `v4l2jpegenc`; widths and heights in steps of 16) both produce
+correct output from the decoder, but only with the colorimetry overridden to bt709 and through a
+CPU copy of ~35 ms per frame, because dmabuf import into the encoder fails ("Failed to process
+frame"). Software swscale to the target size plus Pillow JPEG costs ~62 ms per screenshot
+(commit `e41bfae`), so the hardware path would save ~20 ms for real plumbing cost. Revisit if
+zero-copy into VEPU works on a later kernel.
