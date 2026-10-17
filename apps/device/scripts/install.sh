@@ -102,6 +102,11 @@ if [ "$board" != auto ] && ! grep -qE '^[[:space:]]*board[[:space:]]*=' /etc/ope
   printf '\n# Hardware profile detected by the installer.\nboard = "%s"\n' "$board" >> /etc/openlolo/box.toml
 fi
 install -m 0644 deploy/systemd/openlolo-*.service /etc/systemd/system/
+# The PiSugar3 drop-in turns the GPIO button unit into the PiSugar3 top button and LED daemon.
+if [ "$board" = radxa-zero3w ]; then
+  install -d -m 0755 /etc/systemd/system/openlolo-button.service.d
+  install -m 0644 deploy/systemd/openlolo-button.service.d/pisugar3.conf /etc/systemd/system/openlolo-button.service.d/
+fi
 
 # Wi-Fi access-point setup and station mode need a configured regulatory country.
 case "$wifi_country" in [A-Z][A-Z]) ;; *) echo 'Wi-Fi country must be a two-letter code, e.g. US' >&2; exit 1 ;; esac
@@ -213,6 +218,10 @@ systemctl restart usbmuxd
 systemctl enable --now openlolo-device openlolo-api
 if grep -qi 'Raspberry Pi' /proc/device-tree/model 2>/dev/null && [ -e /dev/gpiochip0 ]; then
   systemctl enable --now openlolo-button || true
+elif [ "$board" = radxa-zero3w ]; then
+  # restart, not --now: an upgrade replaces the daemon that is already running.
+  systemctl enable openlolo-button || true
+  systemctl restart openlolo-button || true
 fi
 if [ "$board" = radxa-zero3w ]; then
   # restart, not --now: re-apply after an upgrade even though the oneshot is already active.

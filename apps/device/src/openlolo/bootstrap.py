@@ -12,6 +12,7 @@ from openlolo.application.autopair import AutoPair
 from openlolo.application.coordinator import Coordinator
 from openlolo.application.phone import Phone
 from openlolo.application.provisioning import Provisioning
+from openlolo.application.reset import start_factory_reset
 from openlolo.domain.models import Binding
 from openlolo.domain.profiles import ProfileStore
 
@@ -41,6 +42,8 @@ class Runtime:
             button_flag=config.runtime_dir / "setup-button",
             pair_flag=config.runtime_dir / "pair-button",
             search=device.search,
+            reset=lambda: start_factory_reset(config, self.bindings, self.provisioning),
+            indicator=config.runtime_dir / "indicator",
         )
         self.profiles = ProfileStore(config.state_dir / "apps")
         self.phone = Phone(

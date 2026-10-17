@@ -10,6 +10,15 @@ radio changes to station mode for a join; on success the phone reconnects to hom
 reads the saved result at the same local hostname. A failed attempt recreates the AP. The
 setup button or an unconfigured boot opens a bounded window. Only profiles created by a failed
 attempt may be deleted.
+
+The setup button (long press on the Lolo Pocket's top button, 5 s hold on the Raspberry Pi) also
+drives the factory reset, in two steps so one press can never erase the box:
+
+    IDLE --hold--> SETUP_MODE --hold--> reset armed (10 s) --hold--> factory reset
+                                         reset armed --press | 10 s | setup ends--> SETUP_MODE
+
+The state is mirrored as one word in ``indicator`` (idle, setup, reset_armed, resetting) for the
+button daemon's LEDs.
 """
 
 import asyncio
@@ -26,6 +35,7 @@ from openlolo.domain.errors import OpenLoloError
 log = logging.getLogger("openlolo.provisioning")
 
 HANDOFF_READ_SECONDS = 6  # Captive sheet time to show the next address before the AP drops.
+RESET_ARM_SECONDS = 10  # A second hold within this time after arming confirms the reset.
 
 
 class ProvisioningState(str, enum.Enum):
@@ -50,6 +60,8 @@ class Provisioning:
         button_flag: Path | None = None,
         pair_flag: Path | None = None,
         search=None,
+        reset=None,
+        indicator: Path | None = None,
     ):
         self.config, self.network = config, network
         self.setup_name = config.setup_name or "OpenLolo"
@@ -58,6 +70,12 @@ class Provisioning:
         # Top-button press (written by the button daemon): one phone search window per press.
         self.pair_flag, self.search = pair_flag, search
         self.pair_seen = 0.0
+        # Factory reset from the setup button: ``reset`` starts it, ``indicator`` feeds the LEDs.
+        self.reset, self.indicator = reset, indicator
+        self.reset_armed_until: float | None = None
+        self.armed_stamp = 0.0  # mtime of the hold that armed it; older presses never cancel
+        self.resetting = False
+        self.shown: str | None = None
         self.state = ProvisioningState.IDLE if config.provisioning else ProvisioningState.DISABLED
         self.since = clock()
         self.boot = self.since  # run() resets it; tick() may also be driven directly.
@@ -104,7 +122,36 @@ class Provisioning:
             "setup_name": self.setup_name if self.active else None,
             "last_error": self.last_error,
             "last_attempt": self.last_attempt,
+            "reset_armed_in": self._armed_in(),
         }
+
+    def _armed_in(self) -> int | None:
+        if self.reset_armed_until is None:
+            return None
+        return max(0, int(self.reset_armed_until - self.clock() + 0.999))
+
+    def _show(self) -> None:
+        """Write the indicator word when it changed. A failed write is logged and not retried:
+        without the runtime directory there is no button daemon to read it."""
+        if self.indicator is None:
+            return
+        if self.resetting:
+            word = "resetting"
+        elif self.reset_armed_until is not None:
+            word = "reset_armed"
+        elif self.window:
+            word = "setup"
+        else:
+            word = "idle"
+        if word == self.shown:
+            return
+        try:
+            temporary = self.indicator.with_name(f".{self.indicator.name}.tmp")
+            temporary.write_text(word + "\n")
+            temporary.replace(self.indicator)
+        except OSError as exc:
+            log.warning("indicator not written: %s", exc)
+        self.shown = word
 
     def _set(self, state: ProvisioningState, reason: str | None = None) -> None:
         if state != self.state:
@@ -123,6 +170,7 @@ class Provisioning:
         self.window = True
         self.expires = self.clock() + self.config.setup_timeout_seconds
         self._set(ProvisioningState.SETUP_MODE, reason)
+        self._show()
 
     async def exit(self) -> None:
         await self.finish("exit")
@@ -133,9 +181,11 @@ class Provisioning:
             raise OpenLoloError("PROVISIONING_BUSY", "A Wi-Fi join is in progress", 409)
         self.expires = None
         self.window = False
+        self.reset_armed_until = None
         await self.network.stop_setup_ap()
         if self.state != ProvisioningState.DISABLED:
             self._set(ProvisioningState.IDLE, reason)
+        self._show()
 
     async def connect(self, ssid: str, psk: str) -> str:
         if self.state == ProvisioningState.DISABLED:
@@ -231,7 +281,16 @@ class Provisioning:
         """One supervisor step: timeouts, boot/grace entry, and the physical button."""
         if self.state == ProvisioningState.DISABLED:
             return
+        try:
+            await self._tick()
+        finally:
+            self._show()
+
+    async def _tick(self) -> None:
         now = self.clock()
+        if self.reset_armed_until is not None and (now >= self.reset_armed_until or not self.window):
+            self.reset_armed_until = None
+            log.info("factory reset disarmed")
         if (
             self.window
             and self.state == ProvisioningState.SETUP_MODE
@@ -240,24 +299,10 @@ class Provisioning:
         ):
             await self.finish("timeout")
             return
+        # Hold before press: a press read in the same tick as the confirming hold cannot cancel it.
+        if await self._setup_button():
+            return
         await self._pair_button()
-        if self.button_flag is not None:
-            try:
-                stamp = self.button_flag.stat().st_mtime
-            except OSError:
-                stamp = 0.0
-            if stamp > self.button_seen:
-                self.button_seen = stamp
-                # Consume the edge-triggered marker so a service restart cannot reopen setup
-                # mode from a stale file left by the last physical press.
-                with contextlib.suppress(OSError):
-                    self.button_flag.unlink()
-                if self.state == ProvisioningState.IDLE:
-                    try:
-                        await self.enter("button")
-                    except OpenLoloError as exc:
-                        log.warning("setup mode not started (button): %s", exc.message)
-                    return
         if self.state == ProvisioningState.IDLE and not self.grace_used:
             status = await self.network.status()
             saved = list(status.get("saved") or [])
@@ -267,6 +312,58 @@ class Provisioning:
                 await self._auto_enter("offline after boot")
             elif status.get("ssid"):
                 self.grace_used = True  # Online once: never auto-enter again this boot.
+
+    async def _setup_button(self) -> bool:
+        """One step per new mtime of the setup-button flag: open setup mode, arm the factory
+        reset, or confirm it. Returns whether the tick should end here."""
+        if self.button_flag is None:
+            return False
+        try:
+            stamp = self.button_flag.stat().st_mtime
+        except OSError:
+            return False
+        if stamp <= self.button_seen:
+            return False
+        self.button_seen = stamp
+        # Consume the edge-triggered marker so a service restart cannot reopen setup mode (or
+        # confirm a reset) from a stale file left by the last physical press.
+        with contextlib.suppress(OSError):
+            self.button_flag.unlink()
+        if self.resetting:
+            return True
+        if self.state == ProvisioningState.IDLE:
+            try:
+                await self.enter("button")
+            except OpenLoloError as exc:
+                log.warning("setup mode not started (button): %s", exc.message)
+            return True
+        if self.state != ProvisioningState.SETUP_MODE:
+            log.info("setup button ignored: a Wi-Fi join is in progress")
+            return True
+        if self.reset is None:
+            return True
+        now = self.clock()
+        if self.reset_armed_until is None:
+            self.reset_armed_until = now + RESET_ARM_SECONDS
+            self.armed_stamp = stamp
+            if self.expires is not None:
+                self.expires = max(self.expires, self.reset_armed_until)
+            log.warning(
+                "factory reset armed: hold the button again within %d s to confirm", RESET_ARM_SECONDS
+            )
+            return True
+        self.reset_armed_until = None
+        self.resetting = True
+        self._show()
+        log.warning("factory reset confirmed by the setup button")
+        try:
+            result = await self.reset()
+            # Done in process (simulated backend): the box is in setup mode again, buttons live.
+            self.resetting = (result or {}).get("state") != "reset"
+        except Exception as exc:
+            self.resetting = False
+            log.warning("factory reset not started (button): %s", getattr(exc, "code", type(exc).__name__))
+        return True
 
     async def _pair_button(self) -> None:
         """One phone search per new mtime of the pair-button flag. The flag is consumed like the
@@ -282,6 +379,11 @@ class Provisioning:
         self.pair_seen = stamp
         with contextlib.suppress(OSError):
             self.pair_flag.unlink()
+        if self.reset_armed_until is not None:
+            if stamp > self.armed_stamp:
+                self.reset_armed_until = None
+                log.info("factory reset cancelled by a button press")
+            return  # While armed a press only cancels; one from before the hold is dropped.
         try:
             await self.search()
         except Exception as exc:
