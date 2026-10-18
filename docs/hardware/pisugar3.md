@@ -60,7 +60,7 @@ Reference notes for the PiSugar3 UPS board used in the Lolo Pocket (Radxa ZERO 3
 | `0x06` | 4 | R/W | off | Boot watchdog enable (firmware ≥ 1.0.6) |
 | `0x06` | 3 | W | - | Boot watchdog feed (must feed within ~90 s of boot) |
 | `0x07` | all | R/W | - | Watchdog timeout = value × 2 s |
-| `0x08` | 1-0 | R/W | - | Top-button event: 1 single, 2 double, 3 long, 0 none. **Bench:** arrives ~1 s after the press |
+| `0x08` | 1-0 | R/W | - | Top-button event: 1 single, 2 double, 3 long, 0 none. **Bench:** a single arrives ~1 s after the press; a long arrives only at release, with no duration (12 s and 4 s holds look the same). No register reports the top button held |
 | `0x09` | all | R/W | 0 | Output-off delay, 0-255 s (approximate). **Bench:** resets to 0 at power-on |
 | `0x0A` | all | R/W | - | Boot watchdog restart limit (min 1) |
 | `0x0B` | all | R/W | - | Write protection (`0x29` = unlocked) |

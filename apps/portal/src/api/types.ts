@@ -19,8 +19,6 @@ export interface SetupStatus {
 	last_attempt: WifiAttempt | null;
 	last_error: { code: string } | null;
 	usb_pairing: AutopairStatus | null;
-	/** Seconds left to confirm a factory reset armed by the box's button; null when not armed. */
-	reset_armed_in?: number | null;
 }
 
 export interface PageAccess {

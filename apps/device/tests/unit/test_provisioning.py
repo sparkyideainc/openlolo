@@ -287,18 +287,6 @@ def test_profile_slug():
     assert len(slug("x" * 60)) == len("openlolo-") + 24
 
 
-class Resets:
-    def __init__(self, result=None, error=None):
-        self.calls = 0
-        self.result, self.error = result or {"state": "resetting"}, error
-
-    async def __call__(self):
-        self.calls += 1
-        if self.error:
-            raise self.error
-        return self.result
-
-
 def press(flag, seconds=[0.0]):
     """Touch a button flag with a strictly newer mtime than any earlier press in the test."""
     import os
@@ -309,7 +297,7 @@ def press(flag, seconds=[0.0]):
     os.utime(flag, (seconds[0], seconds[0]))
 
 
-def button_rig(tmp_path, reset=None):
+def button_rig(tmp_path):
     clock = Clock()
     searches = []
 
@@ -324,7 +312,6 @@ def button_rig(tmp_path, reset=None):
         button_flag=tmp_path / "setup-button",
         pair_flag=tmp_path / "pair-button",
         search=search,
-        reset=reset or Resets(),
         indicator=tmp_path / "indicator",
     )
     return prov, clock, searches
@@ -334,123 +321,92 @@ def shown(tmp_path):
     return (tmp_path / "indicator").read_text().strip()
 
 
-async def test_hold_hold_confirms_the_factory_reset(tmp_path):
-    prov, clock, _ = button_rig(tmp_path)
+async def test_hold_opens_pairing_and_a_press_cancels_it(tmp_path):
+    prov, clock, searches = button_rig(tmp_path)
     await prov.tick()
     assert shown(tmp_path) == "idle"
     press(tmp_path / "setup-button")
     await prov.tick()
     assert prov.state == ProvisioningState.SETUP_MODE and shown(tmp_path) == "setup"
-    assert prov.reset.calls == 0
-    press(tmp_path / "setup-button")
+    press(tmp_path / "pair-button")
     await prov.tick()
-    assert prov.health()["reset_armed_in"] == 20 and shown(tmp_path) == "reset_armed"
-    clock.advance(19)
-    press(tmp_path / "setup-button")
+    assert prov.state == ProvisioningState.IDLE and prov.reason == "button"
+    assert shown(tmp_path) == "idle" and searches == []  # A cancel is not a search.
+    press(tmp_path / "pair-button")
     await prov.tick()
-    assert prov.reset.calls == 1 and prov.resetting and shown(tmp_path) == "resetting"
-    press(tmp_path / "setup-button")
-    await prov.tick()  # Further holds while the unit runs do nothing.
-    assert prov.reset.calls == 1
+    assert searches == [True] and prov.state == ProvisioningState.IDLE
 
 
-async def test_armed_reset_times_out_and_the_next_hold_arms_again(tmp_path):
+async def test_hold_while_pairing_is_ignored(tmp_path):
     prov, clock, _ = button_rig(tmp_path)
     press(tmp_path / "setup-button")
     await prov.tick()
+    expires = prov.expires
+    clock.advance(30)
     press(tmp_path / "setup-button")
     await prov.tick()
-    clock.advance(20)
-    await prov.tick()
-    assert prov.health()["reset_armed_in"] is None and shown(tmp_path) == "setup"
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    assert prov.reset.calls == 0 and prov.health()["reset_armed_in"] == 20
+    assert prov.state == ProvisioningState.SETUP_MODE and prov.expires == expires
+    assert len(calls(prov.network, "start_setup_ap")) == 1
 
 
-async def test_press_cancels_an_armed_reset_without_a_search(tmp_path):
-    prov, clock, searches = button_rig(tmp_path)
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    press(tmp_path / "pair-button")
-    await prov.tick()
-    assert prov.reset_armed_until is None and searches == [] and shown(tmp_path) == "setup"
-    press(tmp_path / "setup-button")
-    await prov.tick()  # Arms again, does not confirm.
-    assert prov.reset.calls == 0 and prov.reset_armed_until is not None
-    press(tmp_path / "pair-button")
-    await prov.tick()
-    press(tmp_path / "pair-button")
-    await prov.tick()  # Disarmed: a press is a phone search again.
-    assert searches == [True]
-
-
-async def test_press_older_than_the_arming_hold_does_not_cancel(tmp_path):
+async def test_press_older_than_the_opening_hold_does_not_cancel(tmp_path):
     import os
 
     prov, clock, searches = button_rig(tmp_path)
-    press(tmp_path / "setup-button")
-    await prov.tick()
     press(tmp_path / "pair-button")
     stamp = (tmp_path / "pair-button").stat().st_mtime
     press(tmp_path / "setup-button")
-    await prov.tick()  # Arms; the older press is read on the next tick.
+    await prov.tick()  # Opens setup; the older press is read on the next tick.
     os.utime(tmp_path / "pair-button", (stamp, stamp))
     await prov.tick()
-    assert prov.reset_armed_until is not None and searches == []
+    assert prov.state == ProvisioningState.SETUP_MODE and searches == []
 
 
-async def test_leaving_setup_mode_disarms(tmp_path):
+async def test_press_cancels_setup_mode_opened_at_boot_or_from_the_page(tmp_path):
     prov, clock, _ = button_rig(tmp_path)
-    press(tmp_path / "setup-button")
+    await prov.enter("no saved network")
+    press(tmp_path / "pair-button")
     await prov.tick()
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    await prov.exit()
-    assert prov.reset_armed_until is None and shown(tmp_path) == "idle"
-    press(tmp_path / "setup-button")
-    await prov.tick()  # Opens setup mode again; never confirms.
-    assert prov.state == ProvisioningState.SETUP_MODE and prov.reset.calls == 0
+    assert prov.state == ProvisioningState.IDLE and not prov.window
 
 
-async def test_arming_keeps_setup_mode_open_past_the_arm_window(tmp_path):
-    prov, clock, _ = button_rig(tmp_path)
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    clock.advance(595)
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    clock.advance(15)  # Past the 600 s setup timeout, inside the arm window.
-    await prov.tick()
-    assert prov.state == ProvisioningState.SETUP_MODE
-    press(tmp_path / "setup-button")
-    await prov.tick()
-    assert prov.reset.calls == 1
-
-
-async def test_hold_during_a_join_is_ignored(tmp_path):
-    prov, clock, _ = button_rig(tmp_path)
+async def test_buttons_are_ignored_during_a_join(tmp_path):
+    prov, clock, searches = button_rig(tmp_path)
     press(tmp_path / "setup-button")
     await prov.tick()
     prov.state = ProvisioningState.JOINING
+    press(tmp_path / "pair-button")
+    await prov.tick()
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert prov.reset_armed_until is None and prov.reset.calls == 0
+    assert prov.state == ProvisioningState.JOINING and prov.window and searches == []
 
 
-async def test_failed_reset_start_lets_the_button_try_again(tmp_path):
-    prov, clock, _ = button_rig(tmp_path, reset=Resets(error=OpenLoloError("RESET_FAILED")))
-    for _ in range(3):
-        press(tmp_path / "setup-button")
-        await prov.tick()
-    assert prov.reset.calls == 1 and not prov.resetting and shown(tmp_path) == "setup"
+async def test_status_led_follows_the_phone_connection(tmp_path):
+    prov, clock, _ = button_rig(tmp_path)
+    health = {"connection": {"state": "disconnected", "searching": False}}
 
+    async def link():
+        if health is None:
+            raise OSError("worker down")
+        return health
 
-async def test_simulated_reset_returns_buttons_to_setup_mode(tmp_path):
-    prov, clock, _ = button_rig(tmp_path, reset=Resets(result={"state": "reset"}))
-    for _ in range(3):
-        press(tmp_path / "setup-button")
-        await prov.tick()
-    assert prov.reset.calls == 1 and not prov.resetting and shown(tmp_path) == "setup"
+    prov.link = link
+    await prov.tick()
+    assert shown(tmp_path) == "idle"
+    health["connection"]["searching"] = True
+    await prov.tick()
+    assert shown(tmp_path) == "searching"
+    health["connection"] = {"state": "connected", "searching": False}
+    await prov.tick()
+    assert shown(tmp_path) == "connected"
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert shown(tmp_path) == "setup"  # Setup mode outranks the connection.
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert shown(tmp_path) == "connected"
+    await prov.tick(network=False)  # Fast button ticks do not poll the worker.
+    health = None
+    await prov.tick()
+    assert shown(tmp_path) == "idle"

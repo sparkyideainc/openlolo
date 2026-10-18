@@ -15,7 +15,7 @@ from mcp.server.auth.provider import AccessToken
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from openlolo.application.reset import start_factory_reset
+from openlolo.adapters.system.network import run as run_command
 from openlolo.domain.errors import OpenLoloError
 from openlolo.interfaces.json_body import body
 from openlolo.interfaces.local_phone import LOST_CONTROL, BridgeError
@@ -34,6 +34,7 @@ SETUP_KINDS = {
     "validate_shortcut",
 }
 NETWORK_COMMANDS = {"scan", "connect", "forget", "setup_mode"}
+RESET_UNIT = "openlolo-reset.service"  # Root unit: deploy/reset/openlolo-reset.sh
 
 Handler = Callable[[Request], Awaitable[Response]]
 RouteSpec = tuple[str, list[str], Handler]
@@ -241,8 +242,18 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
             raise OpenLoloError(
                 "RESET_NAME_MISMATCH", "Type the box's name exactly as printed on its card", 400
             )
-        result = await start_factory_reset(config, runtime.bindings, provisioning)
-        return JSONResponse(result, status_code=202 if result["state"] == "resetting" else 200)
+        if config.backend == "simulated":
+            runtime.bindings.delete()
+            if provisioning is not None and not provisioning.active:
+                await provisioning.enter("reset")
+            return JSONResponse({"state": "reset"})
+        # The unit stops this service, so it must run on its own: --no-block returns at once.
+        code, output = await run_command(
+            "systemctl", "start", "--no-block", RESET_UNIT, timeout=10, quiet=False
+        )
+        if code != 0:
+            raise OpenLoloError("RESET_FAILED", output or "Could not start the reset", 502)
+        return JSONResponse({"state": "resetting"}, status_code=202)
 
     @add("/network", ["GET"])
     async def network_status(request: Request):

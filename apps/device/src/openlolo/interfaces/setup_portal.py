@@ -251,7 +251,6 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
                 if runtime.provisioning.last_error
                 else None,
                 "usb_pairing": pairing,
-                "reset_armed_in": runtime.provisioning.health()["reset_armed_in"],
             }
         )
 

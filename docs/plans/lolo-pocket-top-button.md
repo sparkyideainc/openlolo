@@ -1,24 +1,32 @@
 # Lolo Pocket top button: pairing mode and reset mode
 
-**Status: PR 1 on `jingerpie/pisugar`, PR 2 on `jingerpie/lolo-phone-switch` (2026-10-17). First bench pass 2026-10-18 (see Bench log); LED moved to the board LED and arm window raised to 20 s, rerun pending.** Supersedes the top-button rows of
+**Status: PR 1 on `jingerpie/pisugar`, PR 2 on `jingerpie/lolo-phone-switch`. Design revised 2026-10-18 after the bench (see Decisions and Bench log): hold opens setup mode, press cancels it, factory reset is box-page only, status LED on the Radxa board shows the phone connection.** Supersedes the top-button rows of
 `docs/hardware/lolo-pocket-buttons.md`; that page is updated in PR 1.
 
-## Decisions (2026-10-17)
+## Decisions (final, 2026-10-18)
 
 | Gesture on the PiSugar3 top button | Box state | Action |
 |---|---|---|
-| Single press | Any, nothing armed | One phone search for the saved phone (immediate attempt, backoff reset). |
-| Long press | Not in setup mode | **Pairing mode** = setup mode: setup Wi-Fi, box page, cable trust window, 10 min. |
-| Long press | In pairing mode | **Reset armed** for 20 s. Status LED flashes fast. Nothing is erased yet. |
-| Long press | Reset armed | **Reset confirmed**: factory reset (same unit as the box page reset). |
-| Single press | Reset armed | Cancel the reset. No phone search. |
-| (20 s pass) | Reset armed | Cancel the reset; stay in pairing mode. |
+| Hold, then release | Not in setup mode | **Setup mode** (pairing): own Wi-Fi on air, box page, cable Trust window, 10 min. |
+| Hold, then release | Setup mode | Nothing. |
+| Press | Setup mode | **Cancel setup mode.** |
+| Press | Not in setup mode | One phone search (status LED blinks slowly while it looks). |
+| Press or hold | Wi-Fi join in progress | Ignored. |
 | Double press | Any | Ignored (event cleared). |
 
-- In pairing mode, a phone on the cable that is not the saved phone replaces it after the owner taps Trust (Bluetooth-style). Outside pairing mode a different phone is still ignored.
-- Switching phones keeps every AI client and grant. The old phone's pairing records are deleted after the new phone is bound, so the old phone needs a fresh Trust to come back.
-- Raspberry Pi GPIO button gets the same arm/confirm for free: the logic is in the API, and each 5 s hold already touches the setup flag. No single press there, so a Pi reset is cancelled only by the 20 s timeout. No Pi button hardware to test; unit tests only.
-- Scope: top button and LEDs only. Power button, battery sampling and low-battery shutdown from the parked PR 2 (`jingerpie/lolo-pr2-pisugar-daemon`, 3699bac) stay parked.
+| Status LED (Radxa green LED) | Meaning |
+|---|---|
+| Fast blink, 2 Hz | Setup mode |
+| Steady on | Phone connected |
+| Slow blink, 1 Hz | Searching for the phone |
+| Off | Not connected, not searching (sleep) |
+
+- **Factory reset is a box page action only** (typed box name, unchanged). The button cannot do it: the PiSugar3 reports a hold only on release, as one "long" event with no length and no held-now bit (probe 2026-10-18: a 12 s and a 4 s hold arrived identically; the published I2C register map has no button timing or state register). So "hold 3 s = setup, hold 15 s = reset" is impossible on this button. Two-step button resets (hold-hold-hold, double-then-hold) were built or designed and dropped as error-prone or too hard to remember.
+- A true older-AirPods behaviour (LED reacts at 5 s and 15 s while held) needs a button Linux reads directly: a tactile switch on a Radxa GPIO (proposed: header pin 11, GPIO3_A1, to GND pin 9, 10 kOhm pull-up). Not in this hardware revision. A PiSugar firmware that reports hold length would also do.
+- In setup mode, a phone on the cable that is not the saved phone replaces it after Trust (PR 2). Switching keeps every AI client and grant; the old phone's pairing records are deleted after the new phone is bound.
+- Raspberry Pi GPIO button: the 5 s hold opens setup mode; no press, so no cancel by button.
+- PiSugar3 LEDs stay the battery gauge: on USB power the firmware's charge animation overwrites `0xE0` between writes.
+- Scope: top button and status LED only. Power button, battery sampling and low-battery shutdown from the parked PR 2 (`jingerpie/lolo-pr2-pisugar-daemon`, 3699bac) stay parked.
 
 ## What exists on main (b68e134)
 
@@ -40,26 +48,17 @@ The daemon stays dumb: it turns firmware events into flag files and mirrors one 
 ```
 PiSugar3 0x08 --(daemon, 500 ms poll)--> /run/openlolo/pair-button   (single)
                                      --> /run/openlolo/setup-button  (long)
-API Provisioning.tick ----------------> /run/openlolo/indicator     (idle | setup | reset_armed | resetting)
+API Provisioning.tick ----------------> /run/openlolo/indicator     (idle | searching | connected | setup)
 daemon (stat each tick) --------------> Radxa green LED (sysfs brightness)
 ```
 
 ### API state (PR 1)
 
-Add to `Provisioning`:
-
-- `reset_armed_until: float | None`.
-- Long flag:
-  - IDLE -> `enter("button")` (unchanged).
-  - SETUP_MODE, not armed -> arm for `RESET_ARM_SECONDS = 20` (10 s was too short for a person watching the LED, bench 2026-10-18); log; extend the setup-mode expiry to at least the arm deadline.
-  - SETUP_MODE, armed and not expired -> start the reset; clear the arm.
-  - JOINING / VERIFYING -> ignored and logged (no reset mid-join).
-- Single flag while armed -> disarm only; the phone search is skipped.
-- `tick` disarms after the deadline. Leaving setup mode for any reason (Wi-Fi joined, timeout, API exit) disarms.
-- Reset start is a shared helper, `start_factory_reset(reason)` in a small module used by both `POST /reset` and the button. Simulated backend keeps its current in-process path. A second confirm while the unit is starting is a no-op.
-- Indicator: `Provisioning` writes `/run/openlolo/indicator` (one word, atomic rename) only when the value changes. Values: `idle`, `setup`, `reset_armed`, `resetting`.
-- Health: `health()["reset_armed_in"]` (seconds or null). Box page shows one line while armed: "Hold the top button again to erase this box. Press once to cancel."
-- Ordering guard: the flags are checked in a fixed order (long, then single) per tick. Two presses in one tick cannot arm and confirm together, because one long flag mtime is one event.
+- `Provisioning` consumes the two flags (setup flag before pair flag each tick):
+  - Setup flag: IDLE -> `enter("button")`; SETUP_MODE -> ignored; JOINING / VERIFYING -> ignored.
+  - Pair flag: SETUP_MODE -> `finish("button")`, unless the press is older than the hold that opened setup mode; JOINING / VERIFYING -> ignored; otherwise one `search()`.
+- Button flags are checked every 200 ms (`BUTTON_POLL_SECONDS`); the Wi-Fi status check (nmcli) and the phone link check stay at about 1 s.
+- Indicator: `Provisioning` writes `/run/openlolo/indicator` (one word, atomic rename) when it changes: `setup` while the setup window is open, else from the device health (`link`): `connected`, `searching` (`connection.searching`), or `idle`. An unreachable worker shows as `idle`.
 
 ### Daemon (PR 1)
 
@@ -67,7 +66,7 @@ New backend `pisugar3` in `deploy/openlolo-button.py`, picked by `OPENLOLO_BUTTO
 
 - Keep: `Bus` (20 ms spacing, 3 retries 50 ms apart, unlock + read-back on write), stale-event clear at start, per-event 2 s debounce, offline detection with 30 s retry, `<N>` journal priorities.
 - Drop: soft mode, cut delay, anti-mistaken-touch write, power-button hold logic, battery sampling, `power.json`, polkit power-off rule. The daemon must not write `0x02`, `0x03` or `0x09`: without the power-button code, soft mode on would leave the power button unable to turn the box off.
-- Status LED: the Radxa board's `green:heartbeat` LED through sysfs. `setup` = 1 Hz; `reset_armed` = 2 Hz (250 ms tick while armed); `resetting` = steady on; `idle` = off. `openlolo-board.sh` (root, at boot) turns the heartbeat trigger off and makes `brightness` writable for group `openlolo`. First version wrote PiSugar3 `0xE0`; dropped after the bench (2026-10-18): on USB power the firmware's charge animation overwrites the register between writes. LED output adds no I2C traffic.
+- Status LED: the Radxa board's `green:heartbeat` LED through sysfs. `setup` = 2 Hz; `searching` = 1 Hz; `connected` = steady on; `idle` = off. Blink timing is by time, not by poll count; the daemon polls `0x08` every 100 ms. `openlolo-board.sh` (root, at boot) turns the heartbeat trigger off and makes `brightness` writable for group `openlolo`. First version wrote PiSugar3 `0xE0`; dropped after the bench (2026-10-18): on USB power the firmware's charge animation overwrites the register between writes. LED output adds no I2C traffic.
 - Systemd drop-in `openlolo-button.service.d/pisugar3.conf`, installed by `install.sh` only when `board = radxa-zero3w`: clears the GPIO condition and environment, sets the backend, `DeviceAllow=/dev/i2c-3 rw`, `SupplementaryGroups=i2c`, `RestrictAddressFamilies=AF_UNIX`.
 - Exit 0 with a log line when `smbus2` is missing or the bus never answers (box on direct USB power: the PiSugar3 does not answer then). Keep retrying every 30 s in-process instead of a restart loop.
 
@@ -86,7 +85,7 @@ New backend `pisugar3` in `deploy/openlolo-button.py`, picked by `OPENLOLO_BUTTO
 
 ## PR split
 
-1. **Top button + LEDs + reset arm** (daemon backend, drop-in, installer hook, API arm/confirm, indicator, shared reset helper, box-page line, docs page update).
+1. **Top button + status LED** (daemon backend, drop-in, installer hook, board LED handover, API hold/press handling, indicator from setup state and phone connection, docs page update).
 2. **Phone replacement in pairing mode** (autopair, worker `forget` op, `openlolo-forget@` unit + polkit).
 
 PR 2 does not depend on the daemon; it can be tested with the box-page "setup mode" command. Developed in order, shipped together.
@@ -99,28 +98,29 @@ PR 2 does not depend on the daemon; it can be tested with the box-page "setup mo
    - Confirm `0x08` long press is distinct from the power button's `0x02` bit 0.
    Record results in `docs/hardware/pisugar3.md` before writing LED code.
 1. PR 1 daemon: port `Bus` + tap handling + LED writer; unit tests with a fake smbus (stale clear, debounce, I2C failure, LED pattern per indicator, no writes to `0x02`/`0x03`/`0x09`).
-2. PR 1 API: arm/confirm/cancel/timeout tests with a fake clock and fake reset starter; `POST /reset` uses the helper and its tests stay green.
+2. PR 1 API: hold opens, press cancels, join ignores, stale press dropped, indicator follows setup state and phone link; tests with a fake clock.
 3. PR 1 installer + drop-in; deploy to the Radxa bench.
 4. PR 2 autopair replacement + tests (different UDID in setup mode, same UDID, outside setup mode ignored, trust denied keeps the old binding, phone unplugged mid-replace).
 5. Bench pass, then docs and memory.
 
 ## Acceptance (bench, Radxa ZERO 3W + PiSugar3)
 
-- Single press -> journal shows one phone search within 2 s of the event; nothing else changes.
-- Long press from idle -> setup Wi-Fi visible on a phone within 15 s; LEDs blink 1 Hz.
-- Long, long within 10 s -> reset unit runs; after it the box is in setup mode with no saved phone, no `openlolo-*` Wi-Fi profile and no AI clients.
-- Long, then single -> no reset; LEDs back to 1 Hz; still in setup mode.
-- Long, then wait 11 s, then long -> no reset (re-arms instead).
+- Hold and release from normal -> status LED fast blink within 1 s of release; setup Wi-Fi visible on a phone within 15 s.
+- Press in setup mode -> setup mode closes, LED back to the connection state; no phone search.
+- Hold in setup mode -> nothing.
+- Press outside setup mode -> LED slow blink while the search window is open; steady on when the phone connects; off when the window ends without a phone.
+- Phone connected over cable or Wi-Fi -> LED steady on within about 1 s.
 - Service restart with a press latched before start -> no action.
-- Pairing mode with a second iPhone on the cable -> Trust prompt on it; after Trust the box controls the new phone; box-page sessions end; AI clients still listed and an existing MCP client drives the new phone; no `<old>` file left in `/var/lib/openlolo/device/lockdown`, the RemotePairing dir or `/var/lib/lockdown`; old phone on the cable outside pairing mode is ignored.
-- Idle daemon cost with no indicator pattern: one I2C read per 500 ms, under 1% of one core (`pidstat 60 1`).
+- Setup mode with a second iPhone on the cable -> Trust prompt on it; after Trust the box controls the new phone; box-page sessions end; AI clients still listed; no `<old>` file left in `/var/lib/openlolo/device/lockdown`, the RemotePairing dir or `/var/lib/lockdown`; old phone on the cable outside setup mode is ignored.
+- Button daemon cost: under 1% of one core.
 - Unit and portal test suites green.
 
 ## Resolved questions (2026-10-17)
 
 - Phone switch keeps all AI clients.
 - Old phone records deleted after a successful switch (worker op + root template unit).
-- GPIO parity: yes, through the shared API logic; unit-tested only.
+- GPIO parity: the Pi hold opens setup mode through the same API logic; unit-tested only.
+- Factory reset by button: dropped (2026-10-18), box page only.
 
 ## Bench log
 
@@ -130,3 +130,7 @@ PR 2 does not depend on the daemon; it can be tested with the box-page "setup mo
 - A press 10.0 s after arming landed after the deadline: the timeout disarmed first, so the cancel path was not exercised. A confirming hold was not seen by the daemon (no log line; debounced events were not logged then).
 - The PiSugar3 LEDs run a charge animation on USB power that overwrites `0xE0`.
 - Changes after this pass: board LED instead of `0xE0`, 20 s arm window, debounced presses logged, disarm log names the cause.
+
+2026-10-18, second pass (board LED, 20 s arm, 100 ms poll): all steps registered; cancel by press worked; confirm worked (stub). Event-to-API latency 0.2-1 s.
+
+2026-10-18, probe with the button daemon stopped, polling `0x08` every ~50 ms and all of `0x00-0x3F` in rotation: holds of 12 s and 4 s each produced one `0x03` at release (8.9 s apart, matching release times); no register tracked the held button. Led to the final design above.

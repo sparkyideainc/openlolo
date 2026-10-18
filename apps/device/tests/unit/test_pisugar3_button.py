@@ -155,24 +155,34 @@ def test_board_led_follows_the_indicator_and_the_pisugar_leds_are_never_written(
     for _ in range(4):
         daemon.tick()
         clock.sleep(0.5)
-    assert led.values == ["0"] and daemon.interval == ps.TICK  # off once at start, then quiet
-    (tmp / "indicator").write_text("setup\n")
+    assert led.values == ["0"]  # off once at start, then quiet
+    (tmp / "indicator").write_text("searching\n")
     for _ in range(4):
         daemon.tick()
         clock.sleep(0.5)
-    assert led.values[1:] == ["1", "0", "1", "0"]
-    (tmp / "indicator").write_text("reset_armed\n")
+    assert led.values[1:] == ["1", "0", "1", "0"]  # slow blink, 1 Hz
+    (tmp / "indicator").write_text("setup\n")
+    for _ in range(4):
+        daemon.tick()
+        clock.sleep(0.25)
+    assert led.values[-4:] == ["1", "0", "1", "0"]  # fast blink, 2 Hz
+    (tmp / "indicator").write_text("connected\n")
     daemon.tick()
-    assert daemon.interval == ps.FAST_TICK
-    (tmp / "indicator").write_text("resetting\n")
+    clock.sleep(0.5)
+    daemon.tick()
+    assert led.values[-1] == "1" and led.values[-2] != "1"  # steady on: written once
+    (tmp / "indicator").write_text("searching\n")
+    daemon.tick()
+    count = len(led.values)
+    for _ in range(3):
+        daemon.tick()
+        clock.sleep(ps.TICK)
+    assert len(led.values) <= count + 1  # 100 ms polls inside a 500 ms frame: at most one write
+    (tmp / "indicator").write_text("idle\n")
     daemon.tick()
     count = len(led.values)
     daemon.tick()
-    assert led.values[-1] == "1" and len(led.values) == count  # steady: no rewrite
-    (tmp / "indicator").write_text("idle\n")
-    daemon.tick()
-    daemon.tick()
-    assert led.values[-1] == "0" and len(led.values) == count + 1
+    assert led.values[-1] == "0" and len(led.values) == count
     assert not any(register == 0xE0 for register, _ in smbus.writes)
 
 
@@ -180,7 +190,7 @@ def test_unwritable_led_does_not_stop_the_button(rig, capsys):
     clock, smbus, daemon, tmp, led = rig
     led.broken = True
     daemon.start()
-    (tmp / "indicator").write_text("setup\n")
+    (tmp / "indicator").write_text("searching\n")
     for _ in range(3):
         daemon.tick()
         clock.sleep(0.5)
@@ -191,6 +201,7 @@ def test_unwritable_led_does_not_stop_the_button(rig, capsys):
     led.broken = False
     clock.sleep(0.5)
     daemon.tick()
+    clock.sleep(0.5)
     daemon.tick()
     assert led.values in (["1", "0"], ["0", "1"])  # recovers on the next writes
 
@@ -221,12 +232,12 @@ def test_never_writes_power_registers_on_a_flaky_bus(tmp_path):
         clock=clock,
     )
     daemon.start()
-    (tmp_path / "indicator").write_text("reset_armed\n")
+    (tmp_path / "indicator").write_text("setup\n")
     for n in range(200):
         if n % 20 == 0:
             smbus.tap(ps.LONG if n % 40 else ps.SINGLE)
         daemon.tick()
-        clock.sleep(daemon.interval)
+        clock.sleep(ps.TICK)
     assert not {register for register, _ in smbus.writes} & POWER_REGISTERS
     assert not daemon.offline
 
@@ -265,3 +276,17 @@ def test_serve_retries_a_missing_board_then_runs(tmp_path):
 
     ps.serve(open_bus, factory, stop, clock=clock, sleep=clock.sleep)
     assert len(ticks) == 3 and ticks[0] >= 1000 + ps.RETRY_OFFLINE
+
+
+def test_offline_after_ten_seconds_of_failed_reads(rig):
+    clock, smbus, daemon, tmp, led = rig
+    daemon.start()
+    smbus.missing = True
+    started = clock()
+    while clock() - started < ps.OFFLINE_SECONDS - 1:
+        daemon.tick()
+        clock.sleep(ps.TICK)
+    assert not daemon.offline
+    clock.sleep(1)
+    daemon.tick()
+    assert daemon.offline

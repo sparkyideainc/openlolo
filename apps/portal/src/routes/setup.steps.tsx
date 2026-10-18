@@ -61,11 +61,6 @@ function SetupSteps() {
 				</div>
 			</header>
 			<TrackBar states={view.track} />
-			{setup.data?.reset_armed_in != null && (
-				<p role="alert" className="font-medium text-[13px] text-destructive">
-					Hold the top button again to erase this box. Press it once to cancel.
-				</p>
-			)}
 			{view.step === "finish" ? (
 				<Finish view={view} hostname={hostname} />
 			) : view.step === "wifi" && !view.switchingTo ? (

@@ -1,15 +1,16 @@
 """PiSugar3 backend of the button daemon: top button and status LED.
 
 Loaded by ``openlolo-button.py`` when ``OPENLOLO_BUTTON_BACKEND=pisugar3`` (Lolo Pocket: Radxa
-ZERO 3W on a PiSugar3). One thread, one tick every 500 ms (250 ms while the status LED flashes
-fast).
+ZERO 3W on a PiSugar3). One thread, one tick every 100 ms.
 
-- Top button: single press touches the pairing flag, long press touches the setup flag (the
+- Top button: the firmware reports a hold only on release, with no held-now bit (bench
+  2026-10-18), so the box acts on release; the fast poll makes that feel immediate. A single
+  press touches the pairing flag, long press touches the setup flag (the
   same flag the GPIO backend touches), double press is cleared and ignored. The API decides
-  what a press means (phone search, setup mode, reset arm and confirm).
+  what a press means (phone search, or cancel setup mode; a hold opens setup mode).
 - Status LED: the API writes one word to ``/run/openlolo/indicator``; the daemon mirrors it on
-  the Radxa board's green LED (sysfs, ``OPENLOLO_STATUS_LED``). ``idle`` is off. The PiSugar3's
-  four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
+  the Radxa board's green LED (sysfs, ``OPENLOLO_STATUS_LED``): ``setup`` fast blink,
+  ``searching`` slow blink, ``connected`` steady on, ``idle`` off. The PiSugar3's four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
   writes, so a pattern there was unreadable on USB power (bench 2026-10-18).
 
 The power button keeps the PiSugar3 defaults: this daemon never writes ``0x02``, ``0x03`` or
@@ -36,23 +37,22 @@ FIRMWARE_MAX = 16
 
 SINGLE, DOUBLE, LONG = 1, 2, 3
 
-TICK = 0.5
-FAST_TICK = 0.25
+TICK = 0.1  # top-button poll: a hold is reported on release, so this is the felt latency
 GAP = 0.02  # minimum time between two bus accesses
 TRIES = 3
 RETRY_DELAY = 0.05
 DEBOUNCE = 2.0
-OFFLINE_TICKS = 20  # every read failed for 10 s: the board stopped answering
+OFFLINE_SECONDS = 10.0  # every read failed this long: the board stopped answering
 RETRY_OFFLINE = 30.0
 
 # The Radxa board LED; openlolo-board.sh turns its heartbeat off and makes it group-writable.
 STATUS_LED = "/sys/class/leds/green:heartbeat/brightness"
 
-# Indicator word -> (LED frames cycled one per tick, tick seconds).
+# Indicator word -> (LED frames, seconds per frame).
 PATTERNS = {
-    "setup": ([True, False], TICK),  # 1 Hz
-    "reset_armed": ([True, False], FAST_TICK),  # 2 Hz
-    "resetting": ([True], TICK),  # steady on
+    "setup": ([True, False], 0.25),  # setup mode, own Wi-Fi on air: fast blink, 2 Hz
+    "searching": ([True, False], 0.5),  # looking for the phone: slow blink, 1 Hz
+    "connected": ([True], 1.0),  # phone connected: steady on
 }
 
 
@@ -165,11 +165,11 @@ class Daemon:
         self.setup_flag, self.pair_flag, self.indicator = setup_flag, pair_flag, indicator
         self.firmware = None
         self.last_event: dict[int, float] = {}
-        self.failed_ticks = 0
+        self.failed_since: float | None = None
         self.indicator_stamp = None
         self.indicator_word = "idle"
         self.pattern = "idle"
-        self.frame = 0
+        self.pattern_start = 0.0
 
     # Start-up --------------------------------------------------------------------------------
 
@@ -180,7 +180,7 @@ class Daemon:
         if tap & 0x03:
             self.bus.write(TAP, tap & 0xFC, 0x03)
         self.firmware = self.read_firmware()
-        self.failed_ticks = 0
+        self.failed_since = None
         self.indicator_stamp = None
         self.pattern = "idle"
         self.led.set(False)
@@ -202,11 +202,7 @@ class Daemon:
 
     @property
     def offline(self) -> bool:
-        return self.failed_ticks >= OFFLINE_TICKS
-
-    @property
-    def interval(self) -> float:
-        return PATTERNS[self.pattern][1] if self.pattern in PATTERNS else TICK
+        return self.failed_since is not None and self.clock() - self.failed_since >= OFFLINE_SECONDS
 
     def tick(self) -> None:
         now = self.clock()
@@ -214,7 +210,10 @@ class Daemon:
             tap = self.bus.read(TAP)
         except I2CError:
             tap = None
-        self.failed_ticks = 0 if tap is not None else self.failed_ticks + 1
+        if tap is not None:
+            self.failed_since = None
+        elif self.failed_since is None:
+            self.failed_since = now
         if tap is not None:
             try:
                 self.handle_tap(tap, now)
@@ -259,15 +258,15 @@ class Daemon:
 
     def show(self) -> None:
         pattern = self.read_indicator()
+        now = self.clock()
         if pattern != self.pattern:
-            self.pattern, self.frame = pattern, 0
+            self.pattern, self.pattern_start = pattern, now
             log(f"status LED: {pattern}")
         if pattern not in PATTERNS:
             self.led.set(False)
             return
-        frames = PATTERNS[pattern][0]
-        self.led.set(frames[self.frame % len(frames)])
-        self.frame += 1
+        frames, seconds = PATTERNS[pattern]
+        self.led.set(frames[int((now - self.pattern_start) / seconds) % len(frames)])
 
 
 def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep) -> None:
@@ -295,7 +294,7 @@ def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep
         while not stop() and not daemon.offline:
             started = clock()
             daemon.tick()
-            pause(max(0.0, daemon.interval - (clock() - started)))
+            pause(max(0.0, TICK - (clock() - started)))
         if daemon.offline:
             log(f"PiSugar3 stopped answering; retrying every {RETRY_OFFLINE:.0f} s", 4)
             reported = True
