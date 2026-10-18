@@ -205,6 +205,7 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 				device: "OpenLolo-4B2C",
 				hostname: "openlolo-4b2c.local",
 				setup_mode: setupMode,
+				mode: !setupMode ? "wifi" : screen === "setup" ? "setup" : "local",
 				bound: screen !== "setup",
 				session,
 				access: {

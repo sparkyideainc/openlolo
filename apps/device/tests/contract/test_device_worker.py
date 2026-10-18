@@ -111,6 +111,10 @@ class FakeManager:
         self.calls.append("search")
         return {"state": "unavailable", "connection": {"state": "waiting_for_device", "searching": True}}
 
+    async def pairing_mode(self, seconds):
+        self.calls.append(("pairing_mode", seconds))
+        return {"state": "unavailable", "connection": {"pairing": seconds > 0}}
+
     async def usb_events(self, since, timeout):
         self.calls.append(("usb_events", since, timeout))
         return {"changes": 1, "serials": ["00008110-000A1B2C3D4E5F60"], "listening": True}
@@ -206,3 +210,18 @@ async def test_worker_search_and_usb_events_ops(runtime):
     for bad in ({"since": "x", "timeout": 1}, {"since": 0, "timeout": 26}, {"since": 0, "timeout": -1}):
         with raises_code("INVALID_REQUEST"):
             await worker.dispatch({"op": "usb_events", **bad})
+
+
+async def test_pairing_mode_op_validates_its_duration(runtime):
+    manager = FakeManager()
+    worker = DeviceWorker(runtime.config, manager)
+    await worker.start()
+    assert (await worker.dispatch({"op": "pairing_mode", "seconds": 120}))["connection"]["pairing"]
+    await worker.dispatch({"op": "pairing_mode", "seconds": 0})
+    for bad in (-1, 121, "60", True, None):
+        with raises_code("INVALID_REQUEST"):
+            await worker.dispatch({"op": "pairing_mode", "seconds": bad})
+    assert [c for c in manager.calls if isinstance(c, tuple) and c[0] == "pairing_mode"] == [
+        ("pairing_mode", 120),
+        ("pairing_mode", 0),
+    ]

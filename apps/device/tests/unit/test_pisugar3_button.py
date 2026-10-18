@@ -156,7 +156,7 @@ def test_board_led_follows_the_indicator_and_the_pisugar_leds_are_never_written(
         daemon.tick()
         clock.sleep(0.5)
     assert led.values == ["0"]  # off once at start, then quiet
-    (tmp / "indicator").write_text("searching\n")
+    (tmp / "indicator").write_text("pairing\n")
     for _ in range(4):
         daemon.tick()
         clock.sleep(0.5)
@@ -171,7 +171,7 @@ def test_board_led_follows_the_indicator_and_the_pisugar_leds_are_never_written(
     clock.sleep(0.5)
     daemon.tick()
     assert led.values[-1] == "1" and led.values[-2] != "1"  # steady on: written once
-    (tmp / "indicator").write_text("searching\n")
+    (tmp / "indicator").write_text("pairing\n")
     daemon.tick()
     count = len(led.values)
     for _ in range(3):
@@ -190,7 +190,7 @@ def test_unwritable_led_does_not_stop_the_button(rig, capsys):
     clock, smbus, daemon, tmp, led = rig
     led.broken = True
     daemon.start()
-    (tmp / "indicator").write_text("searching\n")
+    (tmp / "indicator").write_text("pairing\n")
     for _ in range(3):
         daemon.tick()
         clock.sleep(0.5)

@@ -11,17 +11,24 @@ reads the saved result at the same local hostname. A failed attempt recreates th
 setup button or an unconfigured boot opens a bounded window. Only profiles created by a failed
 attempt may be deleted.
 
+What the owner sees (``mode`` in health) follows from the window and the binding:
+
+    wifi   window closed: the box is on its saved Wi-Fi (or offline)
+    local  window open, a phone is saved: the box broadcasts its own Wi-Fi for that phone
+    setup  window open, no phone saved: first-time setup
+
 Buttons (Lolo Pocket top button: long press = hold, single press = press; Raspberry Pi: 5 s hold):
 
-    IDLE --hold--> SETUP_MODE (pairing mode)        IDLE --press--> one phone search
-    SETUP_MODE --press--> IDLE (pairing cancelled)  SETUP_MODE --hold--> ignored
+    wifi --hold--> local (setup when no phone is saved)   wifi --press--> pairing mode
+    local --press--> wifi                                 local, setup --hold--> ignored
+    setup --press--> ignored                              joining --any--> ignored
 
-Factory reset is a box page action only: the PiSugar3 reports a hold without its length, so a
-button cannot tell a pairing hold from a reset hold (bench 2026-10-18).
+Pairing mode makes the worker look for the saved phone for PAIRING_SECONDS. Factory reset is a
+box page action (the PiSugar3 reports a hold without its length, bench 2026-10-18).
 
-The status LED mirrors one word in ``indicator``, highest first: ``setup`` (setup window open,
-fast blink), ``connected`` (phone connected, steady on), ``searching`` (a phone search window
-is open, slow blink), ``idle`` (off).
+The status LED mirrors one word in ``indicator``, highest first: ``setup`` (window open, fast
+blink), ``connected`` (phone connected, steady on), ``pairing`` (pairing mode, slow blink),
+``idle`` (off; background searches do not light it).
 """
 
 import asyncio
@@ -32,6 +39,7 @@ import re
 import secrets
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from openlolo.domain.errors import OpenLoloError
 
@@ -39,6 +47,8 @@ log = logging.getLogger("openlolo.provisioning")
 
 HANDOFF_READ_SECONDS = 6  # Captive sheet time to show the next address before the AP drops.
 BUTTON_POLL_SECONDS = 0.2  # The daemon acts on release; a fast poll keeps the box's reply immediate.
+PAIRING_SECONDS = 120  # Pairing mode: how long a press makes the worker look for the saved phone.
+RECLAIM_SECONDS = 15  # How often, with the window closed, the mDNS host name is checked.
 
 
 class ProvisioningState(str, enum.Enum):
@@ -62,16 +72,19 @@ class Provisioning:
         clock=time.monotonic,
         button_flag: Path | None = None,
         pair_flag: Path | None = None,
-        search=None,
+        pairing=None,
         indicator: Path | None = None,
         link=None,
+        bound=None,
     ):
         self.config, self.network = config, network
         self.setup_name = config.setup_name or "OpenLolo"
         self.clock = clock
         self.button_flag = button_flag
-        # Top-button press (written by the button daemon): a phone search, or cancels setup mode.
-        self.pair_flag, self.search = pair_flag, search
+        # Top-button press (written by the button daemon): pairing mode, or leaves Local mode.
+        # ``pairing(seconds)`` starts (0 stops) the worker's pairing mode.
+        self.pair_flag, self.pairing = pair_flag, pairing
+        self.bound = bound  # () -> whether a phone is saved; None counts as saved
         self.pair_seen = 0.0
         self.opened_stamp = 0.0  # mtime of the hold that opened setup; older presses never cancel
         # Status LED: ``indicator`` is the file the button daemon reads; ``link`` returns the
@@ -79,6 +92,9 @@ class Provisioning:
         self.indicator, self.link = indicator, link
         self.link_word = "idle"
         self.shown: str | None = None
+        host = urlsplit(config.lan_url).hostname if getattr(config, "lan_url", None) else None
+        self.lan_name = host.removesuffix(".local") if host and host.endswith(".local") else None
+        self.reclaim_at = 0.0
         self.state = ProvisioningState.IDLE if config.provisioning else ProvisioningState.DISABLED
         self.since = clock()
         self.boot = self.since  # run() resets it; tick() may also be driven directly.
@@ -116,9 +132,24 @@ class Provisioning:
         """The setup window is open (also while a join started from it is in progress)."""
         return self.window
 
+    @property
+    def mode(self) -> str:
+        if not self.window:
+            return "wifi"
+        return "local" if self._bound() else "setup"
+
+    def _bound(self) -> bool:
+        if self.bound is None:
+            return True
+        try:
+            return bool(self.bound())
+        except Exception:
+            return True
+
     def health(self) -> dict:
         return {
             "state": self.state.value,
+            "mode": self.mode,
             "since": self.since,
             "reason": self.reason,
             "expires_in": max(0, int(self.expires - self.clock())) if self.expires else None,
@@ -291,6 +322,7 @@ class Provisioning:
         await self._pair_button()
         if network:
             await self._poll_link()
+            await self._reclaim_lan_name(now)
         if network and self.state == ProvisioningState.IDLE and not self.grace_used:
             status = await self.network.status()
             saved = list(status.get("saved") or [])
@@ -302,8 +334,8 @@ class Provisioning:
                 self.grace_used = True  # Online once: never auto-enter again this boot.
 
     async def _setup_button(self) -> bool:
-        """Open setup mode on a new mtime of the setup-button flag. Returns whether the tick
-        should end here."""
+        """A new mtime of the setup-button flag (a hold): open Local mode (Setup mode when no
+        phone is saved). Returns whether the tick should end here."""
         if self.button_flag is None:
             return False
         try:
@@ -313,7 +345,7 @@ class Provisioning:
         if stamp <= self.button_seen:
             return False
         self.button_seen = stamp
-        # Consume the edge-triggered marker so a service restart cannot reopen setup mode from a
+        # Consume the edge-triggered marker so a service restart cannot reopen the window from a
         # stale file left by the last physical press.
         with contextlib.suppress(OSError):
             self.button_flag.unlink()
@@ -321,20 +353,21 @@ class Provisioning:
             try:
                 await self.enter("button")
             except OpenLoloError as exc:
-                log.warning("setup mode not started (button): %s", exc.message)
+                log.warning("local mode not started (button): %s", exc.message)
                 return True
             self.opened_stamp = stamp
+            await self._pairing(0)  # The radio is the box's own network now.
             return True
         if self.state == ProvisioningState.SETUP_MODE:
-            log.info("setup button ignored: setup mode is already open")
+            log.info("hold ignored: %s mode is already on", self.mode)
         else:
-            log.info("setup button ignored: a Wi-Fi join is in progress")
+            log.info("hold ignored: a Wi-Fi join is in progress")
         return True
 
     async def _pair_button(self) -> None:
-        """A new mtime of the pair-button flag: in setup mode it closes setup mode, otherwise one
-        phone search. The flag is consumed like the setup button's, so a restart never replays
-        an old press; a failure is logged."""
+        """A new mtime of the pair-button flag (a press): in Local mode leave it, in Setup mode
+        nothing, otherwise pairing mode. The flag is consumed like the setup button's, so a
+        restart never replays an old press; a failure is logged."""
         if self.pair_flag is None:
             return
         try:
@@ -347,20 +380,41 @@ class Provisioning:
         with contextlib.suppress(OSError):
             self.pair_flag.unlink()
         if self.state in {ProvisioningState.JOINING, ProvisioningState.VERIFYING}:
-            log.info("button press ignored: a Wi-Fi join is in progress")
+            log.info("press ignored: a Wi-Fi join is in progress")
             return
         if self.window:
             if stamp <= self.opened_stamp:
-                return  # Pressed before the hold that opened setup: not a cancel.
-            log.info("setup mode cancelled by a button press")
+                return  # Pressed before the hold that opened the window: not a request to leave.
+            if self.mode == "setup":
+                log.info("press ignored: setup mode stays until a phone is paired")
+                return
+            log.info("local mode ended by a button press")
             await self.finish("button")
             return
-        if self.search is None:
+        await self._pairing(PAIRING_SECONDS)
+
+    async def _pairing(self, seconds: int) -> None:
+        if self.pairing is None:
             return
         try:
-            await self.search()
+            await self.pairing(seconds)
         except Exception as exc:
-            log.warning("phone search not started (button): %s", getattr(exc, "code", type(exc).__name__))
+            log.warning("pairing mode not changed (button): %s", getattr(exc, "code", type(exc).__name__))
+
+    async def _reclaim_lan_name(self, now: float) -> None:
+        """avahi renames the box after it sees its own records during a fast access point stop
+        and start, and the box page stops resolving; take the name back while on the home Wi-Fi."""
+        if self.lan_name is None or self.window or now < self.reclaim_at:
+            return
+        self.reclaim_at = now + RECLAIM_SECONDS
+        reclaim = getattr(self.network, "reclaim_lan_name", None)
+        if reclaim is None:
+            return
+        try:
+            if await reclaim(self.lan_name):
+                log.warning("mDNS host name taken back as %s.local after an avahi rename", self.lan_name)
+        except Exception as exc:
+            log.warning("mDNS host name not taken back: %s", getattr(exc, "message", exc))
 
     async def _poll_link(self) -> None:
         """Phone connection for the status LED; an unreachable worker shows as not connected."""
@@ -372,8 +426,8 @@ class Provisioning:
             connection = {}
         if connection.get("state") == "connected":
             self.link_word = "connected"
-        elif connection.get("searching"):
-            self.link_word = "searching"
+        elif connection.get("pairing"):
+            self.link_word = "pairing"
         else:
             self.link_word = "idle"
 

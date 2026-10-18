@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from openlolo.adapters.system.fake import FakeNetwork
-from openlolo.application.provisioning import Provisioning, ProvisioningState, slug
+from openlolo.application.provisioning import PAIRING_SECONDS, Provisioning, ProvisioningState, slug
 from openlolo.config import Config
 from openlolo.domain.errors import OpenLoloError
 
@@ -210,34 +210,34 @@ async def test_button_flag_opens_the_window(tmp_path):
     assert prov.state == ProvisioningState.SETUP_MODE and len(calls(net, "start_setup_ap")) == 2
 
 
-async def test_pair_button_flag_opens_one_search_per_press(tmp_path):
+async def test_pair_button_flag_starts_pairing_mode_once_per_press(tmp_path):
     import os
 
     net = FakeNetwork(["home"])
     flag = tmp_path / "pair-button"
-    searches = []
+    requests = []
 
-    async def search():
-        searches.append(True)
+    async def pairing(seconds):
+        requests.append(seconds)
         return {}
 
-    prov = Provisioning(config(tmp_path), net, clock=Clock(), pair_flag=flag, search=search)
+    prov = Provisioning(config(tmp_path), net, clock=Clock(), pair_flag=flag, pairing=pairing)
     await prov.tick()
-    assert searches == []
+    assert requests == []
     flag.touch()
     await prov.tick()
     await prov.tick()  # The same press is not replayed.
-    assert searches == [True] and not flag.exists() and prov.state == ProvisioningState.IDLE
+    assert requests == [PAIRING_SECONDS] and not flag.exists() and prov.state == ProvisioningState.IDLE
     flag.touch()
     stamp = prov.pair_seen + 5
     os.utime(flag, (stamp, stamp))
     await prov.tick()
-    assert searches == [True, True]
+    assert requests == [PAIRING_SECONDS, PAIRING_SECONDS]
 
-    async def failing():
+    async def failing(seconds):
         raise OpenLoloError("WORKER_UNAVAILABLE")
 
-    prov.search = failing
+    prov.pairing = failing
     flag.touch()
     os.utime(flag, (stamp + 5, stamp + 5))
     await prov.tick()  # Logged, never raised into the supervisor.
@@ -297,12 +297,13 @@ def press(flag, seconds=[0.0]):
     os.utime(flag, (seconds[0], seconds[0]))
 
 
-def button_rig(tmp_path):
+def button_rig(tmp_path, bound=True):
     clock = Clock()
-    searches = []
+    requests = []
+    saved = [bound]
 
-    async def search():
-        searches.append(True)
+    async def pairing(seconds):
+        requests.append(seconds)
         return {}
 
     prov = Provisioning(
@@ -311,33 +312,46 @@ def button_rig(tmp_path):
         clock=clock,
         button_flag=tmp_path / "setup-button",
         pair_flag=tmp_path / "pair-button",
-        search=search,
+        pairing=pairing,
         indicator=tmp_path / "indicator",
+        bound=lambda: saved[0],
     )
-    return prov, clock, searches
+    prov.saved = saved
+    return prov, clock, requests
 
 
 def shown(tmp_path):
     return (tmp_path / "indicator").read_text().strip()
 
 
-async def test_hold_opens_pairing_and_a_press_cancels_it(tmp_path):
-    prov, clock, searches = button_rig(tmp_path)
+async def test_hold_opens_local_mode_and_a_press_leaves_it(tmp_path):
+    prov, clock, requests = button_rig(tmp_path)
     await prov.tick()
-    assert shown(tmp_path) == "idle"
+    assert shown(tmp_path) == "idle" and prov.health()["mode"] == "wifi"
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert prov.state == ProvisioningState.SETUP_MODE and shown(tmp_path) == "setup"
+    assert prov.health()["mode"] == "local" and shown(tmp_path) == "setup"
+    assert requests == [0]  # Entering Local mode stops pairing mode.
     press(tmp_path / "pair-button")
     await prov.tick()
-    assert prov.state == ProvisioningState.IDLE and prov.reason == "button"
-    assert shown(tmp_path) == "idle" and searches == []  # A cancel is not a search.
+    assert prov.health()["mode"] == "wifi" and prov.reason == "button"
+    assert shown(tmp_path) == "idle" and requests == [0]  # Leaving is not pairing mode.
     press(tmp_path / "pair-button")
     await prov.tick()
-    assert searches == [True] and prov.state == ProvisioningState.IDLE
+    assert requests == [0, PAIRING_SECONDS] and prov.state == ProvisioningState.IDLE
 
 
-async def test_hold_while_pairing_is_ignored(tmp_path):
+async def test_setup_mode_ignores_the_press(tmp_path):
+    prov, clock, requests = button_rig(tmp_path, bound=False)
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert prov.health()["mode"] == "setup" and shown(tmp_path) == "setup"
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert prov.health()["mode"] == "setup" and PAIRING_SECONDS not in requests
+
+
+async def test_hold_while_the_window_is_open_is_ignored(tmp_path):
     prov, clock, _ = button_rig(tmp_path)
     press(tmp_path / "setup-button")
     await prov.tick()
@@ -349,29 +363,29 @@ async def test_hold_while_pairing_is_ignored(tmp_path):
     assert len(calls(prov.network, "start_setup_ap")) == 1
 
 
-async def test_press_older_than_the_opening_hold_does_not_cancel(tmp_path):
+async def test_press_older_than_the_opening_hold_does_not_leave(tmp_path):
     import os
 
-    prov, clock, searches = button_rig(tmp_path)
+    prov, clock, requests = button_rig(tmp_path)
     press(tmp_path / "pair-button")
     stamp = (tmp_path / "pair-button").stat().st_mtime
     press(tmp_path / "setup-button")
-    await prov.tick()  # Opens setup; the older press is read on the next tick.
+    await prov.tick()  # Opens Local mode; the older press is read on the next tick.
     os.utime(tmp_path / "pair-button", (stamp, stamp))
     await prov.tick()
-    assert prov.state == ProvisioningState.SETUP_MODE and searches == []
+    assert prov.health()["mode"] == "local" and PAIRING_SECONDS not in requests
 
 
-async def test_press_cancels_setup_mode_opened_at_boot_or_from_the_page(tmp_path):
+async def test_press_leaves_local_mode_opened_from_the_page(tmp_path):
     prov, clock, _ = button_rig(tmp_path)
-    await prov.enter("no saved network")
+    await prov.enter("api")
     press(tmp_path / "pair-button")
     await prov.tick()
     assert prov.state == ProvisioningState.IDLE and not prov.window
 
 
 async def test_buttons_are_ignored_during_a_join(tmp_path):
-    prov, clock, searches = button_rig(tmp_path)
+    prov, clock, requests = button_rig(tmp_path)
     press(tmp_path / "setup-button")
     await prov.tick()
     prov.state = ProvisioningState.JOINING
@@ -379,12 +393,12 @@ async def test_buttons_are_ignored_during_a_join(tmp_path):
     await prov.tick()
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert prov.state == ProvisioningState.JOINING and prov.window and searches == []
+    assert prov.state == ProvisioningState.JOINING and prov.window and requests == [0]
 
 
 async def test_status_led_follows_the_phone_connection(tmp_path):
     prov, clock, _ = button_rig(tmp_path)
-    health = {"connection": {"state": "disconnected", "searching": False}}
+    health = {"connection": {"state": "disconnected", "searching": True, "pairing": False}}
 
     async def link():
         if health is None:
@@ -393,16 +407,16 @@ async def test_status_led_follows_the_phone_connection(tmp_path):
 
     prov.link = link
     await prov.tick()
-    assert shown(tmp_path) == "idle"
-    health["connection"]["searching"] = True
+    assert shown(tmp_path) == "idle"  # A background search does not light the LED.
+    health["connection"]["pairing"] = True
     await prov.tick()
-    assert shown(tmp_path) == "searching"
-    health["connection"] = {"state": "connected", "searching": False}
+    assert shown(tmp_path) == "pairing"
+    health["connection"] = {"state": "connected", "searching": False, "pairing": False}
     await prov.tick()
     assert shown(tmp_path) == "connected"
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert shown(tmp_path) == "setup"  # Setup mode outranks the connection.
+    assert shown(tmp_path) == "setup"  # The window outranks the connection.
     press(tmp_path / "pair-button")
     await prov.tick()
     assert shown(tmp_path) == "connected"
@@ -410,3 +424,19 @@ async def test_status_led_follows_the_phone_connection(tmp_path):
     health = None
     await prov.tick()
     assert shown(tmp_path) == "idle"
+
+
+async def test_lan_name_is_reclaimed_only_on_home_wifi_and_throttled(tmp_path):
+    clock = Clock()
+    net = FakeNetwork(["home"])
+    prov = Provisioning(config(tmp_path), net, clock=clock)
+    await prov.tick()
+    await prov.tick()  # Within RECLAIM_SECONDS: no second check.
+    assert calls(net, "reclaim_lan_name") == [("reclaim_lan_name", "openlolo-test")]
+    await prov.enter("api")
+    clock.advance(60)
+    await prov.tick()  # The access point owns the radio: leave avahi alone.
+    assert len(calls(net, "reclaim_lan_name")) == 1
+    await prov.exit()
+    await prov.tick()
+    assert len(calls(net, "reclaim_lan_name")) == 2

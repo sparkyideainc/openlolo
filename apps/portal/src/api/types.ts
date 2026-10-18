@@ -11,6 +11,8 @@ export interface SetupStatus {
 	device: string | null;
 	hostname: string;
 	setup_mode: boolean;
+	/** wifi: on the saved Wi-Fi; local: own Wi-Fi for the saved phone; setup: own Wi-Fi, no phone saved. */
+	mode?: "wifi" | "local" | "setup";
 	bound: boolean;
 	session: boolean;
 	/** Who may open the page from this browser, and why not (ADR 0012). */

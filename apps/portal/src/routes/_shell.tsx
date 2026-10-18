@@ -4,6 +4,7 @@ import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { useState } from "react";
 import { useConsents } from "@/api/queries";
 import { InstallSheet, InstallSheetContext } from "@/components/install-sheet";
+import { LocalModeBanner } from "@/components/local-mode-banner";
 import { Shell } from "@/components/shell";
 import { needsInstall } from "@/lib/platform";
 import { ensureSession } from "@/lib/session";
@@ -24,6 +25,7 @@ function ShellRoute() {
 	return (
 		<InstallSheetContext.Provider value={() => setInstall(true)}>
 			<Shell badge={consents.data?.length ?? 0}>
+				<LocalModeBanner />
 				<Outlet />
 				<InstallSheet
 					open={install}

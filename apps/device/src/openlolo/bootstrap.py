@@ -40,9 +40,10 @@ class Runtime:
             self.network,
             button_flag=config.runtime_dir / "setup-button",
             pair_flag=config.runtime_dir / "pair-button",
-            search=device.search,
+            pairing=device.pairing_mode,
             indicator=config.runtime_dir / "indicator",
             link=device.health,
+            bound=lambda: self.bindings.read() is not None,
         )
         self.profiles = ProfileStore(config.state_dir / "apps")
         self.phone = Phone(

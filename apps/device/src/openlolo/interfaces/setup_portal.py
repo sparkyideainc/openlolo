@@ -242,6 +242,7 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
                 "device": runtime.config.setup_name,
                 "hostname": f"{(runtime.config.setup_name or 'openlolo').lower()}.local",
                 "setup_mode": runtime.provisioning.active,
+                "mode": runtime.provisioning.mode,
                 "bound": runtime.bindings.read() is not None,
                 "session": has_session(request),
                 "access": await access(request),

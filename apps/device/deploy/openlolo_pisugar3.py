@@ -7,10 +7,10 @@ ZERO 3W on a PiSugar3). One thread, one tick every 100 ms.
   2026-10-18), so the box acts on release; the fast poll makes that feel immediate. A single
   press touches the pairing flag, long press touches the setup flag (the
   same flag the GPIO backend touches), double press is cleared and ignored. The API decides
-  what a press means (phone search, or cancel setup mode; a hold opens setup mode).
+  what a press means (pairing mode, or leave Local mode; a hold opens Local mode).
 - Status LED: the API writes one word to ``/run/openlolo/indicator``; the daemon mirrors it on
   the Radxa board's green LED (sysfs, ``OPENLOLO_STATUS_LED``): ``setup`` fast blink,
-  ``searching`` slow blink, ``connected`` steady on, ``idle`` off. The PiSugar3's four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
+  ``pairing`` slow blink, ``connected`` steady on, ``idle`` off. The PiSugar3's four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
   writes, so a pattern there was unreadable on USB power (bench 2026-10-18).
 
 The power button keeps the PiSugar3 defaults: this daemon never writes ``0x02``, ``0x03`` or
@@ -41,7 +41,7 @@ TICK = 0.1  # top-button poll: a hold is reported on release, so this is the fel
 GAP = 0.02  # minimum time between two bus accesses
 TRIES = 3
 RETRY_DELAY = 0.05
-DEBOUNCE = 2.0
+DEBOUNCE = {1: 0.5, 3: 2.0}  # per event: presses may come quickly, a hold takes seconds
 OFFLINE_SECONDS = 10.0  # every read failed this long: the board stopped answering
 RETRY_OFFLINE = 30.0
 
@@ -51,7 +51,7 @@ STATUS_LED = "/sys/class/leds/green:heartbeat/brightness"
 # Indicator word -> (LED frames, seconds per frame).
 PATTERNS = {
     "setup": ([True, False], 0.25),  # setup mode, own Wi-Fi on air: fast blink, 2 Hz
-    "searching": ([True, False], 0.5),  # looking for the phone: slow blink, 1 Hz
+    "pairing": ([True, False], 0.5),  # pairing mode, looking for the phone: slow blink, 1 Hz
     "connected": ([True], 1.0),  # phone connected: steady on
 }
 
@@ -230,7 +230,7 @@ class Daemon:
             return
         name = "press" if event == SINGLE else "hold"
         last = self.last_event.get(event)
-        if last is not None and now - last < DEBOUNCE:
+        if last is not None and now - last < DEBOUNCE[event]:
             log(f"top button {name} dropped: {now - last:.1f} s after the previous one")
             return
         self.last_event[event] = now

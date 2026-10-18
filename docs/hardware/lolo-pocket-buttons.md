@@ -9,10 +9,12 @@
 | Power (PiSugar side button, near the LEDs) | Short tap while off | Power on. Needs anti-mistaken touch off (`0x02` bit 3 = 0); the setting survives power-off. |
 | Power | Hold 3 s, then release | Clean shutdown. |
 | Power | Hold 10 s | Force off: immediate power cut. |
-| Top (custom) | Press (`0x08 == 1`) | One phone search for the saved phone (status LED blinks slowly while it looks). In setup mode: cancel setup mode instead. |
-| Top | Hold, then release (`0x08 == 3`) | Setup mode (pairing): the box broadcasts its own Wi-Fi, serves the box page and opens the cable pairing window, 10 min. A different phone on the cable replaces the saved one after Trust. Status LED blinks fast. A hold while setup mode is open does nothing. |
-| Top | Double press (`0x08 == 2`) | Unused. Clear the event and ignore it. |
-| (none) | Factory reset | Box page only (typed box name). The PiSugar3 reports a hold only on release and without its length, so the button cannot tell a setup hold from a reset hold (bench 2026-10-18). |
+| Top (custom) | Press (`0x08 == 1`) | **Pairing mode**: the box looks for the saved phone for up to 2 min (status LED slow blink, steady on once connected). In Local mode: end Local mode. In Setup mode: nothing. |
+| Top | Hold, then release (`0x08 == 3`) | **Local mode** (a phone is saved): the box broadcasts its own Wi-Fi so the phone reaches the box page without a router, 10 min. With no phone saved this is Setup mode. Status LED fast blink. A hold while either is on does nothing. |
+| Top | Double press (`0x08 == 2`) | Unused (counts 2 in the planned reset challenge, `docs/plans/lolo-pocket-modes.md`). |
+| (none) | Factory reset | Box page only. The PiSugar3 reports a hold only on release and without its length, so the button cannot tell one hold from another (bench 2026-10-18). |
+
+Modes: **Wi-Fi mode** = on the saved Wi-Fi; **Local mode** = own Wi-Fi, phone saved; **Setup mode** = own Wi-Fi, no phone saved (new box or after a reset). `/setup/status.mode` reports `wifi`, `local` or `setup`.
 | Back (board) reset | Press | PiSugar hardware reset. Restores PiSugar defaults; software re-applies its settings on the next start. Also recovers a frozen Linux. |
 
 - No watchdog, to keep the workload low.
@@ -22,14 +24,15 @@
 
 | Status LED | Meaning |
 |---|---|
-| Fast blink (2 Hz) | Setup mode: own Wi-Fi on air, box page, cable pairing window |
+| Fast blink (2 Hz) | Local mode or Setup mode: own Wi-Fi on air |
 | Steady on | Phone connected (cable or Wi-Fi) |
-| Slow blink (1 Hz) | Looking for the phone (a search window: press, boot, unlock, request, safety net) |
-| Off | No phone connected and not looking (sleep) |
+| Slow blink (1 Hz) | Pairing mode: a press made the box look for the phone (up to 2 min) |
+| Off | No phone connected and no pairing mode (sleep); background searches do not light it |
 
 - The PiSugar3's four LEDs stay the battery gauge: on USB power the firmware's charge animation overwrites `0xE0` between writes, so a pattern there was unreadable (bench 2026-10-18). `openlolo-board.service` turns the heartbeat trigger off and makes the LED writable for user `openlolo`.
 - Until the power-button work lands, the daemon never writes `0x02`, `0x03` or `0x09`; the power button keeps the PiSugar3 defaults.
-- Raspberry Pi: the GPIO 5 s hold is the same "hold" and opens setup mode; the Pi has no single press, so setup mode closes by timeout, Wi-Fi join or the box page.
+- Raspberry Pi: the GPIO 5 s hold is the same "hold" and opens Local mode; the Pi has no single press, so Local mode closes by timeout, Wi-Fi join or the box page.
+- After the access point stops, avahi can rename the box to `<name>-2.local` (it saw its own records during a fast stop and start). The API checks every 15 s on the home Wi-Fi and takes the name back over avahi's D-Bus `SetHostName` (group `netdev`).
 
 ## Phone search
 
@@ -42,7 +45,7 @@ The phone is found through events. Each event opens at most one 10 s Wi-Fi searc
 | Cable unplugged | One Wi-Fi search. |
 | Wi-Fi session lost | One Wi-Fi search. |
 | Phone advertises on the LAN (avahi) | One Wi-Fi search, at most one per 15 s. An unlocked iPhone advertises at once, so unlocking it reconnects the box. |
-| Top-button press | One Wi-Fi search. |
+| Top-button press | Pairing mode: search windows back to back (at most one starting every 5 s) for up to 2 min or until connected. |
 | AI/MCP request while disconnected | One search. Found: the request proceeds. Not found: `DEVICE_DISCONNECTED`, "Press the top button or plug in the phone". Locked: `PHONE_LOCKED`. |
 | Still disconnected | Safety-net searches 1, 2, then every 5 min, only with a bound phone off the cable and the box on a network (paused in setup mode). Any event above restarts the sequence. |
 | Connected | No search. USB is never probed; Wi-Fi is checked only after 30 s without a request. |

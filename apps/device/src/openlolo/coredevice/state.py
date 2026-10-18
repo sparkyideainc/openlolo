@@ -73,6 +73,7 @@ class Connection:
     product_version: str | None = None
     wifi_paired: bool | None = None
     searching: bool = False  # A search window is open.
+    pairing: bool = False  # Pairing mode (top-button press): windows repeat until connected.
 
     def set(self, state: State, **changes):
         if self.state != state.value:

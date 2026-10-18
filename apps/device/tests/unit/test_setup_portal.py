@@ -82,6 +82,7 @@ async def test_status_is_local_only(portal, runtime):
         status = (await c.get("/setup/status")).json()
         assert status["hostname"] == f"{runtime.config.setup_name.lower()}.local"
         assert status["bound"] is True and status["session"] is False
+        assert status["mode"] == "wifi" and status["setup_mode"] is False
         assert status["access"] == {"cable": True, "setup_ap": False, "paired_phone": False, "allowed": False}
         assert status["usb_pairing"]["state"] in {"idle", "off"}
     async with browser(portal, client=("8.8.8.8", 1234)) as c:
