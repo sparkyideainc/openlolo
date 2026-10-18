@@ -26,7 +26,7 @@ Modes: **Wi-Fi mode** = on the saved Wi-Fi; **Local mode** = own Wi-Fi, phone sa
 |---|---|
 | Fast blink (2 Hz) | Local mode or Setup mode: own Wi-Fi on air |
 | Steady on | Phone connected (cable or Wi-Fi) |
-| Slow blink (1 Hz) | Looking for the phone: any search window (press, boot, cable pulled, phone advertising, request, safety net), shown at least 3 s |
+| Slow blink (1 Hz) | Looking for the phone: any search window (press, boot, cable pulled, phone advertising, request), shown at least 3 s |
 | Off | No phone connected and not looking (sleep) |
 
 - The PiSugar3's four LEDs stay the battery gauge: on USB power the firmware's charge animation overwrites `0xE0` between writes, so a pattern there was unreadable (bench 2026-10-18). `openlolo-board.service` turns the heartbeat trigger off and makes the LED writable for user `openlolo`.
@@ -47,7 +47,7 @@ The phone is found through events. Each event opens at most one 10 s Wi-Fi searc
 | Phone advertises on the LAN (avahi) | One Wi-Fi search, at most one per 15 s. An unlocked iPhone advertises at once, so unlocking it reconnects the box. |
 | Top-button press | One Wi-Fi search. |
 | AI/MCP request while disconnected | One search. Found: the request proceeds. Not found: `DEVICE_DISCONNECTED`, "Press the top button or plug in the phone". Locked: `PHONE_LOCKED`. |
-| Still disconnected | Safety-net searches 1, 2, then every 5 min, only with a bound phone off the cable and the box on a network (paused in setup mode). Any event above restarts the sequence. |
+| Still disconnected | Nothing until one of the events above (top-button press, unlock, request, cable). Timer searches (`search_backoff_seconds`) are off by default since 2026-10-18; a box can turn them on in `box.toml`. |
 | Connected | No search. USB is never probed; Wi-Fi is checked only after 30 s without a request. |
 
 The 10 s bounds discovery only. A connection attempt that starts inside the window may finish after it.

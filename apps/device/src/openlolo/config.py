@@ -37,10 +37,10 @@ class Config(StrictModel):
     search_window_seconds: float = Field(default=10, ge=1, le=60)
     # Safety net while disconnected: one more window after each of these delays (the last
     # repeats), only with a bound phone off the cable and a default route (not in setup mode).
-    # Any event-driven window or a connect starts the sequence again.
-    search_backoff_seconds: list[Annotated[float, Field(ge=0.01, le=3600)]] = Field(
-        default=[60, 120, 300], min_length=1
-    )
+    # Any event-driven window or a connect starts the sequence again. Off by default since
+    # 2026-10-18: the top button, an unlock (the phone advertises), a request, a cable change and
+    # boot each open a window, and a timer would blink the status LED of a sleeping box.
+    search_backoff_seconds: list[Annotated[float, Field(ge=0.01, le=3600)]] = Field(default=[])
     # Follow avahi's view of RemotePairing advertisements: an unlocked phone shows up at once.
     wifi_announcements: bool = True
     # Wi-Fi only: check the session after this long without a request. USB needs no probe; the

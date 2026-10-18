@@ -865,3 +865,17 @@ async def test_boot_search_waits_for_the_network_but_not_for_the_cable(manager, 
         assert manager.windows == 1
     finally:
         await manager.close()
+
+
+async def test_no_timer_searches_by_default(manager, clock):
+    manager = rebuild(manager, clock, network_ok=lambda: True)
+    try:
+        await boot_without_phone(manager)
+        assert manager.config.search_backoff_seconds == []
+        windows = manager.windows
+        clock.advance(30 * 60)
+        await asyncio.sleep(0.3)  # Longer than the 0.05-0.2 s delays that do fire in the safety-net test.
+        await settle(manager, 200)
+        assert manager.windows == windows  # Only events open windows: press, unlock, request.
+    finally:
+        await manager.close()

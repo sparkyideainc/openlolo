@@ -12,7 +12,7 @@
 | **Local mode** | Broadcasts its own Wi-Fi (`OpenLolo-XXXX`) | Yes | Hold | Press, 10 min, a Wi-Fi join from the page | Fast blink |
 | **Setup mode** | Broadcasts its own Wi-Fi | No | New box, after a reset, no saved Wi-Fi at boot, offline after the grace period | Phone paired and Wi-Fi joined | Fast blink |
 
-**Pairing** is not a network mode: a press (outside Local mode) opens one phone search, the same search window the box opens by itself (boot, cable pulled, phone advertising, a request, the safety net). One process, the press only triggers it (user decision 2026-10-18). LED slow blink while any search runs (shown at least 3 s), steady on once connected.
+**Pairing** is not a network mode: a press (outside Local mode) opens one phone search, the same search window the box opens by itself (boot, cable pulled, phone advertising, a request). One process, the press only triggers it (user decision 2026-10-18). LED slow blink while any search runs (shown at least 3 s), steady on once connected.
 
 ### Buttons (PiSugar3 top button)
 
@@ -127,7 +127,7 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
 PR 1:
 - Press in Wi-Fi mode, phone unlocked on the LAN: LED slow blink within 1 s of release, steady on within 30 s.
 - Press with the phone away: slow blink for the window (10 s, at least 3 s), then off.
-- Background search (phone advertising, safety net): the same slow blink.
+- Background search (phone advertising, request): the same slow blink. No timer searches: `search_backoff_seconds` defaults to none (user decision 2026-10-18).
 - Hold: fast blink within 1 s of release; `OpenLolo-XXXX` visible on a phone within 15 s; `/setup/status.mode == "local"`.
 - Press in Local mode: back to Wi-Fi mode, LED to connection state within 2 s; box on the home Wi-Fi within 30 s.
 - Two Local-mode toggles 5 s apart: `openlolo-<id>.local` still resolves afterwards (no `-2`).
