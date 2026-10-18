@@ -156,7 +156,7 @@ function Settings() {
 				footer={
 					setupMode
 						? "The setup window is open: the OpenLolo-XXXX Wi-Fi is on and the box pairs the iPhone on its cable."
-						: "Starts the OpenLolo-XXXX Wi-Fi and USB pairing for ten minutes. Changing settings needs the iPhone on the cable."
+						: "Starts the OpenLolo-XXXX Wi-Fi and USB pairing for ten minutes."
 				}
 			>
 				<LinkRow

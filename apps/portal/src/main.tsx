@@ -25,7 +25,7 @@ installViewportGap();
 const queryClient = new QueryClient({
 	queryCache: new QueryCache({
 		onError: (error) => {
-			// The session ended (unused for 30 days, signed out, or another iPhone paired): go back
+			// The session ended (signed out, or another iPhone paired): go back
 			// through the connect screen.
 			if (
 				isApiError(error) &&
