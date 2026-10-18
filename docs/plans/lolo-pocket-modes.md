@@ -60,7 +60,7 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
   - Any other browser on a bound box: the reset prompt.
 - Flow:
   1. Page shows what is erased (saved phone, Wi-Fi, AI clients and grants) and **Reset**.
-  2. **Challenge:** the box picks a random number from 5 to 8 and the page shows "Press the top button 6 times". The page shows the live count (3 / 6); the LED flashes once per counted press. Window: 30 s.
+  2. **Challenge:** the box picks a random number from 5 to 8 and the page shows "Press the top button until the count reaches 6". The page shows the live count (3 / 6); the LED flashes once per counted press. Window: 30 s. A tap the box did not count is fixed by pressing again; an extra one fails the challenge.
   3. The count reaches exactly N and no further press comes for 2 s: **reset armed** for 30 s. LED triple flash. Page: "Hold the top button to erase. Press once to cancel." with a countdown and **Cancel**.
   4. A hold confirms: reset unit runs, page shows "Resetting", box comes back in Setup mode.
 - The challenge fails (nothing armed; page offers "Try again" with a new number) on: more than N presses, a hold, 30 s without reaching N, page Cancel, API restart.
@@ -74,7 +74,7 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
 - **Fresh events only.** Presses and holds count only if their flag mtime is newer than the challenge start (or the arm time for the hold). Events latched before are dropped.
 - **Press counting needs ordered, uncoalesced events.** The two flag files merge repeated presses into one mtime. The daemon gets a third output: an append-only event log `/run/openlolo/button-events` (one line per event: monotonic sequence number, kind `single|double|long`, daemon receive time). Provisioning reads new lines by sequence number; a gap in sequence numbers fails an open challenge. The flag files stay for the Raspberry Pi backend and older API builds. The log is truncated by the daemon at start and capped at 256 lines (rewritten keeping the last 64).
 - **No debounce while counting.** The daemon's same-event debounce (2 s holds, 0.5 s presses) does not apply to the event log; it applies only to the flag files.
-- **Double press counts 2.** Three or more quick taps: firmware classification unknown (bench step 0). If taps are lost, the page asks for "about one press per second".
+- **Double press counts 2.** Bench 2026-10-18 (firmware v1.3.4, `0x08` polled every 25 ms): fast taps arrive as doubles plus a trailing single, nothing lost (3 fast = double + single, 5 = 2 doubles + single, 8 = 4 doubles); slow taps arrive as singles about 0.9 s apart. A double is reported about 0.6 s after its pair, a single about 1 s after its tap, so the 2 s quiet gap before arming covers the last event.
 - **A hold during a challenge never opens Local mode;** it fails the challenge. A hold while armed confirms. A hold after either closed is a normal hold.
 - **While a challenge is open, presses do not start pairing mode.** If a stranger opened the challenge while the owner presses for a search, the count will not match and nothing happens; the challenge closes after 30 s.
 - **Status reads are cheap and coalesced.** The page polls `/setup/status` every 3 s (existing), every 1 s while a challenge or arm is open. Attempt state (`reset: {stage: challenge|armed|resetting, attempt, target, count, expires_in}`) rides on it; `target` is returned only to the browser that started the attempt (attempt id in its request), so another browser cannot read the number.
@@ -114,7 +114,7 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
 ## Steps
 
 0. **Bench checks (block PR 2):**
-   - Fast taps: what does `0x08` report for 2, 3, 5 and 8 taps at about 3 per second and at about 1 per second (singles, doubles, lost taps)? Decides the counting rule and the page's pace hint.
+   - ~~Fast taps~~ done 2026-10-18: exact counts with double = 2 (see Guards).
    - **Local-mode recognition:** in Local mode, does the saved iPhone advertise `_remotepairing._tcp` on the box's AP (`avahi-browse -rt _remotepairing._tcp` on wlan0 while the phone is joined), and does the authTag match? If not, Local mode falls back to the owner session cookie and the bound-UDID cable; record the result here.
 1. PR 1 provisioning modes + pairing op + indicator + daemon debounce + avahi reclaim, unit tests.
 2. PR 1 portal Local-mode banner and redirect fix; portal tests.
