@@ -20,7 +20,7 @@ def path(tmp_path):
 
 
 def rows(journal):
-    return journal.db.execute("SELECT digest, expires_at FROM portal_sessions").fetchall()
+    return journal.db.execute("SELECT digest, last_used FROM portal_sessions").fetchall()
 
 
 def test_session_survives_restart(path):
@@ -34,16 +34,32 @@ def test_session_survives_restart(path):
     assert PortalSessions(reopened.db, clock).check(None) is False
 
 
-def test_expired_session_fails_and_is_purged_at_next_issue(path):
+def test_unused_session_never_expires(path):
     clock = Clock()
     journal = Journal(path)
     sessions = PortalSessions(journal.db, clock)
     old = sessions.issue()
-    clock.now += setup_portal.SESSION_SECONDS
-    assert sessions.check(old) is False
-    assert len(rows(journal)) == 1  # check never writes
-    fresh = sessions.issue()
-    assert len(rows(journal)) == 1 and sessions.check(fresh) is True
+    clock.now += 5 * 365 * 86_400
+    assert sessions.check(old) is True
+    sessions.issue()
+    assert len(rows(journal)) == 2 and sessions.check(old) is True
+
+
+def test_sessions_from_before_keep_working(path):
+    clock = Clock()
+    journal = Journal(path)
+    journal.db.executescript(
+        "DROP TABLE portal_sessions;"
+        "CREATE TABLE portal_sessions (digest TEXT PRIMARY KEY, expires_at REAL NOT NULL);"
+    )
+    journal.db.execute(
+        "INSERT INTO portal_sessions VALUES (?,?)", (setup_portal._digest("old"), clock.now + 30 * 86_400)
+    )
+    journal.db.commit()
+    journal.close()
+    reopened = Journal(path)
+    assert [row["last_used"] for row in rows(reopened)] == [clock.now]
+    assert PortalSessions(reopened.db, clock).check("old") is True
 
 
 def test_use_renews_the_session_at_most_once_an_hour(path):
@@ -59,20 +75,8 @@ def test_use_renews_the_session_at_most_once_an_hour(path):
     clock.now += setup_portal.SESSION_RENEW_SECONDS
     assert sessions.renew(token) is True
     assert journal.db.total_changes == start + 1
-    assert rows(journal)[0]["expires_at"] == clock.now + setup_portal.SESSION_SECONDS
+    assert rows(journal)[0]["last_used"] == clock.now
     assert sessions.renew(token) is False
-
-
-def test_used_session_outlives_its_first_30_days_and_lapses_when_unused(path):
-    clock = Clock()
-    journal = Journal(path)
-    sessions = PortalSessions(journal.db, clock)
-    token = sessions.issue()
-    for _ in range(3):  # Used every 20 days: never expires.
-        clock.now += 20 * 86_400
-        assert sessions.check(token) is True
-    clock.now += setup_portal.SESSION_SECONDS
-    assert sessions.check(token) is False
 
 
 def test_pairing_a_different_phone_ends_every_session(path):
@@ -98,7 +102,7 @@ def test_revoke_removes_the_row(path):
     assert rows(journal) == [] and sessions.check(token) is False
 
 
-def test_cap_drops_the_oldest(path):
+def test_cap_drops_the_least_recently_used(path):
     clock = Clock()
     journal = Journal(path)
     sessions = PortalSessions(journal.db, clock)
@@ -109,6 +113,10 @@ def test_cap_drops_the_oldest(path):
     assert len(rows(journal)) == setup_portal.SESSION_LIMIT
     assert not any(sessions.check(t) for t in tokens[:3])
     assert all(sessions.check(t) for t in tokens[3:])
+    clock.now += setup_portal.SESSION_RENEW_SECONDS
+    assert sessions.renew(tokens[3]) is True  # The oldest, used again, is kept over newer ones.
+    sessions.issue()
+    assert sessions.check(tokens[3]) is True and sessions.check(tokens[4]) is False
 
 
 def test_token_never_stored(path):

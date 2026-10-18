@@ -135,14 +135,15 @@ async def test_the_phone_must_be_on_the_cable(portal, runtime):
         assert refused.status_code == 403 and refused.json()["error"]["code"] == "CABLE_REQUIRED"
 
 
-async def test_reconfiguration_needs_the_cable_but_pause_does_not(portal, runtime):
+async def test_a_session_changes_settings_without_the_cable(portal, runtime):
     async with browser(portal) as c:
         await c.post("/setup/session", headers=WRITE)
         unplug(runtime)
         assert (await c.get("/app/status")).status_code == 200  # Reading keeps working
         assert (await c.post("/app/pause", json={}, headers=WRITE)).status_code == 200
-        scan = await c.post("/app/network/scan", json={}, headers=WRITE)
-        assert scan.status_code == 403 and scan.json()["error"]["code"] == "CABLE_REQUIRED"
+        assert (await c.post("/app/network/scan", json={}, headers=WRITE)).status_code == 200
+        refused = await c.post("/setup/session", headers=WRITE)  # A new session still needs it
+        assert refused.status_code == 403 and refused.json()["error"]["code"] == "CABLE_REQUIRED"
 
 
 async def test_phone_address_is_refreshed_on_a_miss(portal, runtime):
@@ -154,12 +155,12 @@ async def test_phone_address_is_refreshed_on_a_miss(portal, runtime):
         assert (await c.get("/setup/status")).json()["access"]["allowed"] is True  # Refreshed on miss
 
 
-async def test_session_expires(portal, runtime, clock):
+async def test_session_never_expires(portal, runtime, clock):
     async with browser(portal) as c:
         await c.post("/setup/session", headers=WRITE)
+        unplug(runtime)
+        clock.now += 5 * 365 * 86_400
         assert (await c.get("/setup/status")).json()["session"] is True
-        clock.now += setup_portal.SESSION_SECONDS + 1
-        assert (await c.get("/setup/status")).json()["session"] is False
 
 
 async def test_session_survives_portal_restart(portal, runtime, web, clock):
@@ -174,7 +175,7 @@ async def test_session_survives_portal_restart(portal, runtime, web, clock):
 async def test_session_renewal_resends_the_cookie(portal, runtime, clock):
     async with browser(portal) as c:
         opened = await c.post("/setup/session", headers=WRITE)
-        assert f"Max-Age={setup_portal.SESSION_SECONDS}" in opened.headers["set-cookie"]
+        assert f"Max-Age={setup_portal.COOKIE_SECONDS}" in opened.headers["set-cookie"]
         clock.now += 60
         assert "set-cookie" not in (await c.get("/app/status")).headers  # Within the hour: no write
         clock.now += setup_portal.SESSION_RENEW_SECONDS
@@ -182,11 +183,8 @@ async def test_session_renewal_resends_the_cookie(portal, runtime, clock):
         assert renewed.status_code == 200
         assert len(renewed.headers.get_list("content-length")) <= 1
         cookie = renewed.headers["set-cookie"]
-        assert cookie.startswith(f"{SESSION_COOKIE}=") and f"Max-Age={setup_portal.SESSION_SECONDS}" in cookie
+        assert cookie.startswith(f"{SESSION_COOKIE}=") and f"Max-Age={setup_portal.COOKIE_SECONDS}" in cookie
         assert "HttpOnly" in cookie and "SameSite=strict" in cookie
-        clock.now += setup_portal.SESSION_SECONDS - 1  # Renewed: still signed in near the old end.
-        unplug(runtime)
-        assert (await c.get("/setup/status")).json()["session"] is True
 
 
 async def test_rebinding_another_phone_signs_the_page_out(portal, runtime):
