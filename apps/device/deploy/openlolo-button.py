@@ -4,7 +4,7 @@
 OPENLOLO_BUTTON_BACKEND picks the hardware:
 - ``gpio`` (default, Raspberry Pi): hold the button on BCM pin 17 for five seconds. The only
   side effect is touching the setup flag the API's provisioning supervisor watches.
-- ``pisugar3`` (Lolo Pocket): PiSugar3 top button and LEDs over I2C; see
+- ``pisugar3`` (Lolo Pocket): PiSugar3 top button over I2C, status on the board LED; see
   ``openlolo_pisugar3.py`` next to this file.
 
 The API decides what a hold means: setup mode, then a reset armed, then the reset confirmed.

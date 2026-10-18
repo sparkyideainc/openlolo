@@ -14,8 +14,8 @@ attempt may be deleted.
 The setup button (long press on the Lolo Pocket's top button, 5 s hold on the Raspberry Pi) also
 drives the factory reset, in two steps so one press can never erase the box:
 
-    IDLE --hold--> SETUP_MODE --hold--> reset armed (10 s) --hold--> factory reset
-                                         reset armed --press | 10 s | setup ends--> SETUP_MODE
+    IDLE --hold--> SETUP_MODE --hold--> reset armed (20 s) --hold--> factory reset
+                                         reset armed --press | 20 s | setup ends--> SETUP_MODE
 
 The state is mirrored as one word in ``indicator`` (idle, setup, reset_armed, resetting) for the
 button daemon's LEDs.
@@ -35,7 +35,7 @@ from openlolo.domain.errors import OpenLoloError
 log = logging.getLogger("openlolo.provisioning")
 
 HANDOFF_READ_SECONDS = 6  # Captive sheet time to show the next address before the AP drops.
-RESET_ARM_SECONDS = 10  # A second hold within this time after arming confirms the reset.
+RESET_ARM_SECONDS = 20  # A second hold within this time after arming confirms the reset.
 
 
 class ProvisioningState(str, enum.Enum):
@@ -290,7 +290,7 @@ class Provisioning:
         now = self.clock()
         if self.reset_armed_until is not None and (now >= self.reset_armed_until or not self.window):
             self.reset_armed_until = None
-            log.info("factory reset disarmed")
+            log.info("factory reset disarmed: %s", "setup mode ended" if not self.window else "timed out")
         if (
             self.window
             and self.state == ProvisioningState.SETUP_MODE

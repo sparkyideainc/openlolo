@@ -344,8 +344,8 @@ async def test_hold_hold_confirms_the_factory_reset(tmp_path):
     assert prov.reset.calls == 0
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert prov.health()["reset_armed_in"] == 10 and shown(tmp_path) == "reset_armed"
-    clock.advance(9)
+    assert prov.health()["reset_armed_in"] == 20 and shown(tmp_path) == "reset_armed"
+    clock.advance(19)
     press(tmp_path / "setup-button")
     await prov.tick()
     assert prov.reset.calls == 1 and prov.resetting and shown(tmp_path) == "resetting"
@@ -360,12 +360,12 @@ async def test_armed_reset_times_out_and_the_next_hold_arms_again(tmp_path):
     await prov.tick()
     press(tmp_path / "setup-button")
     await prov.tick()
-    clock.advance(10)
+    clock.advance(20)
     await prov.tick()
     assert prov.health()["reset_armed_in"] is None and shown(tmp_path) == "setup"
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert prov.reset.calls == 0 and prov.health()["reset_armed_in"] == 10
+    assert prov.reset.calls == 0 and prov.health()["reset_armed_in"] == 20
 
 
 async def test_press_cancels_an_armed_reset_without_a_search(tmp_path):
@@ -422,7 +422,7 @@ async def test_arming_keeps_setup_mode_open_past_the_arm_window(tmp_path):
     clock.advance(595)
     press(tmp_path / "setup-button")
     await prov.tick()
-    clock.advance(8)  # Past the 600 s setup timeout, inside the arm window.
+    clock.advance(15)  # Past the 600 s setup timeout, inside the arm window.
     await prov.tick()
     assert prov.state == ProvisioningState.SETUP_MODE
     press(tmp_path / "setup-button")

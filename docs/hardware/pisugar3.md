@@ -74,7 +74,7 @@ Reference notes for the PiSugar3 UPS board used in the Lolo Pocket (Radxa ZERO 3
 | `0x40` | 7 | R/W | - | Scheduled power-on (alarm) enable |
 | `0x44`-`0x47` | all | R/W | - | Alarm: weekday repeat (`0x44`), hour/min/sec (`0x45`-`0x47`) |
 | `0x50` | all | R/W | `0xD7` | I2C address, `0x03`-`0x77`, even parity in bit 7 |
-| `0xE0` | 3-0 | R/W | - | LED control, one bit per LED (1 on). Non-exclusive: the firmware also drives the LEDs, so a pattern must be rewritten periodically |
+| `0xE0` | 3-0 | R/W | - | LED control, one bit per LED (1 on). Non-exclusive: the firmware also drives the LEDs. On USB power its charge animation (`0x07, 0x0f, 0x00, 0x01, 0x03`, about every 0.4 s) overwrites any pattern, so OpenLolo leaves `0xE0` alone and uses the board LED |
 | `0xE2` | - | R | - | Firmware version |
 
 Notes:

@@ -30,6 +30,20 @@ class Clock:
         self.now += seconds
 
 
+class FakeLed:
+    """Records each value written to the sysfs brightness file; ``broken`` makes writes fail."""
+
+    def __init__(self, tmp_path):
+        self.path = tmp_path / "brightness"
+        self.broken = False
+        self.values: list[str] = []
+
+    def write_text(self, value):
+        if self.broken:
+            raise PermissionError(13, "Permission denied")
+        self.values.append(value)
+
+
 class FakeSMBus:
     """Register file of the PiSugar3 MCU (bench snapshot) that fails a share of accesses."""
 
@@ -79,22 +93,22 @@ def rig(tmp_path):
     clock = Clock()
     smbus = FakeSMBus(clock)
     bus = ps.Bus(smbus, clock=clock, sleep=clock.sleep)
+    led = FakeLed(tmp_path)
+    status = ps.StatusLed(led.path)
+    status.path = led
     daemon = ps.Daemon(
         bus,
         setup_flag=tmp_path / "setup-button",
         pair_flag=tmp_path / "pair-button",
         indicator=tmp_path / "indicator",
+        led=status,
         clock=clock,
     )
-    return clock, smbus, daemon, tmp_path
-
-
-def leds(smbus):
-    return [value for register, value in smbus.writes if register == 0xE0]
+    return clock, smbus, daemon, tmp_path, led
 
 
 def test_stale_event_at_start_is_cleared_without_a_flag(rig):
-    clock, smbus, daemon, tmp = rig
+    clock, smbus, daemon, tmp, led = rig
     smbus.tap(ps.LONG)
     daemon.start()
     assert smbus.regs[0x08] & 0x03 == 0
@@ -102,7 +116,7 @@ def test_stale_event_at_start_is_cleared_without_a_flag(rig):
 
 
 def test_press_and_hold_touch_their_flags_double_is_ignored(rig):
-    clock, smbus, daemon, tmp = rig
+    clock, smbus, daemon, tmp, led = rig
     daemon.start()
     smbus.tap(ps.SINGLE)
     daemon.tick()
@@ -118,8 +132,8 @@ def test_press_and_hold_touch_their_flags_double_is_ignored(rig):
     assert smbus.regs[0x08] & 0x03 == 0 and not (tmp / "pair-button").exists()
 
 
-def test_repeat_within_debounce_is_dropped(rig):
-    clock, smbus, daemon, tmp = rig
+def test_repeat_within_debounce_is_dropped_and_logged(rig, capsys):
+    clock, smbus, daemon, tmp, led = rig
     daemon.start()
     smbus.tap(ps.LONG)
     daemon.tick()
@@ -128,44 +142,65 @@ def test_repeat_within_debounce_is_dropped(rig):
     smbus.tap(ps.LONG)
     daemon.tick()
     assert not (tmp / "setup-button").exists()
+    assert "top button hold dropped" in capsys.readouterr().out
     clock.sleep(2)
     smbus.tap(ps.LONG)
     daemon.tick()  # A confirming hold after the debounce goes through.
     assert (tmp / "setup-button").exists()
 
 
-def test_idle_writes_nothing_and_patterns_follow_the_indicator(rig):
-    clock, smbus, daemon, tmp = rig
+def test_board_led_follows_the_indicator_and_the_pisugar_leds_are_never_written(rig):
+    clock, smbus, daemon, tmp, led = rig
     daemon.start()
     for _ in range(4):
         daemon.tick()
         clock.sleep(0.5)
-    assert smbus.writes == [] and daemon.interval == ps.TICK
+    assert led.values == ["0"] and daemon.interval == ps.TICK  # off once at start, then quiet
     (tmp / "indicator").write_text("setup\n")
     for _ in range(4):
         daemon.tick()
         clock.sleep(0.5)
-    assert leds(smbus) == [0x3F, 0x30, 0x3F, 0x30]  # bits 4-7 kept as read
+    assert led.values[1:] == ["1", "0", "1", "0"]
     (tmp / "indicator").write_text("reset_armed\n")
     daemon.tick()
     assert daemon.interval == ps.FAST_TICK
     (tmp / "indicator").write_text("resetting\n")
     daemon.tick()
+    count = len(led.values)
     daemon.tick()
-    assert leds(smbus)[-2:] == [0x3F, 0x3F]
-    count = len(smbus.writes)
+    assert led.values[-1] == "1" and len(led.values) == count  # steady: no rewrite
     (tmp / "indicator").write_text("idle\n")
     daemon.tick()
     daemon.tick()
-    assert len(smbus.writes) == count  # the firmware's battery gauge takes the LEDs back
+    assert led.values[-1] == "0" and len(led.values) == count + 1
+    assert not any(register == 0xE0 for register, _ in smbus.writes)
+
+
+def test_unwritable_led_does_not_stop_the_button(rig, capsys):
+    clock, smbus, daemon, tmp, led = rig
+    led.broken = True
+    daemon.start()
+    (tmp / "indicator").write_text("setup\n")
+    for _ in range(3):
+        daemon.tick()
+        clock.sleep(0.5)
+    smbus.tap(ps.LONG)
+    daemon.tick()
+    assert (tmp / "setup-button").exists()
+    assert capsys.readouterr().out.count("status LED not written") == 1
+    led.broken = False
+    clock.sleep(0.5)
+    daemon.tick()
+    daemon.tick()
+    assert led.values in (["1", "0"], ["0", "1"])  # recovers on the next writes
 
 
 def test_unknown_or_missing_indicator_is_idle(rig):
-    clock, smbus, daemon, tmp = rig
+    clock, smbus, daemon, tmp, led = rig
     daemon.start()
     (tmp / "indicator").write_text("party\n")
     daemon.tick()
-    assert daemon.pattern == "idle" and smbus.writes == []
+    assert daemon.pattern == "idle" and led.values == ["0"]
     (tmp / "indicator").write_text("setup\n")
     daemon.tick()
     (tmp / "indicator").unlink()
@@ -182,6 +217,7 @@ def test_never_writes_power_registers_on_a_flaky_bus(tmp_path):
         setup_flag=tmp_path / "setup-button",
         pair_flag=tmp_path / "pair-button",
         indicator=tmp_path / "indicator",
+        led=ps.StatusLed(tmp_path / "brightness"),
         clock=clock,
     )
     daemon.start()
@@ -210,6 +246,7 @@ def test_serve_retries_a_missing_board_then_runs(tmp_path):
             setup_flag=tmp_path / "s",
             pair_flag=tmp_path / "p",
             indicator=tmp_path / "i",
+            led=ps.StatusLed(tmp_path / "brightness"),
             clock=clock,
         )
         original = daemon.tick

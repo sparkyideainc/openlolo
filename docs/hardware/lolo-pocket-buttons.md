@@ -10,17 +10,17 @@
 | Power | Hold 3 s, then release | Clean shutdown. |
 | Power | Hold 10 s | Force off: immediate power cut. |
 | Top (custom) | Press (`0x08 == 1`) | One phone search for the saved phone. While a reset is armed: cancel it, no search. |
-| Top | Hold (`0x08 == 3`) | Pairing mode = setup mode: setup access point, box page and cable pairing window, 10 min. A different phone on the cable replaces the saved one after Trust. LEDs blink 1 Hz. |
-| Top | Hold again, in pairing mode | Reset armed for 10 s; LEDs blink fast. Nothing is erased yet. |
-| Top | Hold again, within the 10 s | Factory reset (same unit as the box page reset); LEDs all on. |
+| Top | Hold (`0x08 == 3`) | Pairing mode = setup mode: setup access point, box page and cable pairing window, 10 min. A different phone on the cable replaces the saved one after Trust. Board status LED blinks 1 Hz. |
+| Top | Hold again, in pairing mode | Reset armed for 20 s; board status LED blinks 2 Hz. Nothing is erased yet. |
+| Top | Hold again, within the 20 s | Factory reset (same unit as the box page reset); board status LED steady on. |
 | Top | Double press (`0x08 == 2`) | Unused. Clear the event and ignore it. |
 | Back (board) reset | Press | PiSugar hardware reset. Restores PiSugar defaults; software re-applies its settings on the next start. Also recovers a frozen Linux. |
 
 - No watchdog, to keep the workload low.
 - Top-button events arrive about 1 s after the press. A stale event can be latched at boot: clear it at start without acting on it.
-- The button daemon only turns events into flag files and mirrors `/run/openlolo/indicator` (idle, setup, reset_armed, resetting) on the LEDs; the API decides what a press means. In idle the daemon stops writing `0xE0` and the firmware's battery gauge shows.
+- The button daemon only turns events into flag files and mirrors `/run/openlolo/indicator` (idle, setup, reset_armed, resetting) on the Radxa board's green LED (`/sys/class/leds/green:heartbeat`, off in idle); the API decides what a press means. The PiSugar3's four LEDs stay the battery gauge: on USB power the firmware's charge animation overwrites `0xE0` between writes, so a pattern there was unreadable (bench 2026-10-18). `openlolo-board.service` turns the heartbeat trigger off and makes the LED writable for user `openlolo`.
 - Until the power-button work lands, the daemon never writes `0x02`, `0x03` or `0x09`; the power button keeps the PiSugar3 defaults.
-- Raspberry Pi: the GPIO 5 s hold is the same "hold", so the same arm and confirm apply; a Pi reset can only be cancelled by the 10 s timeout.
+- Raspberry Pi: the GPIO 5 s hold is the same "hold", so the same arm and confirm apply; a Pi reset can only be cancelled by the 20 s timeout.
 
 ## Phone search
 

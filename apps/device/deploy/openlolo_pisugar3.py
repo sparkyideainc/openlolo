@@ -1,13 +1,16 @@
-"""PiSugar3 backend of the button daemon: top button and LED feedback.
+"""PiSugar3 backend of the button daemon: top button and status LED.
 
 Loaded by ``openlolo-button.py`` when ``OPENLOLO_BUTTON_BACKEND=pisugar3`` (Lolo Pocket: Radxa
-ZERO 3W on a PiSugar3). One thread, one tick every 500 ms (250 ms while the LEDs flash fast).
+ZERO 3W on a PiSugar3). One thread, one tick every 500 ms (250 ms while the status LED flashes
+fast).
 
 - Top button: single press touches the pairing flag, long press touches the setup flag (the
   same flag the GPIO backend touches), double press is cleared and ignored. The API decides
   what a press means (phone search, setup mode, reset arm and confirm).
-- LEDs: the API writes one word to ``/run/openlolo/indicator``; the daemon mirrors it on the
-  four LEDs. ``idle`` stops writing, so the firmware's battery gauge shows again.
+- Status LED: the API writes one word to ``/run/openlolo/indicator``; the daemon mirrors it on
+  the Radxa board's green LED (sysfs, ``OPENLOLO_STATUS_LED``). ``idle`` is off. The PiSugar3's
+  four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
+  writes, so a pattern there was unreadable on USB power (bench 2026-10-18).
 
 The power button keeps the PiSugar3 defaults: this daemon never writes ``0x02``, ``0x03`` or
 ``0x09``. Soft mode without the power-button code would leave the power button unable to turn
@@ -17,8 +20,6 @@ Bench facts this relies on (see docs/hardware/pisugar3.md):
 - Back-to-back I2C accesses fail ~18%; accesses are spaced 20 ms and retried 3 times 50 ms apart,
   and every write is unlocked (``0x0B = 0x29``) first.
 - A stale top-button event can be latched at boot; it is cleared at start without acting on it.
-- ``0xE0`` LED control is non-exclusive: the firmware also drives the LEDs, so a pattern is
-  rewritten every tick.
 """
 
 import os
@@ -30,8 +31,6 @@ ADDRESS = 0x57
 UNLOCK_REG, UNLOCK = 0x0B, 0x29
 
 TAP = 0x08  # bits 0-1: 1 single, 2 double, 3 long
-LEDS = 0xE0  # bits 0-3: one LED each, 1 on
-LED_BITS = 0x0F
 FIRMWARE = 0xE2  # ASCII version string, one byte per register
 FIRMWARE_MAX = 16
 
@@ -46,11 +45,14 @@ DEBOUNCE = 2.0
 OFFLINE_TICKS = 20  # every read failed for 10 s: the board stopped answering
 RETRY_OFFLINE = 30.0
 
+# The Radxa board LED; openlolo-board.sh turns its heartbeat off and makes it group-writable.
+STATUS_LED = "/sys/class/leds/green:heartbeat/brightness"
+
 # Indicator word -> (LED frames cycled one per tick, tick seconds).
 PATTERNS = {
-    "setup": ([LED_BITS, 0], TICK),  # 1 Hz
-    "reset_armed": ([LED_BITS, 0], FAST_TICK),  # 2 Hz
-    "resetting": ([LED_BITS], TICK),  # all on
+    "setup": ([True, False], TICK),  # 1 Hz
+    "reset_armed": ([True, False], FAST_TICK),  # 2 Hz
+    "resetting": ([True], TICK),  # steady on
 }
 
 
@@ -119,10 +121,28 @@ class Bus:
 
         self._retry(attempt, f"write 0x{register:02x}=0x{value:02x}")
 
-    def put(self, register: int, value: int) -> None:
-        """Unlock and write without a read-back, for registers the firmware also writes."""
-        self._put(UNLOCK_REG, UNLOCK)
-        self._put(register, value)
+
+class StatusLed:
+    """One sysfs LED (``.../brightness``); writes only on change, logs a failure once."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.on: bool | None = None
+        self.failed = False
+
+    def set(self, on: bool) -> None:
+        if on == self.on:
+            return
+        try:
+            self.path.write_text("1" if on else "0")
+        except OSError as exc:
+            if not self.failed:
+                log(f"status LED not written ({exc}); LED feedback off", 4)
+                self.failed = True
+            self.on = None
+            return
+        self.on = on
+        self.failed = False
 
 
 def touch(flag: Path) -> None:
@@ -131,8 +151,17 @@ def touch(flag: Path) -> None:
 
 
 class Daemon:
-    def __init__(self, bus: Bus, *, setup_flag: Path, pair_flag: Path, indicator: Path, clock=time.monotonic):
-        self.bus, self.clock = bus, clock
+    def __init__(
+        self,
+        bus: Bus,
+        *,
+        setup_flag: Path,
+        pair_flag: Path,
+        indicator: Path,
+        led: StatusLed,
+        clock=time.monotonic,
+    ):
+        self.bus, self.led, self.clock = bus, led, clock
         self.setup_flag, self.pair_flag, self.indicator = setup_flag, pair_flag, indicator
         self.firmware = None
         self.last_event: dict[int, float] = {}
@@ -141,7 +170,6 @@ class Daemon:
         self.indicator_word = "idle"
         self.pattern = "idle"
         self.frame = 0
-        self.led_high = 0  # bits 4-7 of 0xE0 as read when a pattern starts, written back unchanged
 
     # Start-up --------------------------------------------------------------------------------
 
@@ -155,6 +183,7 @@ class Daemon:
         self.failed_ticks = 0
         self.indicator_stamp = None
         self.pattern = "idle"
+        self.led.set(False)
         log(f"PiSugar3 top button ready (firmware {self.firmware or 'unknown'})")
 
     def read_firmware(self):
@@ -200,15 +229,17 @@ class Daemon:
         self.bus.write(TAP, tap & 0xFC, 0x03)
         if event == DOUBLE:
             return
+        name = "press" if event == SINGLE else "hold"
         last = self.last_event.get(event)
         if last is not None and now - last < DEBOUNCE:
+            log(f"top button {name} dropped: {now - last:.1f} s after the previous one")
             return
         self.last_event[event] = now
         flag = self.pair_flag if event == SINGLE else self.setup_flag
         touch(flag)
-        log(f"top button {'press' if event == SINGLE else 'hold'}; flag {flag} touched")
+        log(f"top button {name}; flag {flag} touched")
 
-    # LEDs ------------------------------------------------------------------------------------
+    # Status LED ------------------------------------------------------------------------------
 
     def read_indicator(self) -> str:
         """The API's indicator word; re-read only when the file changed."""
@@ -230,21 +261,13 @@ class Daemon:
         pattern = self.read_indicator()
         if pattern != self.pattern:
             self.pattern, self.frame = pattern, 0
-            if pattern in PATTERNS:
-                try:
-                    self.led_high = self.bus.read(LEDS) & ~LED_BITS & 0xFF
-                except I2CError:
-                    self.led_high = 0
-            log(f"LEDs: {pattern}")
+            log(f"status LED: {pattern}")
         if pattern not in PATTERNS:
-            return  # idle: no writes, the firmware's battery gauge shows
+            self.led.set(False)
+            return
         frames = PATTERNS[pattern][0]
-        bits = frames[self.frame % len(frames)]
+        self.led.set(frames[self.frame % len(frames)])
         self.frame += 1
-        try:
-            self.bus.put(LEDS, self.led_high | bits)
-        except I2CError:
-            pass  # The next tick rewrites the LEDs anyway.
 
 
 def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep) -> None:
@@ -286,6 +309,7 @@ def main(stop) -> int:
         print("python3-smbus2 is not installed; PiSugar3 top button disabled", file=sys.stderr)
         return 0
     bus_number = int(os.environ.get("OPENLOLO_I2C_BUS", "3"))
+    led = StatusLed(Path(os.environ.get("OPENLOLO_STATUS_LED", STATUS_LED)))
     run_dir = Path(os.environ.get("OPENLOLO_RUN_DIR", "/run/openlolo"))
     opened = []
 
@@ -302,11 +326,13 @@ def main(stop) -> int:
             setup_flag=Path(os.environ.get("OPENLOLO_BUTTON_FLAG", run_dir / "setup-button")),
             pair_flag=Path(os.environ.get("OPENLOLO_PAIR_FLAG", run_dir / "pair-button")),
             indicator=run_dir / "indicator",
+            led=led,
         )
 
     try:
         serve(open_bus, factory, stop)
     finally:
+        led.set(False)
         while opened:
             opened.pop().close()
     return 0
