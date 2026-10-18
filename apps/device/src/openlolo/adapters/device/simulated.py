@@ -222,9 +222,6 @@ class SimulatedDevice:
     async def search(self):
         return await self.health()
 
-    async def pairing_mode(self, seconds):
-        return await self.health()
-
     async def usb_events(self, since, timeout):
         # The simulated cable never changes, so a poll for news simply runs out.
         if since is not None:

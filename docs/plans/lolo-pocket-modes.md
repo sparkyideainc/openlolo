@@ -12,13 +12,13 @@
 | **Local mode** | Broadcasts its own Wi-Fi (`OpenLolo-XXXX`) | Yes | Hold | Press, 10 min, a Wi-Fi join from the page | Fast blink |
 | **Setup mode** | Broadcasts its own Wi-Fi | No | New box, after a reset, no saved Wi-Fi at boot, offline after the grace period | Phone paired and Wi-Fi joined | Fast blink |
 
-**Pairing mode** is not a network mode: a press (outside Local mode) makes the box actively look for the saved phone on the network for up to 2 minutes, or until it connects. LED slow blink, steady on once connected.
+**Pairing** is not a network mode: a press (outside Local mode) opens one phone search, the same search window the box opens by itself (boot, cable pulled, phone advertising, a request, the safety net). One process, the press only triggers it (user decision 2026-10-18). LED slow blink while any search runs (shown at least 3 s), steady on once connected.
 
 ### Buttons (PiSugar3 top button)
 
 | Gesture | Wi-Fi mode | Local mode | Setup mode | Reset challenge open | Reset armed (30 s) |
 |---|---|---|---|---|---|
-| Press | Pairing mode (2 min search) | Leave Local mode | Ignored | Counts 1 | Cancel the reset |
+| Press | One phone search | Leave Local mode | Ignored | Counts 1 | Cancel the reset |
 | Double press | Ignored | Ignored | Ignored | Counts 2 | Cancel the reset |
 | Hold, then release | Local mode | Ignored | Ignored | Fails the challenge | **Confirm the reset** |
 
@@ -33,10 +33,10 @@ Holds act on release (the firmware reports no hold length; see `lolo-pocket-top-
 | Steady on | Reset running | 1 |
 | Fast blink, 2 Hz | Local mode or Setup mode | 2 |
 | Steady on | Phone connected | 3 |
-| Slow blink, 1 Hz | Pairing mode (user-started search) | 4 |
+| Slow blink, 1 Hz | Any phone search (pressed or background), at least 3 s | 4 |
 | Off | Not connected, not searching | 5 |
 
-Background safety-net searches do not blink (the LED stays off while the box sleeps).
+Every search blinks, background ones included, so the box shows when it is looking.
 
 ### Who gets the box page (B: the saved phone's identity is the key)
 
@@ -76,9 +76,8 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
 - **No debounce while counting.** The daemon's same-event debounce (2 s holds, 0.5 s presses) does not apply to the event log; it applies only to the flag files.
 - **Double press counts 2.** Bench 2026-10-18 (firmware v1.3.4, `0x08` polled every 25 ms): fast taps arrive as doubles plus a trailing single, nothing lost (3 fast = double + single, 5 = 2 doubles + single, 8 = 4 doubles); slow taps arrive as singles about 0.9 s apart. A double is reported about 0.6 s after its pair, a single about 1 s after its tap, so the 2 s quiet gap before arming covers the last event.
 - **A hold during a challenge never opens Local mode;** it fails the challenge. A hold while armed confirms. A hold after either closed is a normal hold.
-- **While a challenge is open, presses do not start pairing mode.** If a stranger opened the challenge while the owner presses for a search, the count will not match and nothing happens; the challenge closes after 30 s.
+- **While a challenge is open, presses do not start a phone search.** If a stranger opened the challenge while the owner presses for a search, the count will not match and nothing happens; the challenge closes after 30 s.
 - **Status reads are cheap and coalesced.** The page polls `/setup/status` every 3 s (existing), every 1 s while a challenge or arm is open. Attempt state (`reset: {stage: challenge|armed|resetting, attempt, target, count, expires_in}`) rides on it; `target` is returned only to the browser that started the attempt (attempt id in its request), so another browser cannot read the number.
-- **Pairing search is bounded.** One 2 min search at a time; a second press joins it (never extends). It ends on connect, on Local mode, on cable attach, or at 2 min. It is a series of the existing 10 s windows (`manager.search`), so each window keeps today's caps.
 - **Phone recognition re-browse stays throttled** (once per 5 s, 30 s cache, `phone.py:267-289`). A non-owner request never triggers more than that.
 
 ## Work
@@ -87,10 +86,9 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
 
 - Provisioning:
   - `mode` in health: `wifi` | `local` | `setup` (setup window open and no binding = `setup`; open and bound = `local`; closed = `wifi`). Internal `ProvisioningState` unchanged.
-  - Press: in Local mode leave it (`finish("button")`); in Setup mode ignore; otherwise start pairing mode.
+  - Press: in Local mode leave it (`finish("button")`); in Setup mode ignore; otherwise one search window (existing `search`).
   - Hold: Wi-Fi mode -> Local mode; Local and Setup mode -> ignored. (Reset confirm comes in PR 2.)
-- Pairing mode: worker op `search` gains `seconds` (cap 120). `Manager.pairing(seconds)` runs windows back to back until connected or the deadline; `connection.pairing` reports it. Background searches set `connection.searching` but not `pairing`.
-- Indicator words: `setup` (Local or Setup mode), `connected`, `pairing`, `idle`. The daemon maps `pairing` to slow blink; `searching` no longer drives the LED.
+- Indicator words: `setup` (Local or Setup mode), `connected`, `searching` (window open or ended under 3 s ago, `connection.searched_at`), `idle`.
 - Daemon: press debounce 0.5 s (holds keep 2 s).
 - Avahi reclaim: when setup mode ends, if avahi's host name is not `config.lan_name` (a `-2` suffix after a self-conflict), run `avahi-set-host-name <lan_name>` (polkit/sudo-free: `avahi-daemon` allows it over D-Bus for the `netdev` group, which the API user already has; verify). Logged once.
 - Portal: `setup_mode` alone no longer sends a bound box to `/setup` (`routes/index.tsx:14-16`); `mode === "local"` shows the normal app with a "Local mode: the box is broadcasting OpenLolo-XXXX" banner and an "Exit Local mode" button.
@@ -128,8 +126,8 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
 
 PR 1:
 - Press in Wi-Fi mode, phone unlocked on the LAN: LED slow blink within 1 s of release, steady on within 30 s.
-- Press with the phone away: slow blink for 120 s (plus or minus 5 s), then off. A second press during it does not extend it.
-- Background safety-net search: LED stays off (watch 10 min with the phone away).
+- Press with the phone away: slow blink for the window (10 s, at least 3 s), then off.
+- Background search (phone advertising, safety net): the same slow blink.
 - Hold: fast blink within 1 s of release; `OpenLolo-XXXX` visible on a phone within 15 s; `/setup/status.mode == "local"`.
 - Press in Local mode: back to Wi-Fi mode, LED to connection state within 2 s; box on the home Wi-Fi within 30 s.
 - Two Local-mode toggles 5 s apart: `openlolo-<id>.local` still resolves afterwards (no `-2`).

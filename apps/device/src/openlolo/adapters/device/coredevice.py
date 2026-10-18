@@ -92,9 +92,6 @@ class CoreDeviceClient:
     async def search(self):
         return await rpc(self.socket, {"op": "search"}, 5)
 
-    async def pairing_mode(self, seconds):
-        return await rpc(self.socket, {"op": "pairing_mode", "seconds": seconds}, 5)
-
     async def usb_events(self, since, timeout):
         request = {"op": "usb_events", "since": since, "timeout": timeout}
         return await rpc(self.socket, request, timeout + 5)

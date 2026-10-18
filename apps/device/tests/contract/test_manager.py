@@ -526,6 +526,7 @@ async def test_no_phone_for_30_minutes_is_one_boot_window_then_idle(manager, clo
         await boot_without_phone(manager)
         assert manager.windows == 1 and 1 <= wifi.browses <= window_browses(manager)
         assert manager.connection.searching is False
+        assert manager.status()["connection"]["searched_at"] > 0  # The status LED's hold-over.
         assert manager.status()["connection"]["message"] == "Press the top button or plug in the phone"
         browses, checks = wifi.browses, usb.checks
         clock.advance(30 * 60)
@@ -862,47 +863,5 @@ async def test_boot_search_waits_for_the_network_but_not_for_the_cable(manager, 
         await manager.connect(AUTO)
         await wait_transport(manager, "usb")
         assert manager.windows == 1
-    finally:
-        await manager.close()
-
-
-async def test_pairing_mode_repeats_windows_until_its_deadline(manager, clock):
-    wifi = manager.transports["wifi"]
-    try:
-        await boot_without_phone(manager)
-        windows = manager.windows
-        await manager.pairing_mode(60)
-        first = manager.pairing
-        await manager.pairing_mode(120)  # A repeat joins the running one; it never extends it.
-        assert manager.pairing is first and manager.connection.pairing is True
-        async with asyncio.timeout(5):
-            await first
-        # 60 s of fake time, windows of 10 s with 3 s browses: about six windows, never more.
-        assert 3 <= manager.windows - windows <= 60 // manager.config.search_window_seconds + 1
-        assert manager.connection.pairing is False and manager.connection.searching is False
-        assert wifi.max_in_flight == 1
-    finally:
-        await manager.close()
-
-
-async def test_pairing_mode_ends_when_the_phone_connects_and_can_be_stopped(manager, clock):
-    wifi = manager.transports["wifi"]
-    try:
-        await boot_without_phone(manager)
-        await manager.pairing_mode(120)
-        wifi.is_present = True
-        await wait_transport(manager, "wifi")
-        async with asyncio.timeout(2):
-            await manager.pairing
-        assert manager.connection.pairing is False
-        await manager.pairing_mode(120)  # Connected: nothing to look for.
-        assert manager.pairing.done()
-        await manager.disconnect()
-        wifi.is_present = False
-        await boot_without_phone(manager)
-        await manager.pairing_mode(120)
-        assert manager.connection.pairing is True
-        await manager.pairing_mode(0)
-        assert manager.pairing.done() and manager.connection.pairing is False
     finally:
         await manager.close()

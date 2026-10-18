@@ -40,7 +40,7 @@ class Runtime:
             self.network,
             button_flag=config.runtime_dir / "setup-button",
             pair_flag=config.runtime_dir / "pair-button",
-            pairing=device.pairing_mode,
+            search=device.search,
             indicator=config.runtime_dir / "indicator",
             link=device.health,
             bound=lambda: self.bindings.read() is not None,

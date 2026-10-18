@@ -66,11 +66,6 @@ class DeviceWorker:
             return await setup.discover(self.manager.transports["usb"], self.manager.transports["wifi"])
         if op == "search":
             return await self.manager.find()
-        if op == "pairing_mode":
-            seconds = request.get("seconds")
-            if isinstance(seconds, bool) or not isinstance(seconds, int | float) or not 0 <= seconds <= 120:
-                raise OpenLoloError("INVALID_REQUEST", status=400)
-            return await self.manager.pairing_mode(seconds)
         if op == "usb_events":
             since = request.get("since")
             timeout = float(request.get("timeout", 0))

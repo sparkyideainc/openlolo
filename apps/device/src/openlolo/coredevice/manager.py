@@ -54,12 +54,6 @@ HOLD_STATES = {
     State.SWITCHING.value,
     State.MOUNTING_DDI.value,
 }
-# Pairing mode (top-button press): search windows repeat for at most this long, one starting at
-# most every PAIRING_GAP seconds, so a locked phone that is found and refused each time is asked
-# about once per gap rather than back to back.
-PAIRING_MAX_SECONDS = 120.0
-PAIRING_GAP = 5.0
-
 # States in which the supervisor is busy with a session; a search window has nothing to find.
 BUSY_STATES = {
     State.CONNECTING.value,
@@ -143,7 +137,6 @@ class CoreDeviceManager:
         self.listening = False
         # The current (or last) search window and counters for status and tests.
         self.window: asyncio.Task | None = None
-        self.pairing: asyncio.Task | None = None  # Pairing mode, see ``pairing_mode``.
         self.found: str | None = None  # Where the last window found the phone, until used.
         self.windows = 0
         self.browses = 0
@@ -229,16 +222,14 @@ class CoreDeviceManager:
         return ["wifi"] if failed == "usb" else ["usb", "wifi"]
 
     async def _stop_supervisor(self):
-        pairing, self.pairing = self.pairing, None
         window, self.window = self.window, None
         task, self.task = self.task, None
-        for running in (pairing, task, window):
+        for running in (task, window):
             if running is not None:
                 running.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await running
         self.connection.searching = False
-        self.connection.pairing = False
         await self._teardown()
 
     async def _teardown(self):
@@ -374,54 +365,7 @@ class CoreDeviceManager:
             return None
         finally:
             self.connection.searching = False
-            self._pulse()
-
-    async def pairing_mode(self, seconds: float) -> dict:
-        """Pairing mode: keep opening search windows for the bound phone for ``seconds`` (capped
-        at PAIRING_MAX_SECONDS) or until it is connected. A repeat joins the running one and never
-        extends it; ``seconds`` 0 stops it. A no-op while connected or with nothing bound."""
-        seconds = max(0.0, min(float(seconds), PAIRING_MAX_SECONDS))
-        running = self.pairing is not None and not self.pairing.done()
-        if seconds == 0:
-            if running:
-                assert self.pairing is not None
-                self.pairing.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self.pairing
-            # A task cancelled before its first step never runs its ``finally``.
-            self.connection.pairing = False
-            self._pulse()
-            return self.status()
-        if (
-            not running
-            and self.binding is not None
-            and self.task is not None
-            and self.connection.state != State.CONNECTED.value
-        ):
-            self.connection.pairing = True
-            self._pulse()
-            self.pairing = asyncio.create_task(self._pairing(self.clock() + seconds))
-        return self.status()
-
-    async def _pairing(self, deadline: float) -> None:
-        try:
-            while self.binding is not None and self.clock() < deadline:
-                if self.connection.state == State.CONNECTED.value:
-                    return
-                started = self.clock()
-                window = self.search()
-                if window is not None:
-                    with contextlib.suppress(Exception):
-                        await asyncio.shield(window)
-                # Let a find turn into a connect (or an owner state such as PHONE_LOCKED) before
-                # the next window.
-                pause_until = min(deadline, started + PAIRING_GAP)
-                while self.clock() < pause_until:
-                    if self.connection.state == State.CONNECTED.value:
-                        return
-                    await self._changes(pause_until - self.clock())
-        finally:
-            self.connection.pairing = False
+            self.connection.searched_at = time.time()
             self._pulse()
 
     def _found(self, name: str) -> str:

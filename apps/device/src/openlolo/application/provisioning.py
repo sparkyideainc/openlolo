@@ -19,16 +19,17 @@ What the owner sees (``mode`` in health) follows from the window and the binding
 
 Buttons (Lolo Pocket top button: long press = hold, single press = press; Raspberry Pi: 5 s hold):
 
-    wifi --hold--> local (setup when no phone is saved)   wifi --press--> pairing mode
+    wifi --hold--> local (setup when no phone is saved)   wifi --press--> one phone search
     local --press--> wifi                                 local, setup --hold--> ignored
     setup --press--> ignored                              joining --any--> ignored
 
-Pairing mode makes the worker look for the saved phone for PAIRING_SECONDS. Factory reset is a
-box page action (the PiSugar3 reports a hold without its length, bench 2026-10-18).
+A press opens the same search window the worker opens by itself (boot, cable pulled, phone
+advertising, a request, the safety net). Factory reset is a box page action (the PiSugar3
+reports a hold without its length, bench 2026-10-18).
 
 The status LED mirrors one word in ``indicator``, highest first: ``setup`` (window open, fast
-blink), ``connected`` (phone connected, steady on), ``pairing`` (pairing mode, slow blink),
-``idle`` (off; background searches do not light it).
+blink), ``connected`` (phone connected, steady on), ``searching`` (a search window is open or
+ended less than SEARCH_SHOW_SECONDS ago, slow blink), ``idle`` (off).
 """
 
 import asyncio
@@ -47,7 +48,7 @@ log = logging.getLogger("openlolo.provisioning")
 
 HANDOFF_READ_SECONDS = 6  # Captive sheet time to show the next address before the AP drops.
 BUTTON_POLL_SECONDS = 0.2  # The daemon acts on release; a fast poll keeps the box's reply immediate.
-PAIRING_SECONDS = 120  # Pairing mode: how long a press makes the worker look for the saved phone.
+SEARCH_SHOW_SECONDS = 3  # A search often ends within a second; keep the slow blink visible.
 RECLAIM_SECONDS = 15  # How often, with the window closed, the mDNS host name is checked.
 
 
@@ -72,7 +73,7 @@ class Provisioning:
         clock=time.monotonic,
         button_flag: Path | None = None,
         pair_flag: Path | None = None,
-        pairing=None,
+        search=None,
         indicator: Path | None = None,
         link=None,
         bound=None,
@@ -81,9 +82,8 @@ class Provisioning:
         self.setup_name = config.setup_name or "OpenLolo"
         self.clock = clock
         self.button_flag = button_flag
-        # Top-button press (written by the button daemon): pairing mode, or leaves Local mode.
-        # ``pairing(seconds)`` starts (0 stops) the worker's pairing mode.
-        self.pair_flag, self.pairing = pair_flag, pairing
+        # Top-button press (written by the button daemon): one phone search, or leaves Local mode.
+        self.pair_flag, self.search = pair_flag, search
         self.bound = bound  # () -> whether a phone is saved; None counts as saved
         self.pair_seen = 0.0
         self.opened_stamp = 0.0  # mtime of the hold that opened setup; older presses never cancel
@@ -356,7 +356,6 @@ class Provisioning:
                 log.warning("local mode not started (button): %s", exc.message)
                 return True
             self.opened_stamp = stamp
-            await self._pairing(0)  # The radio is the box's own network now.
             return True
         if self.state == ProvisioningState.SETUP_MODE:
             log.info("hold ignored: %s mode is already on", self.mode)
@@ -366,7 +365,7 @@ class Provisioning:
 
     async def _pair_button(self) -> None:
         """A new mtime of the pair-button flag (a press): in Local mode leave it, in Setup mode
-        nothing, otherwise pairing mode. The flag is consumed like the setup button's, so a
+        nothing, otherwise one phone search. The flag is consumed like the setup button's, so a
         restart never replays an old press; a failure is logged."""
         if self.pair_flag is None:
             return
@@ -391,15 +390,12 @@ class Provisioning:
             log.info("local mode ended by a button press")
             await self.finish("button")
             return
-        await self._pairing(PAIRING_SECONDS)
-
-    async def _pairing(self, seconds: int) -> None:
-        if self.pairing is None:
+        if self.search is None:
             return
         try:
-            await self.pairing(seconds)
+            await self.search()
         except Exception as exc:
-            log.warning("pairing mode not changed (button): %s", getattr(exc, "code", type(exc).__name__))
+            log.warning("phone search not started (button): %s", getattr(exc, "code", type(exc).__name__))
 
     async def _reclaim_lan_name(self, now: float) -> None:
         """avahi renames the box after it sees its own records during a fast access point stop
@@ -426,8 +422,11 @@ class Provisioning:
             connection = {}
         if connection.get("state") == "connected":
             self.link_word = "connected"
-        elif connection.get("pairing"):
-            self.link_word = "pairing"
+        elif (
+            connection.get("searching")
+            or time.time() - float(connection.get("searched_at") or 0) < SEARCH_SHOW_SECONDS
+        ):
+            self.link_word = "searching"
         else:
             self.link_word = "idle"
 

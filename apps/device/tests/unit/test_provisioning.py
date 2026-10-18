@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from openlolo.adapters.system.fake import FakeNetwork
-from openlolo.application.provisioning import PAIRING_SECONDS, Provisioning, ProvisioningState, slug
+from openlolo.application.provisioning import Provisioning, ProvisioningState, slug
 from openlolo.config import Config
 from openlolo.domain.errors import OpenLoloError
 
@@ -210,34 +210,34 @@ async def test_button_flag_opens_the_window(tmp_path):
     assert prov.state == ProvisioningState.SETUP_MODE and len(calls(net, "start_setup_ap")) == 2
 
 
-async def test_pair_button_flag_starts_pairing_mode_once_per_press(tmp_path):
+async def test_pair_button_flag_opens_one_search_per_press(tmp_path):
     import os
 
     net = FakeNetwork(["home"])
     flag = tmp_path / "pair-button"
-    requests = []
+    searches = []
 
-    async def pairing(seconds):
-        requests.append(seconds)
+    async def search():
+        searches.append(True)
         return {}
 
-    prov = Provisioning(config(tmp_path), net, clock=Clock(), pair_flag=flag, pairing=pairing)
+    prov = Provisioning(config(tmp_path), net, clock=Clock(), pair_flag=flag, search=search)
     await prov.tick()
-    assert requests == []
+    assert searches == []
     flag.touch()
     await prov.tick()
     await prov.tick()  # The same press is not replayed.
-    assert requests == [PAIRING_SECONDS] and not flag.exists() and prov.state == ProvisioningState.IDLE
+    assert searches == [True] and not flag.exists() and prov.state == ProvisioningState.IDLE
     flag.touch()
     stamp = prov.pair_seen + 5
     os.utime(flag, (stamp, stamp))
     await prov.tick()
-    assert requests == [PAIRING_SECONDS, PAIRING_SECONDS]
+    assert searches == [True, True]
 
-    async def failing(seconds):
+    async def failing():
         raise OpenLoloError("WORKER_UNAVAILABLE")
 
-    prov.pairing = failing
+    prov.search = failing
     flag.touch()
     os.utime(flag, (stamp + 5, stamp + 5))
     await prov.tick()  # Logged, never raised into the supervisor.
@@ -302,8 +302,8 @@ def button_rig(tmp_path, bound=True):
     requests = []
     saved = [bound]
 
-    async def pairing(seconds):
-        requests.append(seconds)
+    async def search():
+        requests.append("search")
         return {}
 
     prov = Provisioning(
@@ -312,7 +312,7 @@ def button_rig(tmp_path, bound=True):
         clock=clock,
         button_flag=tmp_path / "setup-button",
         pair_flag=tmp_path / "pair-button",
-        pairing=pairing,
+        search=search,
         indicator=tmp_path / "indicator",
         bound=lambda: saved[0],
     )
@@ -331,14 +331,13 @@ async def test_hold_opens_local_mode_and_a_press_leaves_it(tmp_path):
     press(tmp_path / "setup-button")
     await prov.tick()
     assert prov.health()["mode"] == "local" and shown(tmp_path) == "setup"
-    assert requests == [0]  # Entering Local mode stops pairing mode.
     press(tmp_path / "pair-button")
     await prov.tick()
     assert prov.health()["mode"] == "wifi" and prov.reason == "button"
-    assert shown(tmp_path) == "idle" and requests == [0]  # Leaving is not pairing mode.
+    assert shown(tmp_path) == "idle" and requests == []  # Leaving is not a search.
     press(tmp_path / "pair-button")
     await prov.tick()
-    assert requests == [0, PAIRING_SECONDS] and prov.state == ProvisioningState.IDLE
+    assert requests == ["search"] and prov.state == ProvisioningState.IDLE
 
 
 async def test_setup_mode_ignores_the_press(tmp_path):
@@ -348,7 +347,7 @@ async def test_setup_mode_ignores_the_press(tmp_path):
     assert prov.health()["mode"] == "setup" and shown(tmp_path) == "setup"
     press(tmp_path / "pair-button")
     await prov.tick()
-    assert prov.health()["mode"] == "setup" and PAIRING_SECONDS not in requests
+    assert prov.health()["mode"] == "setup" and requests == []
 
 
 async def test_hold_while_the_window_is_open_is_ignored(tmp_path):
@@ -373,7 +372,7 @@ async def test_press_older_than_the_opening_hold_does_not_leave(tmp_path):
     await prov.tick()  # Opens Local mode; the older press is read on the next tick.
     os.utime(tmp_path / "pair-button", (stamp, stamp))
     await prov.tick()
-    assert prov.health()["mode"] == "local" and PAIRING_SECONDS not in requests
+    assert prov.health()["mode"] == "local" and requests == []
 
 
 async def test_press_leaves_local_mode_opened_from_the_page(tmp_path):
@@ -393,12 +392,14 @@ async def test_buttons_are_ignored_during_a_join(tmp_path):
     await prov.tick()
     press(tmp_path / "setup-button")
     await prov.tick()
-    assert prov.state == ProvisioningState.JOINING and prov.window and requests == [0]
+    assert prov.state == ProvisioningState.JOINING and prov.window and requests == []
 
 
 async def test_status_led_follows_the_phone_connection(tmp_path):
+    import time
+
     prov, clock, _ = button_rig(tmp_path)
-    health = {"connection": {"state": "disconnected", "searching": True, "pairing": False}}
+    health = {"connection": {"state": "disconnected", "searching": False, "searched_at": 0}}
 
     async def link():
         if health is None:
@@ -407,11 +408,17 @@ async def test_status_led_follows_the_phone_connection(tmp_path):
 
     prov.link = link
     await prov.tick()
-    assert shown(tmp_path) == "idle"  # A background search does not light the LED.
-    health["connection"]["pairing"] = True
+    assert shown(tmp_path) == "idle"
+    health["connection"]["searching"] = True  # Any search, pressed or background.
     await prov.tick()
-    assert shown(tmp_path) == "pairing"
-    health["connection"] = {"state": "connected", "searching": False, "pairing": False}
+    assert shown(tmp_path) == "searching"
+    health["connection"].update(searching=False, searched_at=time.time() - 1)
+    await prov.tick()
+    assert shown(tmp_path) == "searching"  # A one-second search still shows for a moment.
+    health["connection"]["searched_at"] = time.time() - 10
+    await prov.tick()
+    assert shown(tmp_path) == "idle"
+    health["connection"] = {"state": "connected", "searching": False}
     await prov.tick()
     assert shown(tmp_path) == "connected"
     press(tmp_path / "setup-button")
