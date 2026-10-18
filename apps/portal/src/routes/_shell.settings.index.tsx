@@ -198,6 +198,11 @@ function Settings() {
 					leading={<IconBadge icon={<Trash2 />} fill="destructive" />}
 					disabled={resetBox.isPending}
 					onClick={() => {
+						// A box with the top button resets through the button challenge.
+						if (setup.data?.reset_method === "button") {
+							void navigate({ to: "/reset" });
+							return;
+						}
 						setTypedName("");
 						setConfirmReset(true);
 					}}
@@ -241,7 +246,7 @@ function Settings() {
 			</Section>
 			<Section
 				title="This page"
-				footer="You stay signed in for 30 days after your last visit, also across restarts."
+				footer="You stay signed in until you sign out, also across restarts."
 			>
 				<ButtonRow
 					title="Sign out"

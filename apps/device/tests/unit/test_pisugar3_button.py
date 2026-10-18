@@ -290,3 +290,99 @@ def test_offline_after_ten_seconds_of_failed_reads(rig):
     clock.sleep(1)
     daemon.tick()
     assert daemon.offline
+
+
+def events_rig(rig):
+    clock, smbus, daemon, tmp, led = rig
+    daemon.events = ps.EventLog(tmp / "button-events", clock=clock)
+    daemon.start()
+    return clock, smbus, daemon, tmp, led
+
+
+def logged(tmp):
+    return [line.split()[:2] for line in (tmp / "button-events").read_text().splitlines()]
+
+
+def test_event_log_keeps_every_event_in_order(rig):
+    clock, smbus, daemon, tmp, led = events_rig(rig)
+    session = daemon.events.session
+    for event in (ps.SINGLE, ps.SINGLE, ps.DOUBLE, ps.LONG, ps.LONG):
+        smbus.tap(event)
+        daemon.tick()
+        clock.sleep(0.3)  # Quicker than the flag debounce: the log still keeps them all.
+    assert logged(tmp) == [
+        ["0", "start"],
+        ["1", "single"],
+        ["2", "single"],
+        ["3", "double"],
+        ["4", "long"],
+        ["5", "long"],
+    ]
+    assert (tmp / "button-events").read_text().split()[2] == session
+
+
+def test_event_log_is_capped_and_keeps_its_session(rig):
+    clock, smbus, daemon, tmp, led = events_rig(rig)
+    for _ in range(ps.EVENT_LOG_MAX + 3):
+        daemon.events.append("single")
+    lines = logged(tmp)
+    assert lines[0] == ["0", "start"] and len(lines) <= ps.EVENT_LOG_KEEP + 4
+    seqs = [int(seq) for seq, _ in lines[1:]]
+    assert seqs == list(range(seqs[0], ps.EVENT_LOG_MAX + 4))  # No gap in what is kept
+
+
+def test_offline_board_logs_a_lost_event(tmp_path):
+    clock = Clock()
+    smbus = FakeSMBus(clock)
+    events = ps.EventLog(tmp_path / "button-events", clock=clock)
+    runs = []
+
+    def factory(bus):
+        runs.append(1)
+        return ps.Daemon(
+            bus,
+            setup_flag=tmp_path / "s",
+            pair_flag=tmp_path / "p",
+            indicator=tmp_path / "i",
+            led=ps.StatusLed(tmp_path / "brightness"),
+            events=events,
+            clock=clock,
+        )
+
+    def stop():
+        if len(runs) == 1 and clock() > 1001:
+            smbus.missing = True
+        return len(runs) >= 2
+
+    ps.serve(
+        lambda: ps.Bus(smbus, clock=clock, sleep=clock.sleep), factory, stop, clock=clock, sleep=clock.sleep
+    )
+    assert logged(tmp_path)[-1] == ["1", "lost"]
+
+
+def test_reset_patterns_on_the_board_led(rig):
+    clock, smbus, daemon, tmp, led = events_rig(rig)
+    status = daemon.led
+    (tmp / "indicator").write_text("challenge\n")
+    daemon.show()
+    assert status.on is False  # Challenge: dark until a press is seen
+    smbus.tap(ps.DOUBLE)
+    daemon.tick()
+    clock.sleep(ps.FLASH / 2)
+    seen = []
+    for _ in range(8):
+        daemon.show()
+        seen.append(status.on)
+        clock.sleep(ps.FLASH)
+    assert seen[:5] == [True, False, True, False, False]  # Two flashes for a double, then dark
+
+    (tmp / "indicator").write_text("armed\n")
+    daemon.show()
+    clock.sleep(ps.FLASH / 2)  # Sample mid-frame
+    frames = []
+    for _ in range(26):
+        daemon.show()
+        frames.append(status.on)
+        clock.sleep(ps.FLASH)
+    assert frames[:13] == [True, False, True, False, True] + [False] * 8  # Triple flash, 2 s
+    assert frames[13:] == frames[:13]

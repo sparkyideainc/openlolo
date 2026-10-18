@@ -24,12 +24,13 @@ Buttons (Lolo Pocket top button: long press = hold, single press = press; Raspbe
     setup --press--> ignored                              joining --any--> ignored
 
 A press opens the same search window the worker opens by itself (boot, cable pulled, phone
-advertising, a request, the safety net). Factory reset is a box page action (the PiSugar3
-reports a hold without its length, bench 2026-10-18).
+advertising, a request). Factory reset starts on the box page and is finished with the button
+(application/reset.py); while a reset attempt is open the button belongs to it alone.
 
 The status LED mirrors one word in ``indicator``, highest first: ``setup`` (window open, fast
 blink), ``connected`` (phone connected, steady on), ``searching`` (a search window is open or
-ended less than SEARCH_SHOW_SECONDS ago, slow blink), ``idle`` (off).
+ended less than SEARCH_SHOW_SECONDS ago, slow blink), ``idle`` (off). An open reset attempt
+from the page comes first: ``challenge``, ``armed``, ``resetting`` (application/reset.py).
 """
 
 import asyncio
@@ -77,6 +78,7 @@ class Provisioning:
         indicator: Path | None = None,
         link=None,
         bound=None,
+        reset=None,
     ):
         self.config, self.network = config, network
         self.setup_name = config.setup_name or "OpenLolo"
@@ -85,6 +87,8 @@ class Provisioning:
         # Top-button press (written by the button daemon): one phone search, or leaves Local mode.
         self.pair_flag, self.search = pair_flag, search
         self.bound = bound  # () -> whether a phone is saved; None counts as saved
+        # The page's reset attempt (application/reset.py): while open it owns the button.
+        self.reset = reset
         self.pair_seen = 0.0
         self.opened_stamp = 0.0  # mtime of the hold that opened setup; older presses never cancel
         # Status LED: ``indicator`` is the file the button daemon reads; ``link`` returns the
@@ -163,7 +167,9 @@ class Provisioning:
         without the runtime directory there is no button daemon to read it."""
         if self.indicator is None:
             return
-        word = "setup" if self.window else self.link_word
+        word = (self.reset.indicator if self.reset is not None else None) or (
+            "setup" if self.window else self.link_word
+        )
         if word == self.shown:
             return
         try:
@@ -316,10 +322,15 @@ class Provisioning:
         ):
             await self.finish("timeout")
             return
+        # A reset attempt reads the button from the daemon's event log; the flags of the same
+        # presses and holds are consumed unread so they never also open Local mode or search.
+        if self.reset is not None and await self.reset.poll():
+            self._drop_buttons()
         # Hold before press: a press read in the same tick as the opening hold waits a tick.
-        if await self._setup_button():
+        elif await self._setup_button():
             return
-        await self._pair_button()
+        else:
+            await self._pair_button()
         if network:
             await self._poll_link()
             await self._reclaim_lan_name(now)
@@ -332,6 +343,17 @@ class Provisioning:
                 await self._auto_enter("offline after boot")
             elif status.get("ssid"):
                 self.grace_used = True  # Online once: never auto-enter again this boot.
+
+    def _drop_buttons(self) -> None:
+        for flag, seen in ((self.button_flag, "button_seen"), (self.pair_flag, "pair_seen")):
+            if flag is None:
+                continue
+            try:
+                setattr(self, seen, max(getattr(self, seen), flag.stat().st_mtime))
+            except OSError:
+                continue
+            with contextlib.suppress(OSError):
+                flag.unlink()
 
     async def _setup_button(self) -> bool:
         """A new mtime of the setup-button flag (a hold): open Local mode (Setup mode when no

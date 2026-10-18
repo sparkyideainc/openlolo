@@ -43,14 +43,14 @@ Every search blinks, background ones included, so the box shows when it is looki
 | Visitor | Bound box | Unbound box |
 |---|---|---|
 | Saved phone, recognised (below) | Full page, as today | n/a |
-| Saved phone on the cable (UDID = binding) | Full page | n/a |
+| Saved phone on the cable (UDID = binding), browser on the box's own Wi-Fi | Full page | n/a |
 | Any other browser, on home Wi-Fi or the box's Wi-Fi | **Reset prompt only** ("This box belongs to another iPhone") | First-time setup, as today |
 
 Recognition = the browser's address equals an address where the saved phone advertises `_remotepairing._tcp` with an authTag that matches its pairing record (`coredevice/transports.py:196-204`, `interfaces/setup_portal.py:156-170`). Apple's pairing proves the phone; the address links the browser to it. A box-page session cookie (30 days, renewed on use) keeps the owner in after the first match.
 
 Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap or paired_phone)`):
-- The cable is no longer required. `allowed = owner_session or paired_phone or cable_is_bound_phone`.
-- "Cable" means the bound UDID on USB, not any one iPhone.
+- The cable is no longer required. `allowed = owner_session or paired_phone or (setup_ap and cable_is_bound_phone)`.
+- "Cable" means the bound UDID on USB, not any one iPhone, and it counts only for a browser on the box's own Wi-Fi (built 2026-10-18): the cable cannot tell which browser is on the phone, so on the home Wi-Fi a phone charging on the box would otherwise open the page to every browser there. The box's Wi-Fi needs the card's password, as today.
 - On the box's own Wi-Fi the blanket `setup_ap` grant is removed for a bound box; the saved phone is recognised the same way as on home Wi-Fi. An unbound box keeps today's setup-AP access for first-time setup.
 
 ### Reset
@@ -65,7 +65,7 @@ Changes against today (`setup_portal.py:172-186`, `allowed = cable and (setup_ap
   4. A hold confirms: reset unit runs, page shows "Resetting", box comes back in Setup mode.
 - The challenge fails (nothing armed; page offers "Try again" with a new number) on: more than N presses, a hold, 30 s without reaching N, page Cancel, API restart.
 - Armed reset cancels on: a press or double press, page Cancel, 30 s without a hold, API restart.
-- The typed box name is removed.
+- The typed box name is removed on boxes with the top button. A box without it (Raspberry Pi: GPIO hold button or none, so no press counts) keeps the owner's typed-name reset in Settings; `/setup/status.reset_method` says `button` or `name`, decided by whether the daemon's event log exists.
 - Why: a stranger on the home Wi-Fi can open the challenge but cannot count presses on a box they cannot touch, so nothing is ever armed and the owner's next hold stays a Local-mode hold. The number is random so it cannot be told to someone in advance.
 
 ## Guards (attempts, cancellation, abuse)

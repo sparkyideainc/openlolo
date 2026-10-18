@@ -5,12 +5,19 @@ ZERO 3W on a PiSugar3). One thread, one tick every 100 ms.
 
 - Top button: the firmware reports a hold only on release, with no held-now bit (bench
   2026-10-18), so the box acts on release; the fast poll makes that feel immediate. A single
-  press touches the pairing flag, long press touches the setup flag (the
-  same flag the GPIO backend touches), double press is cleared and ignored. The API decides
-  what a press means (a phone search, or leave Local mode; a hold opens Local mode).
+  press touches the pairing flag, long press touches the setup flag (the same flag the GPIO
+  backend touches). The API decides what a press means (a phone search, or leave Local mode; a
+  hold opens Local mode).
+- Event log: every event, double presses included and never debounced, is also appended to
+  ``/run/openlolo/button-events`` as ``<seq> <single|double|long> <monotonic time>``, after a
+  ``0 start <session>`` line written at start. The page's reset challenge counts presses there
+  (the flags merge quick presses into one mtime). ``<seq> lost`` is written when the board stops
+  answering, so an open challenge never counts across an outage.
 - Status LED: the API writes one word to ``/run/openlolo/indicator``; the daemon mirrors it on
   the Radxa board's green LED (sysfs, ``OPENLOLO_STATUS_LED``): ``setup`` fast blink,
-  ``searching`` slow blink, ``connected`` steady on, ``idle`` off. The PiSugar3's four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
+  ``searching`` slow blink, ``connected`` steady on, ``idle`` off; for a reset from the page
+  ``challenge`` off with one short flash per press seen (two for a double), ``armed`` a triple
+  flash every 2 s, ``resetting`` steady on. The PiSugar3's four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
   writes, so a pattern there was unreadable on USB power (bench 2026-10-18).
 
 The power button keeps the PiSugar3 defaults: this daemon never writes ``0x02``, ``0x03`` or
@@ -24,6 +31,7 @@ Bench facts this relies on (see docs/hardware/pisugar3.md):
 """
 
 import os
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -36,6 +44,7 @@ FIRMWARE = 0xE2  # ASCII version string, one byte per register
 FIRMWARE_MAX = 16
 
 SINGLE, DOUBLE, LONG = 1, 2, 3
+KINDS = {SINGLE: "single", DOUBLE: "double", LONG: "long"}
 
 TICK = 0.1  # top-button poll: a hold is reported on release, so this is the felt latency
 GAP = 0.02  # minimum time between two bus accesses
@@ -44,6 +53,9 @@ RETRY_DELAY = 0.05
 DEBOUNCE = {1: 0.5, 3: 2.0}  # per event: presses may come quickly, a hold takes seconds
 OFFLINE_SECONDS = 10.0  # every read failed this long: the board stopped answering
 RETRY_OFFLINE = 30.0
+EVENT_LOG_MAX = 256  # lines; past it the log is rewritten keeping the newest EVENT_LOG_KEEP
+EVENT_LOG_KEEP = 64
+FLASH = 0.15  # challenge: one flash per press seen
 
 # The Radxa board LED; openlolo-board.sh turns its heartbeat off and makes it group-writable.
 STATUS_LED = "/sys/class/leds/green:heartbeat/brightness"
@@ -53,6 +65,9 @@ PATTERNS = {
     "setup": ([True, False], 0.25),  # setup mode, own Wi-Fi on air: fast blink, 2 Hz
     "searching": ([True, False], 0.5),  # looking for the phone: slow blink, 1 Hz
     "connected": ([True], 1.0),  # phone connected: steady on
+    "challenge": ([False], 1.0),  # reset challenge: off; each press seen flashes (see show())
+    "armed": ([True, False, True, False, True] + [False] * 8, FLASH),  # triple flash, 2 s
+    "resetting": ([True], 1.0),
 }
 
 
@@ -150,6 +165,49 @@ def touch(flag: Path) -> None:
     os.utime(flag, None)
 
 
+class EventLog:
+    """Append-only button event log for the API's reset challenge, one per daemon process.
+
+    Each line is written in one ``write`` call, so a reader sees whole lines; the rare
+    rewrite past EVENT_LOG_MAX lines replaces the file atomically. A failure is logged once and
+    the button keeps working through the flags."""
+
+    def __init__(self, path: Path, clock=time.monotonic):
+        self.path, self.clock = path, clock
+        self.session = secrets.token_hex(6)
+        self.seq = 0
+        self.lines: list[str] = []
+        self.failed = False
+        self._replace([f"0 start {self.session}"])
+
+    def append(self, kind: str) -> None:
+        self.seq += 1
+        line = f"{self.seq} {kind} {self.clock():.3f}"
+        if len(self.lines) >= EVENT_LOG_MAX:
+            self._replace([self.lines[0], *self.lines[-(EVENT_LOG_KEEP - 1) :], line])
+            return
+        self.lines.append(line)
+        try:
+            with self.path.open("a") as log_file:
+                log_file.write(line + "\n")
+        except OSError as exc:
+            self._failed(exc)
+
+    def _replace(self, lines: list[str]) -> None:
+        self.lines = lines
+        temporary = self.path.with_name(f".{self.path.name}.tmp")
+        try:
+            temporary.write_text("".join(line + "\n" for line in lines))
+            temporary.replace(self.path)
+        except OSError as exc:
+            self._failed(exc)
+
+    def _failed(self, exc: OSError) -> None:
+        if not self.failed:
+            log(f"button event log not written ({exc}); reset from the page unavailable", 4)
+            self.failed = True
+
+
 class Daemon:
     def __init__(
         self,
@@ -159,9 +217,12 @@ class Daemon:
         pair_flag: Path,
         indicator: Path,
         led: StatusLed,
+        events: EventLog | None = None,
         clock=time.monotonic,
     ):
         self.bus, self.led, self.clock = bus, led, clock
+        self.events = events
+        self.flash_start = self.flash_until = 0.0  # challenge: presses seen, flashed in turn
         self.setup_flag, self.pair_flag, self.indicator = setup_flag, pair_flag, indicator
         self.firmware = None
         self.last_event: dict[int, float] = {}
@@ -226,17 +287,36 @@ class Daemon:
         if not event:
             return
         self.bus.write(TAP, tap & 0xFC, 0x03)
+        # Flag first, log second: a reader that sees the log line also sees the flag, so the
+        # API's reset challenge can consume the flag of a press it counted.
+        self.flash(event, self.clock())
         if event == DOUBLE:
+            self.log_event(event)
             return
         name = "press" if event == SINGLE else "hold"
         last = self.last_event.get(event)
         if last is not None and now - last < DEBOUNCE[event]:
             log(f"top button {name} dropped: {now - last:.1f} s after the previous one")
+        else:
+            self.last_event[event] = now
+            flag = self.pair_flag if event == SINGLE else self.setup_flag
+            touch(flag)
+            log(f"top button {name}; flag {flag} touched")
+        self.log_event(event)
+
+    def log_event(self, event: int) -> None:
+        if self.events is not None:
+            self.events.append(KINDS[event])
+
+    def flash(self, event: int, now: float) -> None:
+        """Challenge feedback: one short flash per press seen, two for a double."""
+        if event not in (SINGLE, DOUBLE) or self.read_indicator() != "challenge":
             return
-        self.last_event[event] = now
-        flag = self.pair_flag if event == SINGLE else self.setup_flag
-        touch(flag)
-        log(f"top button {name}; flag {flag} touched")
+        length = 2 * FLASH * (2 if event == DOUBLE else 1)
+        if now >= self.flash_until:
+            self.flash_start, self.flash_until = now, now + length
+        else:
+            self.flash_until += length  # Queued after the flash still running.
 
     # Status LED ------------------------------------------------------------------------------
 
@@ -265,8 +345,16 @@ class Daemon:
         if pattern not in PATTERNS:
             self.led.set(False)
             return
+        if pattern == "challenge" and now < self.flash_until:
+            self.led.set(int((now - self.flash_start) / FLASH) % 2 == 0)
+            return
         frames, seconds = PATTERNS[pattern]
         self.led.set(frames[int((now - self.pattern_start) / seconds) % len(frames)])
+
+    def lost(self) -> None:
+        """The board stopped answering: presses may be missed, so a reset challenge must fail."""
+        if self.events is not None:
+            self.events.append("lost")
 
 
 def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep) -> None:
@@ -297,6 +385,7 @@ def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep
             pause(max(0.0, TICK - (clock() - started)))
         if daemon.offline:
             log(f"PiSugar3 stopped answering; retrying every {RETRY_OFFLINE:.0f} s", 4)
+            daemon.lost()
             reported = True
             pause(RETRY_OFFLINE)
 
@@ -310,6 +399,7 @@ def main(stop) -> int:
     bus_number = int(os.environ.get("OPENLOLO_I2C_BUS", "3"))
     led = StatusLed(Path(os.environ.get("OPENLOLO_STATUS_LED", STATUS_LED)))
     run_dir = Path(os.environ.get("OPENLOLO_RUN_DIR", "/run/openlolo"))
+    events = EventLog(run_dir / "button-events")
     opened = []
 
     def open_bus():
@@ -326,6 +416,7 @@ def main(stop) -> int:
             pair_flag=Path(os.environ.get("OPENLOLO_PAIR_FLAG", run_dir / "pair-button")),
             indicator=run_dir / "indicator",
             led=led,
+            events=events,
         )
 
     try:

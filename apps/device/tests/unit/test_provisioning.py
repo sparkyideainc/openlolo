@@ -447,3 +447,57 @@ async def test_lan_name_is_reclaimed_only_on_home_wifi_and_throttled(tmp_path):
     await prov.exit()
     await prov.tick()
     assert len(calls(net, "reclaim_lan_name")) == 2
+
+
+async def test_reset_attempt_owns_the_button(tmp_path):
+    from openlolo.application.reset import ResetChallenge
+
+    prov, clock, requests = button_rig(tmp_path)
+    events = tmp_path / "button-events"
+    events.write_text("0 start s1\n")
+    runs = []
+
+    async def runner():
+        runs.append(True)
+        return False
+
+    prov.reset = ResetChallenge(events, runner=runner, clock=clock, choose=lambda targets: 5)
+    prov.reset.start()
+    await prov.tick()
+    assert shown(tmp_path) == "challenge"
+    # Daemon order: flag first, log second. A press counts, never searches.
+    press(tmp_path / "pair-button")
+    events.write_text("0 start s1\n1 double 1.0\n2 double 1.0\n3 single 1.0\n")
+    await prov.tick()
+    clock.now += 2
+    await prov.tick()
+    assert shown(tmp_path) == "armed" and requests == []
+    # The confirming hold never opens Local mode.
+    press(tmp_path / "setup-button")
+    events.write_text(events.read_text() + "4 long 1.0\n")
+    await prov.tick()
+    await prov.tick()
+    assert runs == [True] and prov.health()["mode"] == "wifi" and shown(tmp_path) == "resetting"
+
+
+async def test_hold_that_fails_a_challenge_is_not_a_local_mode_hold(tmp_path):
+    from openlolo.application.reset import ResetChallenge
+
+    prov, clock, requests = button_rig(tmp_path)
+    events = tmp_path / "button-events"
+    events.write_text("0 start s1\n")
+
+    async def runner():
+        return False
+
+    prov.reset = ResetChallenge(events, runner=runner, clock=clock)
+    prov.reset.start()
+    press(tmp_path / "setup-button")
+    events.write_text("0 start s1\n1 long 1.0\n")
+    await prov.tick()
+    await prov.tick()
+    assert prov.reset.stage is None and prov.health()["mode"] == "wifi"
+    assert shown(tmp_path) == "idle"
+    press(tmp_path / "setup-button")  # After the attempt closed: an ordinary hold.
+    await prov.tick()
+    assert prov.health()["mode"] == "local"
