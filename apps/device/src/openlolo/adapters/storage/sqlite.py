@@ -40,9 +40,15 @@ class Journal:
                 family TEXT NOT NULL, value TEXT NOT NULL, expires REAL NOT NULL,
                 revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS owner_labels (owner TEXT PRIMARY KEY, label TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS portal_sessions (digest TEXT PRIMARY KEY, expires_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS portal_sessions (digest TEXT PRIMARY KEY, last_used REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS operations_created ON operations(created DESC, id DESC);
         """)
+        # Box-page sessions no longer expire. An older table stored each end as last use + 30
+        # days; turning that back into the last use keeps every signed-in page signed in.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(portal_sessions)")}
+        if "expires_at" in columns:
+            self.db.execute("ALTER TABLE portal_sessions RENAME COLUMN expires_at TO last_used")
+            self.db.execute("UPDATE portal_sessions SET last_used = last_used - ?", (30 * 86_400,))
         # Changes on every write and never repeats, across restarts too: seeded from the clock but
         # always past the last persisted value. The box page watches it in the status digest to
         # refetch history.

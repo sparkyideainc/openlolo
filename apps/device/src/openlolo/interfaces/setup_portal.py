@@ -30,14 +30,15 @@ log = logging.getLogger("openlolo.portal")
 WEB = Path(__file__).resolve().parents[1] / "web" / "portal"
 AP_NET = ipaddress.ip_network("192.168.4.0/24")
 SESSION_COOKIE = "openlolo_portal"
-SESSION_SECONDS = 30 * 86_400  # Renewed while used: each use moves the end to now + 30 days.
-SESSION_RENEW_SECONDS = 3600  # Write a renewed end at most once an hour per session.
+# Sessions never expire on the box. Browsers cap a cookie's Max-Age at 400 days, so each use
+# re-sends the cookie with a fresh one.
+COOKIE_SECONDS = 400 * 86_400
+SESSION_RENEW_SECONDS = 3600  # Record a session's use (and re-send its cookie) at most once an hour.
 SESSION_LIMIT = 64  # Stored box-page sessions; issuing past it drops the least recently used.
 RENEWED_SCOPE_KEY = "openlolo.renewed_session"
 CLIENT_HEADER = "x-openlolo-client"
 PORTAL_CLIENT = "portal"
 PORTAL_IDENTITY = "Box page"  # Journal owner label for operations started from the page.
-CABLE_FREE_WRITES = {"/app/pause"}  # Safety first: pausing never waits for the cable.
 CAPTIVE_PROBES = ("/hotspot-detect.html", "/library/test/success.html", "/generate_204")
 # Captive probes get the answer the OS expects from the open internet, so no captive sheet ever
 # opens: Apple's sheet cannot hand the owner to Safari, and the setup card carries a second QR
@@ -60,9 +61,9 @@ def _digest(token: str) -> str:
 class PortalSessions:
     """Box-page sessions in the journal database, so a restart or reboot keeps the owner signed in.
 
-    A session lasts SESSION_SECONDS from its last use. Only the SHA-256 digest of a token is
-    stored. A factory reset deletes the database, and pairing a different iPhone ends every
-    session (``Journal.record_owner``)."""
+    A session never expires: it ends on sign-out, past SESSION_LIMIT, when a factory reset
+    deletes the database, or when pairing a different iPhone ends every session
+    (``Journal.record_owner``). Only the SHA-256 digest of a token is stored."""
 
     def __init__(self, db, clock=time.time):
         self.db = db
@@ -72,14 +73,10 @@ class PortalSessions:
         now = self.clock()
         token = secrets.token_urlsafe(32)
         with self.db:
-            self.db.execute("DELETE FROM portal_sessions WHERE expires_at<=?", (now,))
-            self.db.execute(
-                "INSERT INTO portal_sessions VALUES (?,?)", (_digest(token), now + SESSION_SECONDS)
-            )
-            # Every use pushes the end out by the same span, so the latest ends are the most recently used.
+            self.db.execute("INSERT INTO portal_sessions VALUES (?,?)", (_digest(token), now))
             self.db.execute(
                 "DELETE FROM portal_sessions WHERE digest NOT IN "
-                "(SELECT digest FROM portal_sessions ORDER BY expires_at DESC LIMIT ?)",
+                "(SELECT digest FROM portal_sessions ORDER BY last_used DESC LIMIT ?)",
                 (SESSION_LIMIT,),
             )
         return token
@@ -88,24 +85,21 @@ class PortalSessions:
         return self.renew(token) is not None
 
     def renew(self, token: str | None) -> bool | None:
-        """None for no valid session; else whether this use moved the session's end.
+        """None for no valid session; else whether this use was recorded.
 
-        A read on most requests: the end is written only once it is SESSION_RENEW_SECONDS old."""
+        A read on most requests: the use is written only once the last one is
+        SESSION_RENEW_SECONDS old."""
         if not token:
             return None
         now = self.clock()
         key = _digest(token)
-        row = self.db.execute(
-            "SELECT expires_at FROM portal_sessions WHERE digest=? AND expires_at>?", (key, now)
-        ).fetchone()
+        row = self.db.execute("SELECT last_used FROM portal_sessions WHERE digest=?", (key,)).fetchone()
         if row is None:
             return None
-        if row[0] > now + SESSION_SECONDS - SESSION_RENEW_SECONDS:
+        if row[0] > now - SESSION_RENEW_SECONDS:
             return False
         with self.db:
-            self.db.execute(
-                "UPDATE portal_sessions SET expires_at=? WHERE digest=?", (now + SESSION_SECONDS, key)
-            )
+            self.db.execute("UPDATE portal_sessions SET last_used=? WHERE digest=?", (now, key))
         return True
 
     def revoke(self, token: str | None) -> None:
@@ -192,7 +186,7 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
         token = session_token(request)
         renewed = sessions.renew(token)
         if renewed:
-            request.scope[RENEWED_SCOPE_KEY] = token  # Headers re-sends the cookie with a fresh max-age.
+            request.scope[RENEWED_SCOPE_KEY] = token  # Headers re-sends the cookie with a fresh Max-Age.
         return renewed is not None
 
     def require_local(request: Request):
@@ -226,7 +220,7 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
             response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
         else:
             response.set_cookie(
-                SESSION_COOKIE, token, max_age=SESSION_SECONDS, path="/", httponly=True, samesite="strict"
+                SESSION_COOKIE, token, max_age=COOKIE_SECONDS, path="/", httponly=True, samesite="strict"
             )
         return response
 
@@ -328,7 +322,9 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
 
     def owner(handler):
         """Admit the page's session (or a browser that could get one) and run the app route as
-        the page's identity. Writes other than Pause need the cable right now (ADR 0012)."""
+        the page's identity. The cable is checked only when a session is issued (ADR 0012): a
+        signed-in page changes settings without it, and pairing needs the phone on the cable
+        anyway."""
 
         async def route(request: Request):
             try:
@@ -336,13 +332,6 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
                 if has_session(request):
                     if request.method != "GET":
                         require_client_header(request)
-                        if (
-                            request.url.path not in CABLE_FREE_WRITES
-                            and not await runtime.phone.cable_present()
-                        ):
-                            raise OpenLoloError(
-                                "CABLE_REQUIRED", "Plug the iPhone into the box to change settings", 403
-                            )
                 else:
                     facts = await access(request)
                     if not facts["allowed"]:
