@@ -13,7 +13,9 @@ Windows coalesce: while one is open every trigger joins it. A window that finds 
 followed by rare safety-net windows (``search_backoff_seconds``, off by default), only with the
 phone off the cable and the box on a network.
 
-A locked phone refuses new Wi-Fi sessions (PHONE_LOCKED); nothing retries until it advertises
+A locked phone refuses new Wi-Fi sessions (PHONE_LOCKED). Until the window that found it ends,
+the connect is tried again every ``LOCKED_RETRY_SECONDS`` on the same address, so pressing the
+top button and then unlocking connects; after that nothing retries until the phone advertises
 again, a request or the button asks, or the next safety-net window. A connected USB session is
 never probed: the cable and the tunnel report their own loss. A Wi-Fi session is probed only
 after ``probe_interval`` without a request, since a phone that leaves the network sends nothing.
@@ -72,6 +74,8 @@ ANNOUNCE_GAP, ANNOUNCE_RESTART = 15.0, 300.0
 # At boot the worker may start before Wi-Fi joins: the first search waits up to this long for a
 # default route, checking every NETWORK_POLL seconds (boot only; a cable attach ends the wait).
 BOOT_NETWORK_SECONDS, NETWORK_POLL = 90.0, 1.0
+# A locked phone found by a window is tried again this often until the window's deadline.
+LOCKED_RETRY_SECONDS = 2.0
 # Touch-session idle check cadence while an input session is open.
 HID_IDLE_TICK = 5.0
 # Owner states with no safety-net windows or advertisement-driven attempts: only a setup step
@@ -140,6 +144,8 @@ class CoreDeviceManager:
         self.found: str | None = None  # Where the last window found the phone, until used.
         self.windows = 0
         self.browses = 0
+        # Deadline of the last window opened by an event: a locked phone is retried until then.
+        self.retry_until = float("-inf")
         # Safety-net windows since the last event-driven window or connect.
         self.backoff = 0
         self.network_ok = network_ok
@@ -326,13 +332,13 @@ class CoreDeviceManager:
             return self.window
         if self.connection.state in BUSY_STATES:
             return None
+        deadline = self.clock() + self.config.search_window_seconds
         if not background:
             self.backoff = 0
+            self.retry_until = deadline
         self.windows += 1
         self.connection.searching = True
-        self.window = asyncio.create_task(
-            self._search_window(self.binding.udid, self.clock() + self.config.search_window_seconds)
-        )
+        self.window = asyncio.create_task(self._search_window(self.binding.udid, deadline))
         self._pulse()
         return self.window
 
@@ -510,6 +516,12 @@ class CoreDeviceManager:
                 continue
             owner = self.connection.state in OWNER_STATE_VALUES
             locked = self.connection.state == State.PHONE_LOCKED.value
+            if locked and failed is not None and await self._locked_retry():
+                # Found but locked inside the window: try the same address again, so a press
+                # and then an unlock connects without a second press.
+                self.found = failed
+                search = False
+                continue
             if self._auto() and failed is not None and attempts == 1 and not locked:
                 # First failure on one path: look on the other path at once. Not for a locked
                 # phone: it refuses on every path until it is unlocked.
@@ -537,6 +549,20 @@ class CoreDeviceManager:
             if remaining <= 0:
                 return
             await self._changes(remaining)
+
+    async def _locked_retry(self) -> bool:
+        """Wait ``LOCKED_RETRY_SECONDS`` while the phone stays locked, with the status LED still
+        searching. False when the window that found it has no time left for another try; a new
+        window, a cable attach or ``recover`` ends the wait early."""
+        if self.clock() + LOCKED_RETRY_SECONDS > self.retry_until:
+            return False
+        self.connection.searching = True
+        try:
+            await self._pause(LOCKED_RETRY_SECONDS)
+        finally:
+            self.connection.searching = False
+            self.connection.searched_at = time.time()
+        return True
 
     async def _event(self) -> str | None:
         """Wait for the next reason to look for the phone: an attach of the bound phone, a
