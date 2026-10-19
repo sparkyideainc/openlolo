@@ -266,21 +266,21 @@ class DeviceSession:
         decoder = self.decoder
         if decoder is None or not await decoder.wait_frame(self.config.stream_start_seconds):
             return None
-        image = await decoder.grab()
-        if image is None:
+        # A tap's result can be on screen before the decoder reaches it: catch up first, which
+        # usually takes one keyframe round trip. A cold stream starts behind, so allow the start
+        # window; a frame still more than stream_frame_ttl behind falls back to a discrete capture.
+        await decoder.catch_up(self.config.stream_start_seconds)
+        grabbed = await decoder.grab(options.max_size)
+        if grabbed is None:
             return None
-        native_width, native_height = image.size
+        image, age, (native_width, native_height) = grabbed
         epoch = geometry_epoch(native_width, native_height, device_tag(binding))
-        image = image.convert("RGB")
-        if options.max_size:
-            image.thumbnail((options.max_size, options.max_size))
         buffer = io.BytesIO()
         if options.format == "jpeg":
             image.save(buffer, format="JPEG", quality=self.config.stream_jpeg_quality)
         else:
             image.save(buffer, format="PNG", compress_level=1)
         width, height = image.size
-        age = decoder.frame_age()
         logger.info("stream screenshot in %.2fs (frame age %.2fs)", time.monotonic() - started, age)
         metadata = FrameMetadata(
             geometry_epoch=epoch,
@@ -292,7 +292,7 @@ class DeviceSession:
             received_at=time.time(),
             request_seconds=time.monotonic() - started,
             source_age_seconds=round(age, 3),
-            source_clock="pi hevc decode; frame age measured",
+            source_clock="pi hevc decode; age = lag behind screen",
             media_type=f"image/{options.format}",
         )
         return Frame(metadata, buffer.getvalue())
