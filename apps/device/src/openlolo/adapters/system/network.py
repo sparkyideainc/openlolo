@@ -92,6 +92,22 @@ class NetworkManager(SystemHealth):
         if self.setup_ap is not None:
             await self.setup_ap.stop()
 
+    async def reclaim_lan_name(self, name: str) -> bool:
+        """Take the mDNS host name back after avahi renamed the box ("<name>-2" after it saw its
+        own records during a fast access point stop and start). Returns whether it was renamed.
+        The API user is in group netdev, which avahi's D-Bus policy allows SetHostName."""
+        avahi = ("org.freedesktop.Avahi", "/", "org.freedesktop.Avahi.Server")
+        code, output = await self.run("busctl", "call", *avahi, "GetHostName", timeout=3)
+        current = output.strip().removeprefix("s ").strip('"') if code == 0 else ""
+        if not current or current == name or not current.startswith(f"{name}-"):
+            return False
+        code, output = await self.run(
+            "busctl", "call", *avahi, "SetHostName", "s", name, timeout=3, quiet=False
+        )
+        if code != 0:
+            raise OpenLoloError("NETWORK_COMMAND_FAILED", output or "avahi SetHostName failed", 502)
+        return True
+
     async def _nmcli(self, *args, timeout: float = 10) -> str:
         code, output = await self.run("nmcli", *args, timeout=timeout, quiet=False)
         if code != 0:

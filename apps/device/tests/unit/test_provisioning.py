@@ -285,3 +285,219 @@ def test_profile_slug():
     assert slug("Café:5G!") == "openlolo-caf-5g"
     assert slug("***") == "openlolo-wifi"
     assert len(slug("x" * 60)) == len("openlolo-") + 24
+
+
+def press(flag, seconds=[0.0]):
+    """Touch a button flag with a strictly newer mtime than any earlier press in the test."""
+    import os
+    import time
+
+    seconds[0] = max(seconds[0] + 1, time.time())
+    flag.touch()
+    os.utime(flag, (seconds[0], seconds[0]))
+
+
+def button_rig(tmp_path, bound=True):
+    clock = Clock()
+    requests = []
+    saved = [bound]
+
+    async def search():
+        requests.append("search")
+        return {}
+
+    prov = Provisioning(
+        config(tmp_path),
+        FakeNetwork(["home"]),
+        clock=clock,
+        button_flag=tmp_path / "setup-button",
+        pair_flag=tmp_path / "pair-button",
+        search=search,
+        indicator=tmp_path / "indicator",
+        bound=lambda: saved[0],
+    )
+    prov.saved = saved
+    return prov, clock, requests
+
+
+def shown(tmp_path):
+    return (tmp_path / "indicator").read_text().strip()
+
+
+async def test_hold_opens_local_mode_and_a_press_leaves_it(tmp_path):
+    prov, clock, requests = button_rig(tmp_path)
+    await prov.tick()
+    assert shown(tmp_path) == "idle" and prov.health()["mode"] == "wifi"
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert prov.health()["mode"] == "local" and shown(tmp_path) == "setup"
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert prov.health()["mode"] == "wifi" and prov.reason == "button"
+    assert shown(tmp_path) == "idle" and requests == []  # Leaving is not a search.
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert requests == ["search"] and prov.state == ProvisioningState.IDLE
+
+
+async def test_setup_mode_ignores_the_press(tmp_path):
+    prov, clock, requests = button_rig(tmp_path, bound=False)
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert prov.health()["mode"] == "setup" and shown(tmp_path) == "setup"
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert prov.health()["mode"] == "setup" and requests == []
+
+
+async def test_hold_while_the_window_is_open_is_ignored(tmp_path):
+    prov, clock, _ = button_rig(tmp_path)
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    expires = prov.expires
+    clock.advance(30)
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert prov.state == ProvisioningState.SETUP_MODE and prov.expires == expires
+    assert len(calls(prov.network, "start_setup_ap")) == 1
+
+
+async def test_press_older_than_the_opening_hold_does_not_leave(tmp_path):
+    import os
+
+    prov, clock, requests = button_rig(tmp_path)
+    press(tmp_path / "pair-button")
+    stamp = (tmp_path / "pair-button").stat().st_mtime
+    press(tmp_path / "setup-button")
+    await prov.tick()  # Opens Local mode; the older press is read on the next tick.
+    os.utime(tmp_path / "pair-button", (stamp, stamp))
+    await prov.tick()
+    assert prov.health()["mode"] == "local" and requests == []
+
+
+async def test_press_leaves_local_mode_opened_from_the_page(tmp_path):
+    prov, clock, _ = button_rig(tmp_path)
+    await prov.enter("api")
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert prov.state == ProvisioningState.IDLE and not prov.window
+
+
+async def test_buttons_are_ignored_during_a_join(tmp_path):
+    prov, clock, requests = button_rig(tmp_path)
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    prov.state = ProvisioningState.JOINING
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert prov.state == ProvisioningState.JOINING and prov.window and requests == []
+
+
+async def test_status_led_follows_the_phone_connection(tmp_path):
+    import time
+
+    prov, clock, _ = button_rig(tmp_path)
+    health = {"connection": {"state": "disconnected", "searching": False, "searched_at": 0}}
+
+    async def link():
+        if health is None:
+            raise OSError("worker down")
+        return health
+
+    prov.link = link
+    await prov.tick()
+    assert shown(tmp_path) == "idle"
+    health["connection"]["searching"] = True  # Any search, pressed or background.
+    await prov.tick()
+    assert shown(tmp_path) == "searching"
+    health["connection"].update(searching=False, searched_at=time.time() - 1)
+    await prov.tick()
+    assert shown(tmp_path) == "searching"  # A one-second search still shows for a moment.
+    health["connection"]["searched_at"] = time.time() - 10
+    await prov.tick()
+    assert shown(tmp_path) == "idle"
+    health["connection"] = {"state": "connected", "searching": False}
+    await prov.tick()
+    assert shown(tmp_path) == "connected"
+    press(tmp_path / "setup-button")
+    await prov.tick()
+    assert shown(tmp_path) == "setup"  # The window outranks the connection.
+    press(tmp_path / "pair-button")
+    await prov.tick()
+    assert shown(tmp_path) == "connected"
+    await prov.tick(network=False)  # Fast button ticks do not poll the worker.
+    health = None
+    await prov.tick()
+    assert shown(tmp_path) == "idle"
+
+
+async def test_lan_name_is_reclaimed_only_on_home_wifi_and_throttled(tmp_path):
+    clock = Clock()
+    net = FakeNetwork(["home"])
+    prov = Provisioning(config(tmp_path), net, clock=clock)
+    await prov.tick()
+    await prov.tick()  # Within RECLAIM_SECONDS: no second check.
+    assert calls(net, "reclaim_lan_name") == [("reclaim_lan_name", "openlolo-test")]
+    await prov.enter("api")
+    clock.advance(60)
+    await prov.tick()  # The access point owns the radio: leave avahi alone.
+    assert len(calls(net, "reclaim_lan_name")) == 1
+    await prov.exit()
+    await prov.tick()
+    assert len(calls(net, "reclaim_lan_name")) == 2
+
+
+async def test_reset_attempt_owns_the_button(tmp_path):
+    from openlolo.application.reset import ResetChallenge
+
+    prov, clock, requests = button_rig(tmp_path)
+    events = tmp_path / "button-events"
+    events.write_text("0 start s1\n")
+    runs = []
+
+    async def runner():
+        runs.append(True)
+        return False
+
+    prov.reset = ResetChallenge(events, runner=runner, clock=clock, choose=lambda targets: 5)
+    prov.reset.start()
+    await prov.tick()
+    assert shown(tmp_path) == "challenge"
+    # Daemon order: flag first, log second. A press counts, never searches.
+    press(tmp_path / "pair-button")
+    events.write_text("0 start s1\n1 double 1.0\n2 double 1.0\n3 single 1.0\n")
+    await prov.tick()
+    clock.now += 2
+    await prov.tick()
+    assert shown(tmp_path) == "armed" and requests == []
+    # The confirming hold never opens Local mode.
+    press(tmp_path / "setup-button")
+    events.write_text(events.read_text() + "4 long 1.0\n")
+    await prov.tick()
+    await prov.tick()
+    assert runs == [True] and prov.health()["mode"] == "wifi" and shown(tmp_path) == "resetting"
+
+
+async def test_hold_that_fails_a_challenge_is_not_a_local_mode_hold(tmp_path):
+    from openlolo.application.reset import ResetChallenge
+
+    prov, clock, requests = button_rig(tmp_path)
+    events = tmp_path / "button-events"
+    events.write_text("0 start s1\n")
+
+    async def runner():
+        return False
+
+    prov.reset = ResetChallenge(events, runner=runner, clock=clock)
+    prov.reset.start()
+    press(tmp_path / "setup-button")
+    events.write_text("0 start s1\n1 long 1.0\n")
+    await prov.tick()
+    await prov.tick()
+    assert prov.reset.stage is None and prov.health()["mode"] == "wifi"
+    assert shown(tmp_path) == "idle"
+    press(tmp_path / "setup-button")  # After the attempt closed: an ordinary hold.
+    await prov.tick()
+    assert prov.health()["mode"] == "local"

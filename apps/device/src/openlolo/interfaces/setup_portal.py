@@ -2,10 +2,19 @@
 
 Serves the built owner page (``web/portal``) and two APIs: the unauthenticated bootstrap
 ``/setup/*`` routes the captive flow relies on, and the ``/app/*`` owner table from
-``app_api`` behind a session. The cable is the key: a session is issued only while one phone
-is on the box's USB port, and only to a browser on the setup access point (joined with the
-card's WPA2 password) or on the paired phone itself (its LAN address from the RemotePairing
-advertisement). There is no password. Nothing here is reachable from outside the local network.
+``app_api`` behind a session. There is no password. Nothing here is reachable from outside the
+local network.
+
+Who gets a session:
+- A box with a saved phone: that phone only, recognised by its own address (the browser's
+  address is one where the phone advertises RemotePairing, on the home Wi-Fi or the box's own),
+  or a browser on the box's own Wi-Fi while that phone is on the box's USB port. Every other
+  browser sees the reset prompt only.
+- A box with no saved phone: first-time setup, a browser on the setup access point (joined with
+  the card's WPA2 password) while one phone is on the cable.
+
+Factory reset starts here for any browser (``/setup/reset/*``) and is finished at the box with
+the top button (application/reset.py), so a stranger on the home Wi-Fi cannot erase it.
 """
 
 import hashlib
@@ -164,19 +173,47 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
         return False
 
     async def access(request: Request) -> dict:
-        """Who may open the page from here, and why not."""
+        """Who may open the page from here, and why not. ``reason`` names the proof: ``address``
+        (the saved phone's own address), ``cable`` (on the access point with the saved phone on USB,
+        or with any phone during first-time setup) or ``none``."""
         address = peer(request)
         if runtime.config.backend == "simulated" and address is not None and address.is_loopback:
             # The simulator has no cable or paired phone; the developer's own machine stands in.
-            return {"cable": True, "setup_ap": False, "paired_phone": True, "allowed": True}
-        cable = await runtime.phone.cable_present()
+            return {
+                "bound": True,
+                "cable": True,
+                "setup_ap": False,
+                "paired_phone": True,
+                "allowed": True,
+                "reason": "address",
+            }
+        binding = runtime.bindings.read()
+        phones = await runtime.phone.usb_phones()
+        cable = len(phones) == 1
         setup_ap = on_setup_ap(request)
-        paired_phone = False if setup_ap else await on_paired_phone(request)
+        if binding is None:
+            allowed = cable and setup_ap
+            return {
+                "bound": False,
+                "cable": cable,
+                "setup_ap": setup_ap,
+                "paired_phone": False,
+                "allowed": allowed,
+                "reason": "cable" if allowed else "none",
+            }
+        paired_phone = await on_paired_phone(request)
+        # The cable cannot tell which browser is on that phone, so it counts only on the box's own
+        # Wi-Fi (joined with the card's password): a phone charging on the box must not open
+        # the page to every browser on the home Wi-Fi.
+        on_cable = setup_ap and any(phone.get("udid") == binding.udid for phone in phones)
+        reason = "address" if paired_phone else "cable" if on_cable else "none"
         return {
+            "bound": True,
             "cable": cable,
             "setup_ap": setup_ap,
             "paired_phone": paired_phone,
-            "allowed": cable and (setup_ap or paired_phone),
+            "allowed": reason != "none",
+            "reason": reason,
         }
 
     def session_token(request: Request) -> str | None:
@@ -203,6 +240,8 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
             )
 
     def refuse(facts: dict) -> OpenLoloError:
+        if facts.get("bound"):
+            return OpenLoloError("NOT_OWNER", "This box belongs to another iPhone", 403)
         if not facts["cable"]:
             return OpenLoloError("CABLE_REQUIRED", "Plug the iPhone into the box with its USB cable", 403)
         return OpenLoloError("PHONE_REQUIRED", "Open this page on the iPhone plugged into the box", 403)
@@ -236,6 +275,7 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
                 "device": runtime.config.setup_name,
                 "hostname": f"{(runtime.config.setup_name or 'openlolo').lower()}.local",
                 "setup_mode": runtime.provisioning.active,
+                "mode": runtime.provisioning.mode,
                 "bound": runtime.bindings.read() is not None,
                 "session": has_session(request),
                 "access": await access(request),
@@ -245,8 +285,27 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
                 if runtime.provisioning.last_error
                 else None,
                 "usb_pairing": pairing,
+                "reset_method": "button" if runtime.reset.available else "name",
+                "reset": runtime.reset.view(request.query_params.get("attempt")),
             }
         )
+
+    async def reset_start(request):
+        """Open a reset challenge; the box's button finishes it. The owner's signed-in page may
+        replace another browser's open attempt."""
+        require_local(request)
+        require_client_header(request)
+        return JSONResponse(runtime.reset.start(takeover=has_session(request)))
+
+    async def reset_cancel(request):
+        require_local(request)
+        require_client_header(request)
+        try:
+            data = await body(request, 1024)
+        except OpenLoloError:
+            data = {}
+        attempt = data.get("attempt") if isinstance(data.get("attempt"), str) else None
+        return JSONResponse({"cancelled": runtime.reset.cancel(attempt, owner=has_session(request))})
 
     async def open_session(request):
         require_local(request)
@@ -358,6 +417,8 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
         Route("/setup/session", api(close_session), methods=["DELETE"]),
         Route("/setup/scan", api(scan)),
         Route("/setup/connect", api(connect), methods=["POST"]),
+        Route("/setup/reset/start", api(reset_start), methods=["POST"]),
+        Route("/setup/reset/cancel", api(reset_cancel), methods=["POST"]),
     ]
     routes += [
         Route(path, owner(handler), methods=methods)

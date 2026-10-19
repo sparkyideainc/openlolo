@@ -1,8 +1,13 @@
 #!/usr/bin/python3
-"""Physical setup button: hold for five seconds to open local Wi-Fi setup mode.
+"""Physical buttons of the box, in their own systemd unit so the API unit keeps PrivateDevices=yes.
 
-Runs as its own systemd unit with GPIO access so the API unit keeps PrivateDevices=yes. The
-only side effect is touching a flag file the API's provisioning supervisor watches.
+OPENLOLO_BUTTON_BACKEND picks the hardware:
+- ``gpio`` (default, Raspberry Pi): hold the button on BCM pin 17 for five seconds. The only
+  side effect is touching the setup flag the API's provisioning supervisor watches.
+- ``pisugar3`` (Lolo Pocket): PiSugar3 top button over I2C, status on the board LED; see
+  ``openlolo_pisugar3.py`` next to this file.
+
+The API decides what a hold means: setup mode, then a reset armed, then the reset confirmed.
 """
 
 import os
@@ -23,6 +28,13 @@ def held() -> None:
 
 
 def main() -> int:
+    backend = os.environ.get("OPENLOLO_BUTTON_BACKEND", "gpio")
+    if backend == "pisugar3":
+        return pisugar3()
+    if backend != "gpio":
+        # Exit 0: Restart=on-failure must not loop on a configuration error.
+        print(f"unknown OPENLOLO_BUTTON_BACKEND {backend!r}; buttons disabled", file=sys.stderr)
+        return 0
     try:
         from gpiozero import Button
     except ImportError:
@@ -41,6 +53,20 @@ def main() -> int:
     while not stop:
         time.sleep(0.5)
     return 0
+
+
+def pisugar3() -> int:
+    import openlolo_pisugar3
+
+    stop = False
+
+    def quit(*_):
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, quit)
+    signal.signal(signal.SIGINT, quit)
+    return openlolo_pisugar3.main(lambda: stop)
 
 
 if __name__ == "__main__":

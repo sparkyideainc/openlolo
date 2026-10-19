@@ -9,6 +9,7 @@ import type {
 	Consent,
 	NetworkStatus,
 	Operation,
+	ResetAttempt,
 	SetupStatus,
 	WifiNetwork,
 } from "@/api/types";
@@ -23,7 +24,8 @@ export type DemoScreen =
 	| "attention"
 	| "paused"
 	| "setup"
-	| "connect";
+	| "connect"
+	| "stranger";
 
 function now(): number {
 	return Date.now() / 1000;
@@ -35,7 +37,37 @@ function delay(ms = 150): Promise<void> {
 
 export function createDemoApi(screen: DemoScreen | null): BoxApi {
 	const t = now();
-	let session = screen !== "connect";
+	let session = screen !== "connect" && screen !== "stranger";
+	// Demo reset: the "button" presses itself once a second, arms, then a hold confirms.
+	let resetStarted: number | null = null;
+	let resetAttempt: string | null = null;
+	let resetTarget = 6;
+	let resetClosed: ResetAttempt | null = null;
+	const resetView = (attempt?: string): ResetAttempt | null => {
+		if (resetStarted === null) return resetClosed;
+		const elapsed = now() - resetStarted;
+		const count = Math.min(resetTarget, Math.floor(elapsed / 1.2));
+		const armedAt = resetTarget * 1.2 + 2;
+		const stage =
+			elapsed < armedAt
+				? "challenge"
+				: elapsed < armedAt + 6
+					? "armed"
+					: "resetting";
+		return {
+			stage,
+			attempt: resetAttempt,
+			count,
+			...(attempt === resetAttempt ? { target: resetTarget } : {}),
+			expires_in:
+				stage === "resetting"
+					? null
+					: Math.max(
+							0,
+							Math.round((stage === "armed" ? armedAt + 30 : 30) - elapsed),
+						),
+		};
+	};
 	const cable = true;
 	let setupMode = screen === "setup";
 	let paused = screen === "paused";
@@ -205,14 +237,25 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 				device: "OpenLolo-4B2C",
 				hostname: "openlolo-4b2c.local",
 				setup_mode: setupMode,
+				mode: !setupMode ? "wifi" : screen === "setup" ? "setup" : "local",
 				bound: screen !== "setup",
 				session,
 				access: {
+					bound: screen !== "setup",
 					cable,
 					setup_ap: screen === "setup",
-					paired_phone: screen !== "connect" && screen !== "setup",
-					allowed: cable && screen !== "connect",
+					paired_phone:
+						screen !== "connect" && screen !== "setup" && screen !== "stranger",
+					allowed: cable && screen !== "connect" && screen !== "stranger",
+					reason:
+						screen === "connect" || screen === "stranger"
+							? "none"
+							: screen === "setup"
+								? "cable"
+								: "address",
 				},
+				reset_method: "button",
+				reset: resetView(),
 				state: setupMode ? "setup_mode" : "idle",
 				last_attempt: lastAttempt,
 				last_error: null,
@@ -370,6 +413,31 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			}
 			setupMode = true;
 			return { state: "reset" };
+		},
+		async resetStart() {
+			await delay();
+			resetStarted = now();
+			resetAttempt = crypto.randomUUID();
+			resetTarget = 5 + Math.floor(Math.random() * 4);
+			resetClosed = null;
+			return { attempt: resetAttempt, target: resetTarget, expires_in: 30 };
+		},
+		async resetCancel(attempt) {
+			await delay();
+			const open = resetView();
+			if (!open || (attempt !== resetAttempt && !session))
+				return { cancelled: false };
+			resetClosed = {
+				stage: open.stage === "armed" ? "cancelled" : "failed",
+				attempt: resetAttempt,
+				reason: "page",
+			};
+			resetStarted = null;
+			return { cancelled: true };
+		},
+		async resetStatus(attempt) {
+			const status = await this.setupStatus();
+			return { ...status, reset: resetView(attempt) };
 		},
 		async diagnostics() {
 			requireSession();

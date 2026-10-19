@@ -1,4 +1,4 @@
-"""Box page listener: bootstrap routes, cable-gated sessions, and the owner table behind them."""
+"""Box page listener: bootstrap routes, who gets a session, and the owner table behind it."""
 
 import contextlib
 
@@ -82,7 +82,15 @@ async def test_status_is_local_only(portal, runtime):
         status = (await c.get("/setup/status")).json()
         assert status["hostname"] == f"{runtime.config.setup_name.lower()}.local"
         assert status["bound"] is True and status["session"] is False
-        assert status["access"] == {"cable": True, "setup_ap": False, "paired_phone": False, "allowed": False}
+        assert status["mode"] == "wifi" and status["setup_mode"] is False
+        assert status["access"] == {
+            "bound": True,
+            "cable": True,
+            "setup_ap": False,
+            "paired_phone": False,
+            "allowed": False,
+            "reason": "none",
+        }
         assert status["usb_pairing"]["state"] in {"idle", "off"}
     async with browser(portal, client=("8.8.8.8", 1234)) as c:
         assert (await c.get("/setup/status")).status_code == 403
@@ -117,22 +125,23 @@ async def test_paired_phone_on_the_cable_opens_the_page(portal, runtime):
 
 
 async def test_other_lan_devices_are_refused(portal, runtime):
+    # The saved phone is on the cable, but the cable cannot tell which browser is on it.
     async with browser(portal, client=LAPTOP) as c:
         refused = await c.post("/setup/session", headers=WRITE)
-        assert refused.status_code == 403 and refused.json()["error"]["code"] == "PHONE_REQUIRED"
+        assert refused.status_code == 403 and refused.json()["error"]["code"] == "NOT_OWNER"
         owner = await c.get("/app/status")
         assert owner.status_code == 401 and owner.json()["error"]["code"] == "LOGIN_REQUIRED"
         assert (await c.post("/app/pause", json={}, headers=WRITE)).status_code == 401
         assert (await c.get("/setup/scan")).status_code == 403
 
 
-async def test_the_phone_must_be_on_the_cable(portal, runtime):
+async def test_the_saved_phone_needs_no_cable(portal, runtime):
     unplug(runtime)
     async with browser(portal) as c:
         status = (await c.get("/setup/status")).json()
-        assert status["access"]["cable"] is False and status["access"]["allowed"] is False
-        refused = await c.post("/setup/session", headers=WRITE)
-        assert refused.status_code == 403 and refused.json()["error"]["code"] == "CABLE_REQUIRED"
+        assert status["access"]["cable"] is False and status["access"]["allowed"] is True
+        assert status["access"]["reason"] == "address"
+        assert (await c.post("/setup/session", headers=WRITE)).status_code == 200
 
 
 async def test_a_session_changes_settings_without_the_cable(portal, runtime):
@@ -142,8 +151,7 @@ async def test_a_session_changes_settings_without_the_cable(portal, runtime):
         assert (await c.get("/app/status")).status_code == 200  # Reading keeps working
         assert (await c.post("/app/pause", json={}, headers=WRITE)).status_code == 200
         assert (await c.post("/app/network/scan", json={}, headers=WRITE)).status_code == 200
-        refused = await c.post("/setup/session", headers=WRITE)  # A new session still needs it
-        assert refused.status_code == 403 and refused.json()["error"]["code"] == "CABLE_REQUIRED"
+        assert (await c.post("/setup/session", headers=WRITE)).status_code == 200  # The address is enough
 
 
 async def test_phone_address_is_refreshed_on_a_miss(portal, runtime):
@@ -197,7 +205,29 @@ async def test_rebinding_another_phone_signs_the_page_out(portal, runtime):
         assert (await c.get("/setup/status")).json()["session"] is False
 
 
+async def test_local_mode_admits_the_saved_phone_on_the_cable(portal, runtime):
+    # Local mode: on the box's own Wi-Fi the phone may not advertise RemotePairing; the card's
+    # password plus the saved phone on the cable is the proof.
+    await runtime.provisioning.enter(reason="test")
+    async with ap(portal) as c:
+        status = (await c.get("/setup/status")).json()
+        assert status["mode"] == "local" and status["access"]["setup_ap"] is True
+        assert status["access"]["allowed"] is True and status["access"]["reason"] == "cable"
+        assert (await c.post("/setup/session", headers=WRITE)).status_code == 200
+    runtime.phone.device.cabled = [{"udid": "stranger", "product_type": None, "product_version": None}]
+    runtime.phone._usb_cache = None
+    async with ap(portal) as c:
+        refused = await c.post("/setup/session", headers=WRITE)
+        assert refused.status_code == 403 and refused.json()["error"]["code"] == "NOT_OWNER"
+    runtime.phone.device.addresses = ["192.168.4.25"]  # The phone advertises on the box's Wi-Fi
+    runtime.phone._address_cache = None
+    async with ap(portal) as c:
+        status = (await c.get("/setup/status")).json()
+        assert status["access"]["allowed"] is True and status["access"]["reason"] == "address"
+
+
 async def test_setup_ap_clients_need_only_the_cable(portal, runtime):
+    runtime.bindings.delete()  # First-time setup: no phone saved yet.
     await runtime.provisioning.enter(reason="test")
     async with ap(portal) as c:
         status = (await c.get("/setup/status")).json()
@@ -229,3 +259,38 @@ async def test_simulator_trusts_the_developer_machine_only(portal, runtime):
             assert (await c.get("/setup/status")).json()["access"]["allowed"] is False
     finally:
         runtime.config.backend = "simulated"
+
+
+async def test_any_browser_can_start_a_reset_but_only_the_button_finishes_it(portal, runtime):
+    events = runtime.config.runtime_dir / "button-events"
+    events.write_text("0 start s1\n")
+    async with browser(portal, client=LAPTOP) as stranger:
+        status = (await stranger.get("/setup/status")).json()
+        assert status["reset_method"] == "button" and status["reset"] is None
+        assert (await stranger.post("/setup/reset/start")).status_code == 403  # No client header
+        started = (await stranger.post("/setup/reset/start", headers=WRITE)).json()
+        assert 5 <= started["target"] <= 8
+        own = (await stranger.get("/setup/status", params={"attempt": started["attempt"]})).json()
+        assert own["reset"]["stage"] == "challenge" and own["reset"]["target"] == started["target"]
+        again = await stranger.post("/setup/reset/start", headers=WRITE)
+        assert again.status_code == 409 and again.json()["error"]["code"] == "RESET_IN_PROGRESS"
+    async with browser(portal) as owner:
+        await owner.post("/setup/session", headers=WRITE)
+        seen = (await owner.get("/setup/status")).json()["reset"]
+        assert seen["stage"] == "challenge" and "target" not in seen  # Another browser's number
+        taken = (await owner.post("/setup/reset/start", headers=WRITE)).json()  # Owner takes over
+        assert taken["attempt"] != started["attempt"]
+        cancelled = await owner.post("/setup/reset/cancel", json={}, headers=WRITE)
+        assert cancelled.json() == {"cancelled": True}
+        # The typed-name reset is gone where the button can count presses.
+        typed = await owner.post("/app/reset", json={"device": runtime.config.setup_name}, headers=WRITE)
+        assert typed.status_code == 409 and typed.json()["error"]["code"] == "RESET_BUTTON_REQUIRED"
+    assert runtime.bindings.read() is not None
+
+
+async def test_box_without_the_button_keeps_the_typed_reset(portal, runtime):
+    async with browser(portal) as c:
+        status = (await c.get("/setup/status")).json()
+        assert status["reset_method"] == "name"
+        refused = await c.post("/setup/reset/start", headers=WRITE)
+        assert refused.status_code == 409 and refused.json()["error"]["code"] == "RESET_BUTTON_UNAVAILABLE"

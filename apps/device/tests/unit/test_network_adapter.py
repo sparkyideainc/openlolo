@@ -214,3 +214,24 @@ async def test_scan_dedupes_by_ssid_keeping_best_signal(monkeypatch):
         {"ssid": "Caf:Net", "signal": 70, "security": "WPA2 WPA3", "active": True},
         {"ssid": "Open", "signal": 20, "security": "", "active": False},
     ]
+
+
+@pytest.mark.parametrize(
+    ("current", "renamed"),
+    [
+        ('s "openlolo-ab12-2"', True),
+        ('s "openlolo-ab12"', False),
+        ('s "radxa-zero3"', False),  # Not an avahi conflict rename: leave it alone.
+    ],
+)
+async def test_reclaim_lan_name_only_after_an_avahi_rename(current, renamed):
+    get = ("busctl", "call", "org.freedesktop.Avahi", "/", "org.freedesktop.Avahi.Server", "GetHostName")
+    nm, runner = manager({get: (0, current + "\n")})
+    assert await nm.reclaim_lan_name("openlolo-ab12") is renamed
+    sets = runner.argv(*get[:-1], "SetHostName")
+    assert sets == ([(*get[:-1], "SetHostName", "s", "openlolo-ab12")] if renamed else [])
+
+
+async def test_reclaim_lan_name_survives_a_missing_avahi():
+    nm, _ = manager({("busctl",): (1, "Unit dbus-org.freedesktop.Avahi.service not found")})
+    assert await nm.reclaim_lan_name("openlolo-ab12") is False

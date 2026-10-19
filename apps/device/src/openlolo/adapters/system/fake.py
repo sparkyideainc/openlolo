@@ -22,6 +22,10 @@ class FakeNetwork:
         self.calls.append(("stop_setup_ap",))
         self.setup_ap_active = False
 
+    async def reclaim_lan_name(self, name):
+        self.calls.append(("reclaim_lan_name", name))
+        return False
+
     async def health(self):
         return {
             "wifi": ["connected" if self.active else "disconnected"],

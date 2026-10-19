@@ -7,13 +7,18 @@ from openlolo.adapters.storage.binding import BindingStore
 from openlolo.adapters.storage.sqlite import Journal
 from openlolo.adapters.system.fake import FakeNetwork
 from openlolo.adapters.system.network import NetworkManager, SystemHealth
+from openlolo.adapters.system.network import run as run_command
 from openlolo.adapters.system.setup_ap import ensure_setup_identity
 from openlolo.application.autopair import AutoPair
 from openlolo.application.coordinator import Coordinator
 from openlolo.application.phone import Phone
-from openlolo.application.provisioning import Provisioning
+from openlolo.application.provisioning import Provisioning, ProvisioningState
+from openlolo.application.reset import ResetChallenge
+from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Binding
 from openlolo.domain.profiles import ProfileStore
+
+RESET_UNIT = "openlolo-reset.service"  # Root unit: deploy/reset/openlolo-reset.sh
 
 
 class Runtime:
@@ -35,12 +40,21 @@ class Runtime:
             manager = NetworkManager(config.wifi_interface)
             manager.configure_setup_ap(config)
             self.network = manager
+        self.reset = ResetChallenge(
+            config.runtime_dir / "button-events",
+            runner=self.factory_reset,
+            busy=lambda: self.provisioning.state in {ProvisioningState.JOINING, ProvisioningState.VERIFYING},
+        )
         self.provisioning = Provisioning(
             config,
             self.network,
             button_flag=config.runtime_dir / "setup-button",
             pair_flag=config.runtime_dir / "pair-button",
             search=device.search,
+            indicator=config.runtime_dir / "indicator",
+            link=device.health,
+            bound=lambda: self.bindings.read() is not None,
+            reset=self.reset,
         )
         self.profiles = ProfileStore(config.state_dir / "apps")
         self.phone = Phone(
@@ -58,6 +72,22 @@ class Runtime:
         )
         self.door_provider, self.door_gateway = build_door(self)
         self.lock = None
+
+    async def factory_reset(self) -> bool:
+        """Back to first-time setup. True when done in process (the simulator); otherwise the
+        root reset unit runs on its own and stops this service."""
+        if self.config.backend == "simulated":
+            self.bindings.delete()
+            if not self.provisioning.active:
+                await self.provisioning.enter("reset")
+            return True
+        # The unit stops this service, so it must run on its own: --no-block returns at once.
+        code, output = await run_command(
+            "systemctl", "start", "--no-block", RESET_UNIT, timeout=10, quiet=False
+        )
+        if code != 0:
+            raise OpenLoloError("RESET_FAILED", output or "Could not start the reset", 502)
+        return False
 
     async def start(self):
         import fcntl

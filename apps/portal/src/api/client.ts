@@ -11,6 +11,7 @@ import type {
 	NetworkStatus,
 	OperationsPage,
 	ProvisioningHealth,
+	ResetStart,
 	SetupKind,
 	SetupStatus,
 	WifiNetwork,
@@ -122,8 +123,13 @@ export interface BoxApi {
 		payload: Record<string, unknown>,
 	): Promise<{ state?: string; id?: string }>;
 	diagnostics(): Promise<unknown>;
-	/** Back to first-time setup; the box checks the typed name too. */
+	/** Back to first-time setup on a box without the top button; the box checks the typed name. */
 	reset(device: string): Promise<{ state: string }>;
+	/** Opens a reset challenge; the box's top button finishes it. */
+	resetStart(): Promise<ResetStart>;
+	resetCancel(attempt: string | null): Promise<{ cancelled: boolean }>;
+	/** The bootstrap status as seen by the browser that started `attempt` (it may read the target). */
+	resetStatus(attempt: string): Promise<SetupStatus>;
 }
 
 function operationId(): string {
@@ -161,6 +167,10 @@ export const liveApi: BoxApi = {
 	setupMode: (enabled) =>
 		request("POST", "/app/network/setup_mode", { enabled }),
 	reset: (device) => request("POST", "/app/reset", { device }),
+	resetStart: () => request("POST", "/setup/reset/start", {}),
+	resetCancel: (attempt) => request("POST", "/setup/reset/cancel", { attempt }),
+	resetStatus: (attempt) =>
+		request("GET", `/setup/status?${new URLSearchParams({ attempt })}`),
 	pause: () => request("POST", "/app/pause", { operation_id: operationId() }),
 	decide: (handle, allow, window) =>
 		request("POST", `/app/consents/${encodeURIComponent(handle)}`, {

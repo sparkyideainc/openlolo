@@ -9,9 +9,9 @@ over one Listen connection; an attach of the bound phone connects over USB at on
 searched inside a bounded search window (``search_window_seconds``) opened by an event: boot (once
 the box has a network, since the worker can start before Wi-Fi joins), the cable pulled, a Wi-Fi session lost, the top button (IPC ``search``), a request that needs the
 phone, or avahi seeing the bound phone advertise (an unlocked iPhone advertises at once).
-Windows coalesce: while one is open every trigger joins it. A window that finds nothing is
-followed by rare safety-net windows (``search_backoff_seconds``), only with the phone off the
-cable and the box on a network.
+Windows coalesce: while one is open every trigger joins it. A window that finds nothing can be
+followed by rare safety-net windows (``search_backoff_seconds``, off by default), only with the
+phone off the cable and the box on a network.
 
 A locked phone refuses new Wi-Fi sessions (PHONE_LOCKED); nothing retries until it advertises
 again, a request or the button asks, or the next safety-net window. A connected USB session is
@@ -365,6 +365,7 @@ class CoreDeviceManager:
             return None
         finally:
             self.connection.searching = False
+            self.connection.searched_at = time.time()
             self._pulse()
 
     def _found(self, name: str) -> str:
@@ -420,6 +421,8 @@ class CoreDeviceManager:
         if self.connection.state in NO_BACKGROUND_STATES:
             return None
         steps = self.config.search_backoff_seconds
+        if not steps:
+            return None
         return steps[min(self.backoff, len(steps) - 1)]
 
     async def _network_up(self, seconds: float) -> bool:

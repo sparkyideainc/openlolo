@@ -10,6 +10,27 @@ radio changes to station mode for a join; on success the phone reconnects to hom
 reads the saved result at the same local hostname. A failed attempt recreates the AP. The
 setup button or an unconfigured boot opens a bounded window. Only profiles created by a failed
 attempt may be deleted.
+
+What the owner sees (``mode`` in health) follows from the window and the binding:
+
+    wifi   window closed: the box is on its saved Wi-Fi (or offline)
+    local  window open, a phone is saved: the box broadcasts its own Wi-Fi for that phone
+    setup  window open, no phone saved: first-time setup
+
+Buttons (Lolo Pocket top button: long press = hold, single press = press; Raspberry Pi: 5 s hold):
+
+    wifi --hold--> local (setup when no phone is saved)   wifi --press--> one phone search
+    local --press--> wifi                                 local, setup --hold--> ignored
+    setup --press--> ignored                              joining --any--> ignored
+
+A press opens the same search window the worker opens by itself (boot, cable pulled, phone
+advertising, a request). Factory reset starts on the box page and is finished with the button
+(application/reset.py); while a reset attempt is open the button belongs to it alone.
+
+The status LED mirrors one word in ``indicator``, highest first: ``setup`` (window open, fast
+blink), ``connected`` (phone connected, steady on), ``searching`` (a search window is open or
+ended less than SEARCH_SHOW_SECONDS ago, slow blink), ``idle`` (off). An open reset attempt
+from the page comes first: ``challenge``, ``armed``, ``resetting`` (application/reset.py).
 """
 
 import asyncio
@@ -20,12 +41,16 @@ import re
 import secrets
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from openlolo.domain.errors import OpenLoloError
 
 log = logging.getLogger("openlolo.provisioning")
 
 HANDOFF_READ_SECONDS = 6  # Captive sheet time to show the next address before the AP drops.
+BUTTON_POLL_SECONDS = 0.2  # The daemon acts on release; a fast poll keeps the box's reply immediate.
+SEARCH_SHOW_SECONDS = 3  # A search often ends within a second; keep the slow blink visible.
+RECLAIM_SECONDS = 15  # How often, with the window closed, the mDNS host name is checked.
 
 
 class ProvisioningState(str, enum.Enum):
@@ -50,14 +75,30 @@ class Provisioning:
         button_flag: Path | None = None,
         pair_flag: Path | None = None,
         search=None,
+        indicator: Path | None = None,
+        link=None,
+        bound=None,
+        reset=None,
     ):
         self.config, self.network = config, network
         self.setup_name = config.setup_name or "OpenLolo"
         self.clock = clock
         self.button_flag = button_flag
-        # Top-button press (written by the button daemon): one phone search window per press.
+        # Top-button press (written by the button daemon): one phone search, or leaves Local mode.
         self.pair_flag, self.search = pair_flag, search
+        self.bound = bound  # () -> whether a phone is saved; None counts as saved
+        # The page's reset attempt (application/reset.py): while open it owns the button.
+        self.reset = reset
         self.pair_seen = 0.0
+        self.opened_stamp = 0.0  # mtime of the hold that opened setup; older presses never cancel
+        # Status LED: ``indicator`` is the file the button daemon reads; ``link`` returns the
+        # device health ({"connection": {"state", "searching"}}), polled about once a second.
+        self.indicator, self.link = indicator, link
+        self.link_word = "idle"
+        self.shown: str | None = None
+        host = urlsplit(config.lan_url).hostname if getattr(config, "lan_url", None) else None
+        self.lan_name = host.removesuffix(".local") if host and host.endswith(".local") else None
+        self.reclaim_at = 0.0
         self.state = ProvisioningState.IDLE if config.provisioning else ProvisioningState.DISABLED
         self.since = clock()
         self.boot = self.since  # run() resets it; tick() may also be driven directly.
@@ -95,9 +136,24 @@ class Provisioning:
         """The setup window is open (also while a join started from it is in progress)."""
         return self.window
 
+    @property
+    def mode(self) -> str:
+        if not self.window:
+            return "wifi"
+        return "local" if self._bound() else "setup"
+
+    def _bound(self) -> bool:
+        if self.bound is None:
+            return True
+        try:
+            return bool(self.bound())
+        except Exception:
+            return True
+
     def health(self) -> dict:
         return {
             "state": self.state.value,
+            "mode": self.mode,
             "since": self.since,
             "reason": self.reason,
             "expires_in": max(0, int(self.expires - self.clock())) if self.expires else None,
@@ -105,6 +161,24 @@ class Provisioning:
             "last_error": self.last_error,
             "last_attempt": self.last_attempt,
         }
+
+    def _show(self) -> None:
+        """Write the indicator word when it changed. A failed write is logged and not retried:
+        without the runtime directory there is no button daemon to read it."""
+        if self.indicator is None:
+            return
+        word = (self.reset.indicator if self.reset is not None else None) or (
+            "setup" if self.window else self.link_word
+        )
+        if word == self.shown:
+            return
+        try:
+            temporary = self.indicator.with_name(f".{self.indicator.name}.tmp")
+            temporary.write_text(word + "\n")
+            temporary.replace(self.indicator)
+        except OSError as exc:
+            log.warning("indicator not written: %s", exc)
+        self.shown = word
 
     def _set(self, state: ProvisioningState, reason: str | None = None) -> None:
         if state != self.state:
@@ -123,6 +197,7 @@ class Provisioning:
         self.window = True
         self.expires = self.clock() + self.config.setup_timeout_seconds
         self._set(ProvisioningState.SETUP_MODE, reason)
+        self._show()
 
     async def exit(self) -> None:
         await self.finish("exit")
@@ -136,6 +211,7 @@ class Provisioning:
         await self.network.stop_setup_ap()
         if self.state != ProvisioningState.DISABLED:
             self._set(ProvisioningState.IDLE, reason)
+        self._show()
 
     async def connect(self, ssid: str, psk: str) -> str:
         if self.state == ProvisioningState.DISABLED:
@@ -227,10 +303,16 @@ class Provisioning:
 
     # -- supervisor -----------------------------------------------------------------
 
-    async def tick(self) -> None:
-        """One supervisor step: timeouts, boot/grace entry, and the physical button."""
+    async def tick(self, network: bool = True) -> None:
+        """One supervisor step: timeouts, the physical button, and (``network``) boot/grace entry."""
         if self.state == ProvisioningState.DISABLED:
             return
+        try:
+            await self._tick(network)
+        finally:
+            self._show()
+
+    async def _tick(self, network: bool) -> None:
         now = self.clock()
         if (
             self.window
@@ -240,25 +322,19 @@ class Provisioning:
         ):
             await self.finish("timeout")
             return
-        await self._pair_button()
-        if self.button_flag is not None:
-            try:
-                stamp = self.button_flag.stat().st_mtime
-            except OSError:
-                stamp = 0.0
-            if stamp > self.button_seen:
-                self.button_seen = stamp
-                # Consume the edge-triggered marker so a service restart cannot reopen setup
-                # mode from a stale file left by the last physical press.
-                with contextlib.suppress(OSError):
-                    self.button_flag.unlink()
-                if self.state == ProvisioningState.IDLE:
-                    try:
-                        await self.enter("button")
-                    except OpenLoloError as exc:
-                        log.warning("setup mode not started (button): %s", exc.message)
-                    return
-        if self.state == ProvisioningState.IDLE and not self.grace_used:
+        # A reset attempt reads the button from the daemon's event log; the flags of the same
+        # presses and holds are consumed unread so they never also open Local mode or search.
+        if self.reset is not None and await self.reset.poll():
+            self._drop_buttons()
+        # Hold before press: a press read in the same tick as the opening hold waits a tick.
+        elif await self._setup_button():
+            return
+        else:
+            await self._pair_button()
+        if network:
+            await self._poll_link()
+            await self._reclaim_lan_name(now)
+        if network and self.state == ProvisioningState.IDLE and not self.grace_used:
             status = await self.network.status()
             saved = list(status.get("saved") or [])
             if not saved:
@@ -268,10 +344,52 @@ class Provisioning:
             elif status.get("ssid"):
                 self.grace_used = True  # Online once: never auto-enter again this boot.
 
+    def _drop_buttons(self) -> None:
+        for flag, seen in ((self.button_flag, "button_seen"), (self.pair_flag, "pair_seen")):
+            if flag is None:
+                continue
+            try:
+                setattr(self, seen, max(getattr(self, seen), flag.stat().st_mtime))
+            except OSError:
+                continue
+            with contextlib.suppress(OSError):
+                flag.unlink()
+
+    async def _setup_button(self) -> bool:
+        """A new mtime of the setup-button flag (a hold): open Local mode (Setup mode when no
+        phone is saved). Returns whether the tick should end here."""
+        if self.button_flag is None:
+            return False
+        try:
+            stamp = self.button_flag.stat().st_mtime
+        except OSError:
+            return False
+        if stamp <= self.button_seen:
+            return False
+        self.button_seen = stamp
+        # Consume the edge-triggered marker so a service restart cannot reopen the window from a
+        # stale file left by the last physical press.
+        with contextlib.suppress(OSError):
+            self.button_flag.unlink()
+        if self.state == ProvisioningState.IDLE:
+            try:
+                await self.enter("button")
+            except OpenLoloError as exc:
+                log.warning("local mode not started (button): %s", exc.message)
+                return True
+            self.opened_stamp = stamp
+            return True
+        if self.state == ProvisioningState.SETUP_MODE:
+            log.info("hold ignored: %s mode is already on", self.mode)
+        else:
+            log.info("hold ignored: a Wi-Fi join is in progress")
+        return True
+
     async def _pair_button(self) -> None:
-        """One phone search per new mtime of the pair-button flag. The flag is consumed like the
-        setup button's, so a restart never replays an old press; a failed search is logged."""
-        if self.pair_flag is None or self.search is None:
+        """A new mtime of the pair-button flag (a press): in Local mode leave it, in Setup mode
+        nothing, otherwise one phone search. The flag is consumed like the setup button's, so a
+        restart never replays an old press; a failure is logged."""
+        if self.pair_flag is None:
             return
         try:
             stamp = self.pair_flag.stat().st_mtime
@@ -282,10 +400,57 @@ class Provisioning:
         self.pair_seen = stamp
         with contextlib.suppress(OSError):
             self.pair_flag.unlink()
+        if self.state in {ProvisioningState.JOINING, ProvisioningState.VERIFYING}:
+            log.info("press ignored: a Wi-Fi join is in progress")
+            return
+        if self.window:
+            if stamp <= self.opened_stamp:
+                return  # Pressed before the hold that opened the window: not a request to leave.
+            if self.mode == "setup":
+                log.info("press ignored: setup mode stays until a phone is paired")
+                return
+            log.info("local mode ended by a button press")
+            await self.finish("button")
+            return
+        if self.search is None:
+            return
         try:
             await self.search()
         except Exception as exc:
             log.warning("phone search not started (button): %s", getattr(exc, "code", type(exc).__name__))
+
+    async def _reclaim_lan_name(self, now: float) -> None:
+        """avahi renames the box after it sees its own records during a fast access point stop
+        and start, and the box page stops resolving; take the name back while on the home Wi-Fi."""
+        if self.lan_name is None or self.window or now < self.reclaim_at:
+            return
+        self.reclaim_at = now + RECLAIM_SECONDS
+        reclaim = getattr(self.network, "reclaim_lan_name", None)
+        if reclaim is None:
+            return
+        try:
+            if await reclaim(self.lan_name):
+                log.warning("mDNS host name taken back as %s.local after an avahi rename", self.lan_name)
+        except Exception as exc:
+            log.warning("mDNS host name not taken back: %s", getattr(exc, "message", exc))
+
+    async def _poll_link(self) -> None:
+        """Phone connection for the status LED; an unreachable worker shows as not connected."""
+        if self.link is None:
+            return
+        try:
+            connection = (await self.link()).get("connection") or {}
+        except Exception:
+            connection = {}
+        if connection.get("state") == "connected":
+            self.link_word = "connected"
+        elif (
+            connection.get("searching")
+            or time.time() - float(connection.get("searched_at") or 0) < SEARCH_SHOW_SECONDS
+        ):
+            self.link_word = "searching"
+        else:
+            self.link_word = "idle"
 
     async def _auto_enter(self, reason: str) -> None:
         """Boot-time entry; a network failure is logged and retried on the next tick."""
@@ -296,11 +461,15 @@ class Provisioning:
             return
         self.grace_used = True
 
-    async def run(self, interval: float = 1.0) -> None:
+    async def run(self, interval: float = BUTTON_POLL_SECONDS) -> None:
+        """Buttons every ``interval``; the Wi-Fi status check (nmcli) about once a second."""
         self.boot = self.clock()
+        every = max(1, round(1.0 / interval))
+        n = 0
         while True:
             with contextlib.suppress(Exception):
-                await self.tick()
+                await self.tick(network=n % every == 0)
+            n += 1
             await asyncio.sleep(interval)
 
     def start(self) -> None:

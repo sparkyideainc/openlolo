@@ -9,9 +9,14 @@ import { onboardingComplete, setOnboardingComplete } from "@/lib/store";
 export const Route = createFileRoute("/")({
 	beforeLoad: async ({ context }) => {
 		const setup = await ensureSession(context.queryClient, "/");
-		// The box decides: while it runs its setup window, or has no phone bound, the browser's
-		// remembered "onboarding done" flag is stale (the box was reset) and setup opens.
-		if (setup.setup_mode || !setup.bound) {
+		// The box decides: with no phone bound (or in Setup mode) the browser's remembered
+		// "onboarding done" flag is stale (the box was reset) and setup opens. Local mode (own
+		// Wi-Fi, phone saved) is not setup once onboarding is done.
+		if (
+			!setup.bound ||
+			setup.mode === "setup" ||
+			(setup.setup_mode && !onboardingComplete())
+		) {
 			setOnboardingComplete(false);
 			throw redirect({ to: "/setup", replace: true });
 		}

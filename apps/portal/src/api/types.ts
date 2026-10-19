@@ -11,6 +11,8 @@ export interface SetupStatus {
 	device: string | null;
 	hostname: string;
 	setup_mode: boolean;
+	/** wifi: on the saved Wi-Fi; local: own Wi-Fi for the saved phone; setup: own Wi-Fi, no phone saved. */
+	mode?: "wifi" | "local" | "setup";
 	bound: boolean;
 	session: boolean;
 	/** Who may open the page from this browser, and why not (ADR 0012). */
@@ -19,9 +21,15 @@ export interface SetupStatus {
 	last_attempt: WifiAttempt | null;
 	last_error: { code: string } | null;
 	usb_pairing: AutopairStatus | null;
+	/** button: the top button finishes a reset (Lolo Pocket); name: the owner types the box name. */
+	reset_method?: "button" | "name";
+	/** The open or just-finished reset attempt; `target` only for the browser that started it. */
+	reset?: ResetAttempt | null;
 }
 
 export interface PageAccess {
+	/** A phone is saved: only that phone gets the page; everyone else sees the reset prompt. */
+	bound?: boolean;
 	/** Exactly one phone is on the box's USB port. */
 	cable: boolean;
 	/** This browser is on the box's setup Wi-Fi. */
@@ -29,6 +37,32 @@ export interface PageAccess {
 	/** This browser is the paired phone (its LAN address matched). */
 	paired_phone: boolean;
 	allowed: boolean;
+	/** The proof that admitted this browser. */
+	reason?: "address" | "cable" | "none";
+}
+
+export interface ResetAttempt {
+	stage: "challenge" | "armed" | "resetting" | "failed" | "cancelled" | "done";
+	attempt: string | null;
+	count?: number;
+	target?: number;
+	expires_in?: number | null;
+	/** Why a failed or cancelled attempt ended. */
+	reason?:
+		| "too_many"
+		| "hold"
+		| "timeout"
+		| "page"
+		| "press"
+		| "lost"
+		| "reset_failed"
+		| "reset";
+}
+
+export interface ResetStart {
+	attempt: string;
+	target: number;
+	expires_in: number;
 }
 
 export interface WifiAttempt {

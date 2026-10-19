@@ -1,5 +1,7 @@
-// The cable is the key (ADR 0012): this screen waits until the box would admit this browser,
-// then opens a session on its own. It also narrates USB pairing before any session exists.
+// First-time setup (ADR 0012): this screen waits until the box would admit this browser (its
+// setup Wi-Fi with a phone on the cable), then opens a session on its own. It also narrates USB
+// pairing before any session exists. A box that already has a phone admits only that phone;
+// any other browser goes to the reset page.
 
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
@@ -26,6 +28,7 @@ export const Route = createFileRoute("/connect")({
 			if (!status.session) await api.openSession();
 			throw redirect({ to: search.next ?? "/", replace: true });
 		}
+		if (status.access.bound) throw redirect({ to: "/reset", replace: true });
 	},
 	component: Connect,
 });
@@ -38,6 +41,10 @@ function Connect() {
 	const opening = useRef(false);
 	const data = status.data;
 	const allowed = data?.access.allowed ?? false;
+	const strangerOnBoundBox = !allowed && (data?.access.bound ?? false);
+	useEffect(() => {
+		if (strangerOnBoundBox) void navigate({ to: "/reset", replace: true });
+	}, [strangerOnBoundBox, navigate]);
 	useEffect(() => {
 		if (!allowed || opening.current) return;
 		opening.current = true;
@@ -62,11 +69,7 @@ function Connect() {
 		? "One moment."
 		: !cable
 			? "Use the USB cable that came with it. The box pairs the phone on its cable by itself, and this page opens once it sees the phone."
-			: data.bound
-				? "Only the iPhone plugged into the box can use this page. Open http://" +
-					data.hostname +
-					" in Safari on that iPhone."
-				: "Join the box's setup Wi-Fi from the card, then open this page on the iPhone plugged into the box.";
+			: "Join the box's setup Wi-Fi from the card, then open this page on the iPhone plugged into the box.";
 	return (
 		<Plain className="justify-center">
 			<div className="flex flex-col items-center gap-6 text-center">
