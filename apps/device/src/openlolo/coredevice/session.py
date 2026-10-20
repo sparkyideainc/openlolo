@@ -67,6 +67,11 @@ class DeviceSession:
         self.lost_hid = False
         self.hid_lock = asyncio.Lock()
         self.lost = False
+        self.foreground = None
+        if config.foreground_observer != "off":
+            from openlolo.coredevice.foreground import DvtSource, ForegroundObserver
+
+            self.foreground = ForegroundObserver(lambda: DvtSource(rsd), config)
 
     # ----- lifecycle -----------------------------------------------------------------
 
@@ -179,6 +184,9 @@ class DeviceSession:
 
     async def close(self):
         self.closing = True
+        if self.foreground is not None:
+            with contextlib.suppress(Exception):
+                await self.foreground.close()
         await self.stop_hid()
 
     # ----- screenshots ---------------------------------------------------------------

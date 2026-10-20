@@ -773,19 +773,24 @@ class CoreDeviceManager:
                 await session.ensure_buttons()
         self.connection.hid_active = session.hid_active
         generation = self.gate.begin()
+        self._invalidate(session, "input")
         self._pulse()  # Wakes the lease watchdog.
         return generation
 
     async def report(self, generation: str, kind: str, value: list):
         self.gate.accept(generation, kind, value)
         session = await self._session()
-        async with self.io_lock:
-            if kind == "touch":
-                await session.touch(value[0], value[1], value[2])
-            elif kind == "keyboard":
-                await session.keyboard(value)
-            else:
-                await session.button(value[0], value[1], value[2])
+        self._invalidate(session, "input")
+        try:
+            async with self.io_lock:
+                if kind == "touch":
+                    await session.touch(value[0], value[1], value[2])
+                elif kind == "keyboard":
+                    await session.keyboard(value)
+                else:
+                    await session.button(value[0], value[1], value[2])
+        finally:
+            self._invalidate(session, "input")
 
     async def gesture(self, generation: str, points: list) -> dict:
         """One touch gesture sent from here on its own clock (see ``hid.pace``): the API hands
@@ -794,14 +799,18 @@ class CoreDeviceManager:
         hid.validate_points(points)
         self.gate.accept(generation, "touch", list(points[0][1:]))
         session = await self._session()
+        self._invalidate(session, "input")
         started = time.monotonic()
 
         async def send(state: str, x: int, y: int):
             self.gate.accept(generation, "touch", [state, x, y])
             await session.touch(state, x, y)
 
-        async with self.io_lock:
-            sent = await hid.pace(points, send)
+        try:
+            async with self.io_lock:
+                sent = await hid.pace(points, send)
+        finally:
+            self._invalidate(session, "input")
         gaps = [round((b - a) * 1000) for a, b in zip(sent, sent[1:])]
         return {
             "reports": len(sent),
@@ -1006,8 +1015,12 @@ class CoreDeviceManager:
     ) -> dict:
         self._check(binding)
         session = await self._session()
-        async with self.io_lock:
-            return await session.launch_app(bundle_id, url, kill_existing)
+        self._invalidate(session, "launch")
+        try:
+            async with self.io_lock:
+                return await session.launch_app(bundle_id, url, kill_existing)
+        finally:
+            self._invalidate(session, "launch")
 
     async def clipboard_get(self, binding) -> dict:
         self._check(binding)
@@ -1018,8 +1031,30 @@ class CoreDeviceManager:
     async def clipboard_set(self, binding, text: str) -> dict:
         self._check(binding)
         session = await self._session()
-        async with self.io_lock:
-            return await session.clipboard_set(text)
+        self._invalidate(session, "clipboard")
+        try:
+            async with self.io_lock:
+                return await session.clipboard_set(text)
+        finally:
+            self._invalidate(session, "clipboard")
+
+    @staticmethod
+    def _invalidate(session, reason: str) -> None:
+        """Called before and after an effect: no foreground answer from before the effect, or
+        from a query that overlapped it, counts once it is done."""
+        observer = getattr(session, "foreground", None)
+        if observer is not None:
+            observer.invalidate(reason)
+
+    async def foreground(self, binding, fresh: bool = False) -> dict:
+        """The foreground app plus observer counters, for the bench; nothing is enforced."""
+        self._check(binding)
+        session = await self._session()
+        observer = getattr(session, "foreground", None)
+        if observer is None:
+            raise OpenLoloError("FOREGROUND_DISABLED", "Set foreground_observer in box.toml")
+        # Not under io_lock: a DVT query must not wait behind a paced gesture.
+        return {"foreground": await observer.snapshot(fresh), "observer": observer.status()}
 
     async def device_info(self, binding) -> dict:
         self._check(binding)
