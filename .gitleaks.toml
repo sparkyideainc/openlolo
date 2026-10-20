@@ -1,0 +1,13 @@
+# Secret scan config for `gitleaks git` (CI job `secrets`). Extends the default rules and
+# allows only known non-secrets, so every new finding is either a real leak or a new entry here.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Throwaway TLS key and certificate used only by tests"
+paths = ['''^apps/device/tests/fixtures/tls/''']
+
+[[allowlists]]
+description = "Setup Wi-Fi password alphabet: the symbol set, not a password"
+regexTarget = "line"
+regexes = ['''\bPASSWORD_ALPHABET = "[a-z0-9]+"''']

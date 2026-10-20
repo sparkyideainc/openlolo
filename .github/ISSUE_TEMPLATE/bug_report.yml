@@ -1,0 +1,66 @@
+name: Bug report
+description: Something on the box, the box page, or the SDK does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, device identifiers (UDID, serial number), screenshots of
+        private data, or typed content. Report security problems privately through the
+        [security policy](https://github.com/sparkyideainc/openlolo/security/policy).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: release
+    attributes:
+      label: OpenLolo release
+      description: The release installed on the box, or the commit if you run from source.
+      placeholder: 0.0.1
+    validations:
+      required: true
+  - type: input
+    id: box
+    attributes:
+      label: Box hardware and OS
+      placeholder: Raspberry Pi 4, Raspberry Pi OS 64-bit (Debian 13)
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: iPhone model and iOS version
+      placeholder: iPhone 13, iOS 27.0.1
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Phone connection
+      options:
+        - USB
+        - Wi-Fi
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Output of `journalctl -u openlolo-api -u openlolo-device --since "1 hour ago"` around
+        the problem. Remove private data first.
+      render: text

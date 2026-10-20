@@ -8,6 +8,10 @@ to manage contributor trust, so you need to be vouched before your first pull re
 > not submit pull requests containing multiple unrelated fixes or features. If you have
 > multiple contributions, open a separate pull request for each one.
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). Report security
+problems privately as described in the [security policy](SECURITY.md), never in a public
+issue or pull request.
+
 ## Getting vouched (required before opening a PR)
 
 **Pull requests from unvouched users are closed automatically.**
@@ -90,6 +94,8 @@ to it needs a design discussion before code.
 2. Keep the pull request focused on that one issue.
 3. Fill in the pull request template, including how you tested the change.
 4. Make sure CI passes. A maintainer reviews once checks are green.
+5. The maintainer squash-merges the pull request, so its title becomes the commit message
+   on `main`. Write the title as one clear sentence.
 
 ## Reporting issues
 
