@@ -19,7 +19,7 @@ jobs:
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Require the tagged commit to be on main
@@ -30,7 +30,7 @@ jobs:
             echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; releases are built from main only"
             exit 1
           fi
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: bun install --frozen-lockfile
       - name: Build device tarball
         run: |
@@ -39,7 +39,7 @@ jobs:
             *) release='${{ inputs.release }}' ;;
           esac
           sh apps/device/scripts/package.sh $release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openlolo-device
           path: |
@@ -54,7 +54,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
           merge-multiple: true
