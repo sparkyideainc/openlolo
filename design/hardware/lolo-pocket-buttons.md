@@ -1,6 +1,6 @@
 # Lolo Pocket: buttons and phone search
 
-**Status:** top button and status LED implemented (plan `docs/plans/lolo-pocket-top-button.md`, 2026-10-17); power button and battery handling still planned. This page records the behaviour agreed on 2026-10-13 for the Lolo Pocket (Radxa ZERO 3W + PiSugar3). Register details are in `pisugar3.md`; board details are in `radxa-zero3w.md`.
+**Status:** top button and status LED implemented (plans `design/plans/archive/lolo-pocket-top-button.md` and `design/plans/lolo-pocket-modes.md`, merged in #13); power button and battery handling still planned. This page records the behaviour agreed on 2026-10-13 for the Lolo Pocket (Radxa ZERO 3W + PiSugar3). Register details are in `pisugar3.md`; board details are in `radxa-zero3w.md`.
 
 ## Buttons
 
@@ -11,7 +11,7 @@
 | Power | Hold 10 s | Force off: immediate power cut. |
 | Top (custom) | Press (`0x08 == 1`) | One phone search: the same search window the box opens by itself (status LED slow blink, steady on once connected). In Local mode: end Local mode. In Setup mode: nothing. |
 | Top | Hold, then release (`0x08 == 3`) | **Local mode** (a phone is saved): the box broadcasts its own Wi-Fi so the phone reaches the box page without a router; it stays on while the phone is connected and ends 10 min after it was last connected. With no phone saved this is Setup mode. Status LED fast blink. A hold while either is on does nothing. |
-| Top | Double press (`0x08 == 2`) | Unused (counts 2 in the planned reset challenge, `docs/plans/lolo-pocket-modes.md`). |
+| Top | Double press (`0x08 == 2`) | Unused (counts 2 in the reset challenge, `design/plans/lolo-pocket-modes.md`). |
 | (none) | Factory reset | Box page only. The PiSugar3 reports a hold only on release and without its length, so the button cannot tell one hold from another (bench 2026-10-18). |
 
 Modes: **Wi-Fi mode** = on the saved Wi-Fi; **Local mode** = own Wi-Fi, phone saved; **Setup mode** = own Wi-Fi, no phone saved (new box or after a reset). `/setup/status.mode` reports `wifi`, `local` or `setup`.

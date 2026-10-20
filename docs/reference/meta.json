@@ -1,0 +1,10 @@
+{
+	"title": "Reference",
+	"pages": [
+		"box-page",
+		"buttons-and-leds",
+		"operating-limits",
+		"update-and-uninstall",
+		"sdk-protocol"
+	]
+}
