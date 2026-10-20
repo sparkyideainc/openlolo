@@ -72,6 +72,14 @@ class Config(StrictModel):
     # Linux kernel; needs CAP_NET_ADMIN and /dev/net/tun in the worker unit, but keeps the
     # media stream's packets out of the Python process.
     tunnel_mode: Literal["userspace", "kernel"] = "userspace"
+    # Foreground app observer (docs/plans/app-permissions.md); observation only, nothing is refused.
+    # "demand": query the DVT process list when asked; "poll": also poll start-to-start while
+    # requests keep coming. Either way the connection closes after foreground_idle_seconds.
+    foreground_observer: Literal["off", "demand", "poll"] = "off"
+    foreground_max_age: float = Field(default=1.5, ge=0.1, le=10)  # From the query's start.
+    foreground_poll_seconds: float = Field(default=1.0, ge=0.2, le=10)
+    foreground_idle_seconds: float = Field(default=90, ge=5, le=600)
+    foreground_query_timeout: float = Field(default=3, ge=0.5, le=15)
     # Public HTTPS origin of the remote MCP entry, e.g. "https://pi.tailnet.ts.net". Unset = disabled.
     public_url: str | None = None
     mcp_port: int = Field(default=8090, ge=1024, le=65535)
