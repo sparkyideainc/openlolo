@@ -38,7 +38,9 @@ collaborator with `triage` access or higher.
   if `require-vouch` is later relaxed.
 
 Add a reason after the keyword if you want it recorded in the issue thread. The
-workflow commits the updated `.github/VOUCHED.td` to `main`.
+workflow opens a pull request that updates `.github/VOUCHED.td`. The change takes effect
+when a maintainer merges it. CI does not run on pull requests opened by the workflow, so
+merge it with the admin bypass.
 
 ## Developing
 
