@@ -501,3 +501,106 @@ async def test_hold_that_fails_a_challenge_is_not_a_local_mode_hold(tmp_path):
     press(tmp_path / "setup-button")  # After the attempt closed: an ordinary hold.
     await prov.tick()
     assert prov.health()["mode"] == "local"
+
+
+def link_rig(tmp_path, bound=True):
+    prov, clock, _ = button_rig(tmp_path, bound=bound)
+    health = {"connection": {"state": "disconnected"}}
+
+    async def link():
+        if health.get("down"):
+            raise OSError("worker down")
+        return health
+
+    prov.link = link
+    return prov, clock, health
+
+
+async def test_local_mode_holds_while_the_phone_is_connected(tmp_path):
+    prov, clock, health = link_rig(tmp_path)
+    await prov.enter("button")
+    health["connection"]["state"] = "connected"
+    await prov.tick()
+    assert prov.health()["held"] and prov.health()["expires_in"] is None
+    for _ in range(30):  # An hour connected, well past the 600 s timeout.
+        clock.advance(120)
+        await prov.tick()
+    assert prov.health()["mode"] == "local" and prov.health()["held"]
+
+
+async def test_local_mode_countdown_restarts_after_the_phone_drops(tmp_path):
+    prov, clock, health = link_rig(tmp_path)
+    await prov.enter("button")
+    health["connection"]["state"] = "connected"
+    clock.advance(500)
+    await prov.tick()
+    health["connection"]["state"] = "disconnected"
+    clock.advance(1)
+    await prov.tick()
+    assert not prov.health()["held"] and prov.health()["expires_in"] == 599
+    clock.advance(500)
+    await prov.tick()
+    health["connection"]["state"] = "connected"  # Back before expiry: held again.
+    clock.advance(1)
+    await prov.tick()
+    assert prov.health()["held"] and prov.window
+    health["connection"]["state"] = "disconnected"
+    clock.advance(1)
+    await prov.tick()
+    clock.advance(598)
+    await prov.tick()
+    assert prov.window and prov.health()["expires_in"] == 1
+    clock.advance(1)
+    await prov.tick()
+    assert not prov.window and prov.reason == "timeout" and prov.health()["mode"] == "wifi"
+
+
+async def test_local_mode_without_a_connected_phone_expires_from_entry(tmp_path):
+    prov, clock, health = link_rig(tmp_path)
+    await prov.enter("button")
+    clock.advance(599)
+    await prov.tick()
+    assert prov.window and not prov.health()["held"] and prov.health()["expires_in"] == 1
+    clock.advance(1)
+    await prov.tick()
+    assert not prov.window and prov.reason == "timeout"
+
+
+async def test_unreachable_worker_counts_as_not_connected(tmp_path):
+    prov, clock, health = link_rig(tmp_path)
+    await prov.enter("button")
+    health["connection"]["state"] = "connected"
+    await prov.tick()
+    assert prov.health()["held"]
+    health["down"] = True
+    clock.advance(1)
+    await prov.tick()
+    assert not prov.health()["held"] and prov.health()["expires_in"] == 599
+    clock.advance(599)
+    await prov.tick()
+    assert not prov.window and prov.reason == "timeout"
+
+
+async def test_setup_mode_keeps_its_fixed_timeout(tmp_path):
+    prov, clock, health = link_rig(tmp_path, bound=False)
+    health["connection"]["state"] = "connected"
+    await prov.enter("button")
+    await prov.tick()
+    assert prov.health()["mode"] == "setup" and not prov.health()["held"]
+    clock.advance(600)
+    await prov.tick()
+    assert not prov.window and prov.reason == "timeout"
+
+
+async def test_recovery_ap_keeps_its_fixed_timeout(tmp_path):
+    prov, clock, health = link_rig(tmp_path)
+    health["connection"]["state"] = "connected"
+    prov.network.active = None  # No previous profile to restore: the recovery AP opens.
+    await prov.connect("Nowhere", "x")
+    await prov.worker
+    assert prov.reason == "join failed; recovery AP" and prov.health()["mode"] == "local"
+    await prov.tick()
+    assert not prov.health()["held"]
+    clock.advance(600)
+    await prov.tick()
+    assert not prov.window and prov.reason == "timeout"

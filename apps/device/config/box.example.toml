@@ -41,6 +41,8 @@ tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in t
 # portal_port = 80
 provisioning = true
 setup_auto_pair = true
+# Setup mode ends this long after entry; Local mode this long after the saved phone was last
+# connected (it stays on while the phone is connected).
 setup_timeout_seconds = 600
 setup_grace_seconds = 120
 wifi_interface = "wlan0"

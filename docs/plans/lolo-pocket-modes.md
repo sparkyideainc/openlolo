@@ -9,7 +9,7 @@
 | Mode | Box network | Phone saved | Entered by | Left by | Status LED |
 |---|---|---|---|---|---|
 | **Wi-Fi mode** | Joined to the saved Wi-Fi | Yes | Normal state | Hold (Local mode) | Steady on (phone connected) or off |
-| **Local mode** | Broadcasts its own Wi-Fi (`OpenLolo-XXXX`) | Yes | Hold | Press, 10 min, a Wi-Fi join from the page | Fast blink |
+| **Local mode** | Broadcasts its own Wi-Fi (`OpenLolo-XXXX`) | Yes | Hold | Press, a Wi-Fi join from the page, 10 min without the saved phone connected (counted from entry or from when the phone dropped; never while it is connected) | Fast blink |
 | **Setup mode** | Broadcasts its own Wi-Fi | No | New box, after a reset, no saved Wi-Fi at boot, offline after the grace period | Phone paired and Wi-Fi joined | Fast blink |
 
 **Pairing** is not a network mode: a press (outside Local mode) opens one phone search, the same search window the box opens by itself (boot, cable pulled, phone advertising, a request). One process, the press only triggers it (user decision 2026-10-18). LED slow blink while any search runs (shown at least 3 s), steady on once connected.

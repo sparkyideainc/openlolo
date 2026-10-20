@@ -10,7 +10,7 @@
 | Power | Hold 3 s, then release | Clean shutdown. |
 | Power | Hold 10 s | Force off: immediate power cut. |
 | Top (custom) | Press (`0x08 == 1`) | One phone search: the same search window the box opens by itself (status LED slow blink, steady on once connected). In Local mode: end Local mode. In Setup mode: nothing. |
-| Top | Hold, then release (`0x08 == 3`) | **Local mode** (a phone is saved): the box broadcasts its own Wi-Fi so the phone reaches the box page without a router, 10 min. With no phone saved this is Setup mode. Status LED fast blink. A hold while either is on does nothing. |
+| Top | Hold, then release (`0x08 == 3`) | **Local mode** (a phone is saved): the box broadcasts its own Wi-Fi so the phone reaches the box page without a router; it stays on while the phone is connected and ends 10 min after it was last connected. With no phone saved this is Setup mode. Status LED fast blink. A hold while either is on does nothing. |
 | Top | Double press (`0x08 == 2`) | Unused (counts 2 in the planned reset challenge, `docs/plans/lolo-pocket-modes.md`). |
 | (none) | Factory reset | Box page only. The PiSugar3 reports a hold only on release and without its length, so the button cannot tell one hold from another (bench 2026-10-18). |
 
