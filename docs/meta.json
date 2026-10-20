@@ -1,0 +1,13 @@
+{
+	"pages": [
+		"index",
+		"start",
+		"build",
+		"install",
+		"remote-access",
+		"setup",
+		"ai-clients",
+		"troubleshoot",
+		"reference"
+	]
+}

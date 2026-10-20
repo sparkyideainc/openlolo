@@ -73,4 +73,4 @@ openlolo-sdk call openlolo-ab12 openlolo_button button=home observe=false
 ```
 
 `call` takes any MCP tool name and prints its JSON result, so any language can drive the phone
-through this command. The wire protocol itself is documented in `docs/sdk-protocol.md`.
+through this command. The wire protocol itself is documented in [docs/reference/sdk-protocol.mdx](../../docs/reference/sdk-protocol.mdx), published at [openlolo.com/docs/reference/sdk-protocol](https://openlolo.com/docs/reference/sdk-protocol).
