@@ -402,15 +402,14 @@ class Phone:
 
     async def control(self, operation_id, owner, command, token=None, target=None):
         """One journaled control command. Pause needs no lease (the safety exception); the
-        others need the caller's current token, paused or not. Renew is a deprecated no-op that
-        only reports status. A replayed operation ID returns its record; a replayed successful
-        acquire also returns the caller's lease, token included."""
+        others need the caller's current token, paused or not. A replayed operation ID returns
+        its record; a replayed successful acquire also returns the caller's lease, token included."""
         if command == "cancel" and target is None:
             raise OpenLoloError("INVALID_REQUEST", "Cancellation requires a target operation ID", 400)
         coordinator = self.coordinator
-        if command not in {"acquire", "pause", "renew"}:
+        if command not in {"acquire", "pause"}:
             coordinator.check(owner, token, allow_paused=True)
-        if command not in {"acquire", "renew", "release", "pause", "resume", "cancel"}:
+        if command not in {"acquire", "release", "pause", "resume", "cancel"}:
             raise OpenLoloError("UNKNOWN_OPERATION", status=404)
         record, fresh = self.journal.reserve(operation_id, owner, command, {"target": target})
         if not fresh:
@@ -419,7 +418,6 @@ class Phone:
             return record
         methods = {
             "acquire": lambda: self.acquire_control(owner),
-            "renew": lambda: self.renew_control(owner, token),
             "release": lambda: self.release_control(owner, token),
             "pause": self.pause,
             "resume": lambda: self.resume(owner, token),
@@ -435,7 +433,7 @@ class Phone:
             raise
         public = {k: v for k, v in result.items() if k != "lease_token"}
         record = self.journal.update(operation_id, "SUCCEEDED", public)
-        if command in {"acquire", "renew"}:
+        if command == "acquire":
             record["control"] = result
         return record
 
