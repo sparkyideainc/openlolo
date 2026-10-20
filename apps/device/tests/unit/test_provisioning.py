@@ -316,7 +316,6 @@ def button_rig(tmp_path, bound=True):
         indicator=tmp_path / "indicator",
         bound=lambda: saved[0],
     )
-    prov.saved = saved
     return prov, clock, requests
 
 
@@ -399,7 +398,7 @@ async def test_status_led_follows_the_phone_connection(tmp_path):
     import time
 
     prov, clock, _ = button_rig(tmp_path)
-    health = {"connection": {"state": "disconnected", "searching": False, "searched_at": 0}}
+    health = {"connection": {"state": "disconnected", "searching": False, "searched_at": 0.0}}
 
     async def link():
         if health is None:
