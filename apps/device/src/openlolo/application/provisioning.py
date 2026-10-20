@@ -5,6 +5,11 @@
     JOINING/VERIFYING --(failure)--> SETUP_MODE (only the new profile removed)
     SETUP_MODE --(Wi-Fi connected | API | timeout)--> IDLE
 
+The timeout is ``setup_timeout_seconds``. Setup mode and the recovery AP count it from entry.
+Local mode never times out while the saved phone is connected (worker connection state
+``connected``, any transport): it counts from the last moment the phone was seen connected, or
+from entry if it never connects, so a phone that reconnects in time holds it again.
+
 The setup window activates a WPA2-protected SoftAP and local configuration page. The same
 radio changes to station mode for a join; on success the phone reconnects to home Wi-Fi and
 reads the saved result at the same local hostname. A failed attempt recreates the AP. The
@@ -95,6 +100,8 @@ class Provisioning:
         # device health ({"connection": {"state", "searching"}}), polled about once a second.
         self.indicator, self.link = indicator, link
         self.link_word = "idle"
+        self.phone_connected = False  # Last worker poll; an unreachable worker is not connected.
+        self.holdable = False  # Opened by enter(): Local mode holds while the phone is connected.
         self.shown: str | None = None
         host = urlsplit(config.lan_url).hostname if getattr(config, "lan_url", None) else None
         self.lan_name = host.removesuffix(".local") if host and host.endswith(".local") else None
@@ -150,13 +157,27 @@ class Provisioning:
         except Exception:
             return True
 
+    @property
+    def held(self) -> bool:
+        """Local mode is open and the saved phone is connected: no timeout runs."""
+        return (
+            self.window
+            and self.holdable
+            and self.phone_connected
+            and self.state == ProvisioningState.SETUP_MODE
+            and self.mode == "local"
+        )
+
     def health(self) -> dict:
+        held = self.held
         return {
             "state": self.state.value,
             "mode": self.mode,
             "since": self.since,
             "reason": self.reason,
-            "expires_in": max(0, int(self.expires - self.clock())) if self.expires else None,
+            # None while held: Local mode stays on until the phone drops, then counts down again.
+            "expires_in": max(0, int(self.expires - self.clock())) if self.expires and not held else None,
+            "held": held,
             "setup_name": self.setup_name if self.active else None,
             "last_error": self.last_error,
             "last_attempt": self.last_attempt,
@@ -195,6 +216,7 @@ class Provisioning:
             raise OpenLoloError("PROVISIONING_BUSY", "A Wi-Fi join is in progress", 409)
         await self.network.start_setup_ap()
         self.window = True
+        self.holdable = True
         self.expires = self.clock() + self.config.setup_timeout_seconds
         self._set(ProvisioningState.SETUP_MODE, reason)
         self._show()
@@ -207,6 +229,7 @@ class Provisioning:
         if self.state in {ProvisioningState.JOINING, ProvisioningState.VERIFYING}:
             raise OpenLoloError("PROVISIONING_BUSY", "A Wi-Fi join is in progress", 409)
         self.expires = None
+        self.holdable = False
         self.window = False
         await self.network.stop_setup_ap()
         if self.state != ProvisioningState.DISABLED:
@@ -251,6 +274,7 @@ class Provisioning:
                 # The AP must turn off before this single-radio device can join home Wi-Fi.
                 self.window = False
                 self.expires = None
+                self.holdable = False
                 self._set(ProvisioningState.IDLE, "connected")
             else:
                 self._set(ProvisioningState.IDLE, "connected")
@@ -288,6 +312,7 @@ class Provisioning:
                         self._set(ProvisioningState.IDLE, "join failed; recovery AP unavailable")
                     else:
                         self.window = True
+                        self.holdable = False  # The recovery AP keeps its fixed timeout.
                         self.expires = self.clock() + self.config.setup_timeout_seconds
                         self._set(ProvisioningState.SETUP_MODE, "join failed; recovery AP")
 
@@ -435,14 +460,18 @@ class Provisioning:
             log.warning("mDNS host name not taken back: %s", getattr(exc, "message", exc))
 
     async def _poll_link(self) -> None:
-        """Phone connection for the status LED; an unreachable worker shows as not connected."""
+        """Phone connection for the status LED and the Local mode hold; an unreachable worker
+        shows as not connected. While held, the Local mode countdown restarts at every poll."""
         if self.link is None:
             return
         try:
             connection = (await self.link()).get("connection") or {}
         except Exception:
             connection = {}
-        if connection.get("state") == "connected":
+        self.phone_connected = connection.get("state") == "connected"
+        if self.held:
+            self.expires = self.clock() + self.config.setup_timeout_seconds
+        if self.phone_connected:
             self.link_word = "connected"
         elif (
             connection.get("searching")
