@@ -9,6 +9,7 @@ import pytest
 from support import raises_code
 
 from openlolo.config import Config
+from openlolo.coredevice import manager as manager_module
 from openlolo.coredevice.manager import CoreDeviceManager
 from openlolo.coredevice.state import State
 from openlolo.domain.errors import OpenLoloError
@@ -838,6 +839,53 @@ async def test_a_locked_phone_is_tried_once_and_requests_fail_fast(manager, cloc
         assert wifi.attempts == 2  # The request tried once more, in case it was just unlocked.
         wifi.error = None
         await manager.find()  # Unlocked; the top button (or its advertisement) connects.
+        await wait_transport(manager, "wifi")
+    finally:
+        await manager.close()
+
+
+async def locked_phone(manager, monkeypatch):
+    monkeypatch.setattr(manager_module, "LOCKED_RETRY_SECONDS", 0.02)
+    usb, wifi = manager.transports["usb"], manager.transports["wifi"]
+    usb.is_present = False
+    wifi.is_present = True
+    wifi.error = LockedError("The device has not been unlocked recently")
+    await manager.start()
+    await manager.connect(AUTO)
+    await wait_state(manager, State.PHONE_LOCKED)
+    async with asyncio.timeout(2):
+        while wifi.attempts < 3:
+            await asyncio.sleep(0.005)
+    return wifi
+
+
+async def test_press_then_unlock_connects_inside_the_window(manager, monkeypatch):
+    wifi = await locked_phone(manager, monkeypatch)
+    try:
+        assert manager.windows == 1 and wifi.browses == 1  # Retried on the found address.
+        assert manager.status()["connection"]["message"].startswith("Unlock the phone")
+        wifi.error = None  # Unlocked: no second press needed.
+        await wait_transport(manager, "wifi")
+        assert manager.windows == 1
+    finally:
+        await manager.close()
+
+
+async def test_locked_retries_end_with_the_window_and_a_press_starts_them_again(manager, clock, monkeypatch):
+    wifi = await locked_phone(manager, monkeypatch)
+    try:
+        clock.advance(manager.config.search_window_seconds)
+        await asyncio.sleep(0.1)
+        attempts = wifi.attempts
+        await asyncio.sleep(0.1)
+        assert wifi.attempts == attempts and manager.connection.state == State.PHONE_LOCKED.value
+        assert manager.connection.searching is False
+        await manager.find()  # The top button: a new window, and retries until it ends.
+        async with asyncio.timeout(2):
+            while wifi.attempts < attempts + 3:
+                await asyncio.sleep(0.005)
+        assert manager.windows == 2
+        wifi.error = None
         await wait_transport(manager, "wifi")
     finally:
         await manager.close()
