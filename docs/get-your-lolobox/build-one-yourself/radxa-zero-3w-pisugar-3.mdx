@@ -1,0 +1,47 @@
+---
+title: Radxa ZERO 3W + PiSugar 3
+description: The recommended pocket build.
+parts:
+  - name: Radxa ZERO 3W, 2 GB RAM or more
+  - name: PiSugar 3, 1200 mAh
+  - name: Radxa Heatsink 5519A
+  - name: microSD card, 16 GB or larger
+  - name: USB-C data cable
+---
+
+<Callout title="Recommended">This is the build we use every day: a Radxa ZERO 3W, a PiSugar 3 battery and a heatsink.</Callout>
+
+{/* TODO: photo of the finished box. */}
+
+## Steps
+
+<Steps>
+<Step>
+### Fit the heatsink
+
+Fit the Radxa Heatsink 5519A over the RK3566 chip.
+</Step>
+<Step>
+### Attach the PiSugar 3
+
+It goes on the back of the board. Its pogo pins line up with the Radxa ZERO 3W.
+
+<Callout type="warn">The PiSugar 3 charging chip reaches 50–60 °C at 2 A input. Do not touch the chip area while charging.</Callout>
+</Step>
+<Step>
+### Flash Armbian
+
+Write Armbian (Debian 13) to the microSD card, then insert it.
+</Step>
+<Step>
+### Plug in the iPhone
+
+Use the **USB 3.0** port. The other USB-C port is the power input.
+</Step>
+</Steps>
+
+<Callout type="success" title="Checkpoint">Power it on. The green LED on the board double-blinks: Linux is running.</Callout>
+
+{/* TODO: photos per step, exact Armbian image link, PiSugar anti-mistaken-touch setting. */}
+
+Next: [Start the box for installation](/docs/get-your-lolobox/build-one-yourself/first-boot).

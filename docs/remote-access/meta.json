@@ -1,4 +1,9 @@
 {
 	"title": "Remote access",
-	"pages": ["index", "tailscale", "lan-only", "cloudflare"]
+	"pages": [
+		"index",
+		"set-up-tailscale",
+		"skip-it-or-add-it-later",
+		"cloudflare-tunnel"
+	]
 }
