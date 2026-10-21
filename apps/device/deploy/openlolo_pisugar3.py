@@ -24,7 +24,7 @@ The power button keeps the PiSugar3 defaults: this daemon never writes ``0x02``,
 ``0x09``. Soft mode without the power-button code would leave the power button unable to turn
 the box off.
 
-Bench facts this relies on (see docs/hardware/pisugar3.md):
+Bench facts this relies on (see design/hardware/pisugar3.md):
 - Back-to-back I2C accesses fail ~18%; accesses are spaced 20 ms and retried 3 times 50 ms apart,
   and every write is unlocked (``0x0B = 0x29``) first.
 - A stale top-button event can be latched at boot; it is cleared at start without acting on it.

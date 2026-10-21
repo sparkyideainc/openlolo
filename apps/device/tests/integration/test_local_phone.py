@@ -125,12 +125,27 @@ async def test_results_are_copies_of_what_the_box_keeps(runtime):
     await bridge.close()
 
 
-async def test_outcome_waits_are_not_polled(runtime):
-    """A tap's wait ends when the coordinator finishes it, not at the next 100 ms poll."""
+async def test_outcome_waits_are_not_polled(runtime, monkeypatch):
+    """A tap's wait ends when the coordinator finishes it, not at the next poll.
+
+    Counted in event-loop turns, not seconds, so a slow runner cannot fail it: the tap is held at
+    its last HID call, then let go, and the result must arrive before any timer could fire."""
     bridge = local(runtime)
-    runtime.phone.device.delay = 0
+    device = runtime.phone.device
+    device.delay = 0
     await bridge.ensure_control()
     frame = await frame_of(bridge)
+    held, gate = asyncio.Event(), asyncio.Event()
+    release_all = device.release_all
+
+    async def hold_last_release():
+        # begin() also releases, before the tap has a generation; only the closing release waits.
+        if device.generation is not None:
+            held.set()
+            await gate.wait()
+        await release_all()
+
+    monkeypatch.setattr(device, "release_all", hold_last_release)
     tap = {
         "kind": "tap",
         "frame_id": frame["frame_id"],
@@ -138,9 +153,17 @@ async def test_outcome_waits_are_not_polled(runtime):
         "x": 0.5,
         "y": 0.5,
     }
-    result = await bridge.action(str(uuid4()), tap, False)
-    # 130 ms of HID holds inside; the HTTP bridge's poll made this about 200 ms.
-    assert result["operation"]["state"] == "SUCCEEDED" and result["timing"]["action_seconds"] < 0.18
+    action = asyncio.create_task(bridge.action(str(uuid4()), tap, False))
+    await held.wait()
+    gate.set()
+    # The rest is in-loop work, a handful of turns. A poll would wait on a timer these turns
+    # never reach.
+    for _ in range(50):
+        if action.done():
+            break
+        await asyncio.sleep(0)
+    assert action.done()
+    assert action.result()["operation"]["state"] == "SUCCEEDED"
     await bridge.close()
 
 

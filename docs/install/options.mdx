@@ -1,0 +1,20 @@
+---
+title: Install options
+description: Flags for LAN-only boxes, Cloudflare and unattended installs.
+---
+
+Pass options after `-s --`:
+
+```sh
+curl -fsSL https://openlolo.com/install.sh | sudo sh -s -- --no-remote
+```
+
+| Option | Use |
+| --- | --- |
+| `--no-remote` | LAN-only box, no remote MCP entry |
+| `--remote cloudflare` | Cloudflare Tunnel instead of Tailscale Funnel |
+| `--auth-key KEY` | Join your tailnet without the login prompt |
+| `--hostname HOST` | Hostname for Cloudflare Tunnel |
+| `--tunnel-token TOKEN` | Dashboard-managed Cloudflare tunnel (needs `--hostname`) |
+| `--wifi-country CC` | Two-letter Wi-Fi country code |
+| `--debug` | Debug logging |

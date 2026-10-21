@@ -1,6 +1,6 @@
 # Plan: call the phone core in-process (remove the internal HTTP hop)
 
-Status: implemented 2026-10-14 (section 0); revised after PRs #6-#8 merged. Base: `main` at `8e3f7b5` (merge of PR #8).
+Status: archived; implemented 2026-10-14 in [#10](https://github.com/sparkyideainc/openlolo/pull/10) (section 0); revised after PRs #6-#8 merged. Base: `main` at `8e3f7b5` (merge of PR #8).
 No code has changed for this plan. The merged delta since the first draft (refresh-token grace window
 in `OAuthProvider`, device-grant form limits, endurance script, SDK example) does not touch
 `mcp_client.py`, `http_api.py`, `app_api.py`, `setup_portal.py`, `mcp_server.py`, `auth.py`,

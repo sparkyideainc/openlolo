@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/sparkyideainc/openlolo/main/apps/device/install.sh | sudo sh
 #   curl -fsSL .../install.sh | sudo sh -s -- --no-remote      # any apps/device/scripts/install.sh option after --
-#   OPENLOLO_RELEASE=0.0.1 ... | sudo sh                        # pin a release instead of the latest
+#   OPENLOLO_RELEASE=0.0.2 ... | sudo sh                        # pin a release instead of the latest
 #   OPENLOLO_REPO=you/OpenLolo ... | sudo sh                    # install from a fork
 #
 # Downloads the release tarball built by .github/workflows/release.yml, verifies its sha256,
