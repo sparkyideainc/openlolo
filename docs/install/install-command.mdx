@@ -1,0 +1,14 @@
+---
+title: Run the install command
+description: One command installs and starts OpenLolo.
+---
+
+On the box, run:
+
+```sh
+curl -fsSL https://openlolo.com/install.sh | sudo sh
+```
+
+The installer downloads the latest [GitHub Release](https://github.com/sparkyideainc/openlolo/releases), verifies its checksum and starts the services. Supported systems: Debian 13 ARM64 and Raspberry Pi OS 64-bit.
+
+It then walks you through two steps: remote access through Tailscale, then setup Wi-Fi.

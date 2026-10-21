@@ -1,6 +1,6 @@
 [project]
 name = "openlolo"
-version = "0.0.1"
+version = "0.0.2"
 description = "Open-source AI assistant for iOS devices"
 requires-python = ">=3.11,<3.15"
 license = "GPL-3.0-only"

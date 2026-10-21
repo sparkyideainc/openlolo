@@ -1,0 +1,22 @@
+name: Publish the build guide
+# openlolo.com/docs renders docs/ from main. A push that changes it asks the private
+# website repository to rebuild and deploy. DOCS_DISPATCH_TOKEN is a fine-grained token with
+# Contents: write on jingerpie/openlolo-cloud and nothing else.
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**']
+  workflow_dispatch:
+permissions: {}
+jobs:
+  dispatch:
+    if: github.repository == 'sparkyideainc/openlolo'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the website to redeploy
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/jingerpie/openlolo-cloud/dispatches \
+            -f event_type=openlolo-docs \
+            -f "client_payload[sha]=$GITHUB_SHA"

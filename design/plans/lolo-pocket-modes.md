@@ -1,6 +1,6 @@
 # Lolo Pocket: Wi-Fi, Local and Setup modes, pairing search, reset by button presses and hold
 
-**Status: plan, 2026-10-18. Supersedes the phone-switch part of `lolo-pocket-top-button.md` (PR 2 `jingerpie/lolo-phone-switch` is dropped) and the typed-name reset. Not started.**
+**Status: implemented 2026-10-19 in [#13](https://github.com/sparkyideainc/openlolo/pull/13) (modes, reset by presses and a hold, page access) and [#15](https://github.com/sparkyideainc/openlolo/pull/15) (Local mode stays on while the saved phone is connected). Open: step 6, the PR 2 bench pass with a second iPhone as the non-owner. Supersedes the phone-switch part of `archive/lolo-pocket-top-button.md` and the typed-name reset (kept on boxes without a button event log, such as the Raspberry Pi).**
 
 ## Decisions (2026-10-18)
 
@@ -22,7 +22,7 @@
 | Double press | Ignored | Ignored | Ignored | Counts 2 | Cancel the reset |
 | Hold, then release | Local mode | Ignored | Ignored | Fails the challenge | **Confirm the reset** |
 
-Holds act on release (the firmware reports no hold length; see `lolo-pocket-top-button.md`). During a Wi-Fi join, presses and holds are ignored. Raspberry Pi GPIO: the 5 s hold is the same "hold" (Local mode, reset confirm); no press.
+Holds act on release (the firmware reports no hold length; see `archive/lolo-pocket-top-button.md`). During a Wi-Fi join, presses and holds are ignored. Raspberry Pi GPIO: the 5 s hold is the same "hold" (Local mode, reset confirm); no press.
 
 ### Status LED (Radxa green LED)
 

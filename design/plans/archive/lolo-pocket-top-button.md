@@ -1,7 +1,7 @@
 # Lolo Pocket top button: pairing mode and reset mode
 
-**Status: PR 1 on `jingerpie/pisugar`, PR 2 on `jingerpie/lolo-phone-switch`. Design revised 2026-10-18 after the bench (see Decisions and Bench log): hold opens setup mode, press cancels it, factory reset is box-page only, status LED on the Radxa board shows the phone connection.** Supersedes the top-button rows of
-`docs/hardware/lolo-pocket-buttons.md`; that page is updated in PR 1.
+**Status: archived. PR 1 (`jingerpie/pisugar`) merged through [#13](https://github.com/sparkyideainc/openlolo/pull/13); PR 2 (`jingerpie/lolo-phone-switch`) was dropped. The modes and reset parts are superseded by [`../lolo-pocket-modes.md`](../lolo-pocket-modes.md). Design revised 2026-10-18 after the bench (see Decisions and Bench log): hold opens setup mode, press cancels it, factory reset is box-page only, status LED on the Radxa board shows the phone connection.** Supersedes the top-button rows of
+`design/hardware/lolo-pocket-buttons.md`; that page is updated in PR 1.
 
 ## Decisions (final, 2026-10-18)
 
@@ -37,7 +37,7 @@
 - Button daemon `deploy/openlolo-button.py` is GPIO only (BCM 17, 5 s hold). The unit has `ConditionPathExists=/dev/gpiochip0`, which the Radxa also has, so on the Lolo Pocket it polls a pin that is not wired.
 - Factory reset: `POST /reset` (`interfaces/app_api.py:234`) checks the typed box name and runs `systemctl start --no-block openlolo-reset.service`; polkit already allows the API user to start that unit.
 - Autopair (`application/autopair.py`) pairs only when unbound and in setup mode; a bound box raises `ALREADY_BOUND`.
-- PiSugar3 I2C facts and the bus retry recipe: `docs/hardware/pisugar3.md`. The parked PR 2 has a tested `Bus` class and tap handling (`deploy/openlolo_pisugar3.py`).
+- PiSugar3 I2C facts and the bus retry recipe: `design/hardware/pisugar3.md`. The parked PR 2 has a tested `Bus` class and tap handling (`deploy/openlolo_pisugar3.py`).
 
 ## Design
 
@@ -96,7 +96,7 @@ PR 2 does not depend on the daemon; it can be tested with the box-page "setup mo
    - Long-press timing and latency of `0x08 == 3` on current firmware (`0xE2`).
    - `0xE0`: do the per-tick rewrites hold a steady pattern against the firmware's own LED updates, and does the gauge come back when writes stop?
    - Confirm `0x08` long press is distinct from the power button's `0x02` bit 0.
-   Record results in `docs/hardware/pisugar3.md` before writing LED code.
+   Record results in `design/hardware/pisugar3.md` before writing LED code.
 1. PR 1 daemon: port `Bus` + tap handling + LED writer; unit tests with a fake smbus (stale clear, debounce, I2C failure, LED pattern per indicator, no writes to `0x02`/`0x03`/`0x09`).
 2. PR 1 API: hold opens, press cancels, join ignores, stale press dropped, indicator follows setup state and phone link; tests with a fake clock.
 3. PR 1 installer + drop-in; deploy to the Radxa bench.
