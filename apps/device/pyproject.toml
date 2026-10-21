@@ -1,6 +1,6 @@
 [project]
 name = "openlolo"
-version = "0.0.1"
+version = "0.0.2"
 description = "Open-source AI assistant for iOS devices"
 requires-python = ">=3.11,<3.15"
 license = "GPL-3.0-only"
@@ -9,7 +9,7 @@ dependencies = [
     "pydantic>=2.11,<3",
     "starlette>=0.47,<2",
     "uvicorn>=0.35,<1",
-    "pillow>=11,<13",
+    "pillow>=11,<14",
     "httpx>=0.28,<1",
 ]
 
@@ -25,7 +25,7 @@ mcp = [
 # CoreDevice worker only (separate venv on the Pi). Exact pin: the tunnel, HID and screenshot
 # services rely on reverse-engineered wire formats that can change between releases.
 device = [
-    "pymobiledevice3==11.19.4",
+    "pymobiledevice3==11.34.0",
 ]
 
 [dependency-groups]
