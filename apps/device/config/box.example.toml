@@ -26,6 +26,9 @@ hid_stop_before_capture = true  # false keeps the input stream up across screens
 screenshot_source = "stream"
 stream_jpeg_quality = 60
 tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in the worker unit.
+# Foreground app observer for the app permissions bench (docs/plans/app-permissions.md).
+# Observation only; "demand" or "poll" also enables the worker op `foreground`.
+# foreground_observer = "off"
 # Remote MCP entry for AI clients. Set to the public HTTPS origin your tunnel serves
 # (see docs/runbooks/remote-access.md). Starts a second loopback listener on mcp_port;
 # point the tunnel at http://127.0.0.1:8090 only. Leave unset for a LAN-only box.
