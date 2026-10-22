@@ -75,7 +75,7 @@ pull request.
 
 ## License
 
-Apache-2.0 for this repository ([LICENSE](LICENSE)), except `apps/device`, which is
+MIT for this repository ([LICENSE](LICENSE)), except `apps/device`, which is
 GPL-3.0 ([apps/device/LICENSE](apps/device/LICENSE)) because it links to
 [pymobiledevice3](https://github.com/doronz88/pymobiledevice3). See
 [THIRD_PARTY_NOTICES.md](apps/device/THIRD_PARTY_NOTICES.md).
