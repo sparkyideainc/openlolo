@@ -29,7 +29,7 @@ curl -fsSL https://openlolo.com/install.sh | sudo sh
 The installer downloads the latest [GitHub Release](https://github.com/sparkyideainc/openlolo/releases),
 verifies its checksum, and starts the services. Add `-s -- --no-remote` for a LAN-only box.
 The product overview, device details, and operating limits are in the
-[device README](apps/device/README.md). Guides are published at [openlolo.com](https://openlolo.com).
+[device README](apps/device/README.md). Guides are published at [openlolo.com/docs](https://openlolo.com/docs).
 
 ## Develop
 
