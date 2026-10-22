@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Script an iPhone through an OpenLolo box"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "GPL-3.0-only"
+license = "MIT"
 dependencies = ["httpx>=0.28,<1"]
 
 [project.scripts]
