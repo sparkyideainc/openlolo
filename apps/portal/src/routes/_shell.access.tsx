@@ -1,15 +1,17 @@
 // Access: requests waiting for the owner, then every connected client. `?r=<handle>` opens a
 // request straight away (the consent page's QR links here).
 
+import { Button } from "@openlolo/ui/components/button";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/api";
-import { keys, useClients, useConsents } from "@/api/queries";
+import { keys, useClients, useConsents, useInfo } from "@/api/queries";
 import type { Client } from "@/api/types";
+import { AddAiSheet } from "@/components/add-ai-sheet";
 import { ClientDialog } from "@/components/client-dialog";
 import { ConfirmDialog } from "@/components/dialogs";
 import { ButtonRow, Page, PageHeader, Row, Section } from "@/components/list";
@@ -35,9 +37,11 @@ function Access() {
 	const queryClient = useQueryClient();
 	const consents = useConsents(5000);
 	const clients = useClients(15_000);
+	const mcpUrl = useInfo().data?.mcp_url;
 	const [request, setRequest] = useState<string | null>(null);
 	const [selected, setSelected] = useState<Client | null>(null);
 	const [revoking, setRevoking] = useState<Client | null>(null);
+	const [adding, setAdding] = useState(false);
 	useEffect(() => {
 		if (r) {
 			setRequest(r);
@@ -58,7 +62,22 @@ function Access() {
 		: undefined;
 	return (
 		<Page>
-			<PageHeader title="Access" />
+			<PageHeader
+				title="Access"
+				action={
+					<Button
+						onClick={() => setAdding(true)}
+						className="relative rounded-full pr-3.5 pl-2.5 font-semibold text-[15px] after:absolute after:inset-x-0 after:-inset-y-1"
+					>
+						<Plus
+							data-icon="inline-start"
+							className="size-[18px]"
+							strokeWidth={2.4}
+						/>
+						Add AI
+					</Button>
+				}
+			/>
 			{(consents.data?.length ?? 0) > 0 ? (
 				<Section title="Waiting for you">
 					{consents.data?.map((consent) => (
@@ -86,7 +105,7 @@ function Access() {
 					<Row
 						minHeight={56}
 						title="No AI clients yet"
-						subtitle="Approve a request to connect one"
+						subtitle="Tap Add AI to connect one"
 					/>
 				) : null}
 				{ai.map((client) => (
@@ -112,6 +131,7 @@ function Access() {
 					</div>
 				))}
 			</Section>
+			<AddAiSheet mcpUrl={mcpUrl} open={adding} onOpenChange={setAdding} />
 			<RequestDialog
 				consent={request ? pendingConsent : null}
 				open={request !== null}

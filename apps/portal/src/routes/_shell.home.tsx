@@ -1,8 +1,8 @@
-// Home: box status, the pending request, the pause control, and recent activity.
+// Home: box status, the pending request, and recent activity.
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { Pause, Search, Smartphone } from "lucide-react";
+import { Search, Smartphone } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -15,7 +15,6 @@ import {
 	useOperations,
 } from "@/api/queries";
 import type { DiscoveredPhone } from "@/api/types";
-import { ConfirmDialog } from "@/components/dialogs";
 import {
 	ButtonRow,
 	LinkRow,
@@ -25,7 +24,7 @@ import {
 	Section,
 } from "@/components/list";
 import { OperationRow } from "@/components/operation-row";
-import { Avatar, BusyButton, IconBadge } from "@/components/primitives";
+import { Avatar, IconBadge } from "@/components/primitives";
 import { RequestDialog } from "@/components/request-dialog";
 import { StatusCard } from "@/components/status-card";
 import { useBoxName } from "@/lib/box-name";
@@ -33,9 +32,6 @@ import { clientName, expiresText } from "@/lib/format";
 import { useReachable } from "@/lib/hooks";
 import {
 	boxSummary,
-	isPaused,
-	isPhoneConnected,
-	pauseFootnote,
 	type SummaryAction,
 	showManualPhoneSection,
 } from "@/lib/summary";
@@ -57,7 +53,6 @@ function Home() {
 		status.errorUpdatedAt,
 		status.isError,
 	);
-	const [confirmPause, setConfirmPause] = useState(false);
 	const [request, setRequest] = useState<string | null>(null);
 	const [phones, setPhones] = useState<DiscoveredPhone[]>([]);
 
@@ -65,14 +60,6 @@ function Home() {
 		void queryClient.invalidateQueries({ queryKey: keys.status });
 		void queryClient.invalidateQueries({ queryKey: keys.operations });
 	};
-	const pause = useMutation({
-		mutationFn: () => api.pause(),
-		onSuccess: () => {
-			toast.success("Pause sent to the box.");
-			refresh();
-		},
-		onError: (error) => toast.error(error.message),
-	});
 	const discover = useMutation({
 		mutationFn: () => api.discover(),
 		onSuccess: (found) => {
@@ -110,8 +97,7 @@ function Home() {
 	});
 
 	const summary = boxSummary(status.data, { reachable, hostname });
-	const busy =
-		pause.isPending || discover.isPending || bind.isPending || setup.isPending;
+	const busy = discover.isPending || bind.isPending || setup.isPending;
 	const onAction = () => {
 		const action = summary.action;
 		if (!action) return;
@@ -152,24 +138,6 @@ function Home() {
 					<span className="font-semibold text-[15px] text-warn">Review</span>
 				</button>
 			) : null}
-			<Section bare footer={pauseFootnote(status.data)}>
-				<BusyButton
-					look="danger"
-					icon={<Pause className="size-5" fill="currentColor" />}
-					busy={pause.isPending}
-					disabled={
-						!reachable ||
-						busy ||
-						isPaused(status.data) ||
-						!isPhoneConnected(status.data)
-					}
-					onClick={() => setConfirmPause(true)}
-				>
-					{isPaused(status.data)
-						? "Phone control is paused"
-						: "Pause phone control"}
-				</BusyButton>
-			</Section>
 			{showManualPhoneSection(status.data, phones.length) ? (
 				<Section title="Phone">
 					{phones.map((phone) => (
@@ -209,19 +177,6 @@ function Home() {
 				))}
 				<LinkRow to="/activity" title="See all activity" />
 			</Section>
-			<ConfirmDialog
-				open={confirmPause}
-				onOpenChange={setConfirmPause}
-				title="Pause phone control?"
-				message="Stops every AI action at once. Resume from your AI client."
-				choices={[
-					{
-						label: "Pause now",
-						destructive: true,
-						onSelect: () => pause.mutate(),
-					},
-				]}
-			/>
 			<RequestDialog
 				consent={request ? pendingConsent : null}
 				open={request !== null}

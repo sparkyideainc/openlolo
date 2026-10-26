@@ -1,16 +1,13 @@
-// Settings: the box card, Wi-Fi, activity, the setup window, replacing the phone, diagnostics,
-// signing out.
+// Settings: the box card, Wi-Fi, activity, replacing the phone, reset, diagnostics. The box's
+// network mode (Wi-Fi, Local, Setup) is set by the top button, not here.
 
 import { Input } from "@openlolo/ui/components/input";
 import { Label } from "@openlolo/ui/components/label";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
-	Download,
 	FileText,
 	Info,
-	LogOut,
-	Plus,
 	Smartphone,
 	SquarePlus,
 	Trash2,
@@ -57,25 +54,12 @@ function Settings() {
 	const [confirmReset, setConfirmReset] = useState(false);
 	const [typedName, setTypedName] = useState("");
 	const [install, setInstall] = useState(false);
-	const [exported, setExported] = useState<string | null>(null);
-	const setupMode = network.data?.provisioning?.state === "setup_mode";
-	// Replacing the bound phone is a setup-window act from the box's own Wi-Fi (ADR 0012):
+	const hasButton = setup.data?.reset_method === "button";
+	// Replacing the bound phone happens on the box's own Wi-Fi, so in Local mode (ADR 0012):
 	// the new phone is on the cable and the page runs on it.
 	const canReplace =
 		(setup.data?.access.setup_ap ?? false) && (setup.data?.bound ?? false);
 
-	const openWindow = useMutation({
-		mutationFn: () => api.setupMode(!setupMode),
-		onSuccess: (health) => {
-			toast.success(
-				health.state === "setup_mode"
-					? "Setup window opened."
-					: "Setup window closed.",
-			);
-			void queryClient.invalidateQueries();
-		},
-		onError: (error) => toast.error(error.message),
-	});
 	const replacePhone = useMutation({
 		mutationFn: () => api.setup("unbind", {}),
 		onSuccess: async () => {
@@ -106,19 +90,6 @@ function Settings() {
 		},
 		onError: (error) => toast.error(error.message),
 	});
-	const signOut = useMutation({
-		mutationFn: () => api.closeSession(),
-		onSuccess: async () => {
-			toast.info("Signed out. Signing in again needs the iPhone on the cable.");
-			queryClient.clear();
-			await navigate({
-				to: "/connect",
-				search: { next: undefined },
-				replace: true,
-			});
-		},
-		onError: (error) => toast.error(error.message),
-	});
 	const exportDiagnostics = useMutation({
 		mutationFn: () => api.diagnostics(),
 		onSuccess: (data) => {
@@ -129,10 +100,15 @@ function Settings() {
 				);
 				return;
 			}
-			if (exported) URL.revokeObjectURL(exported);
-			setExported(
-				URL.createObjectURL(new Blob([json], { type: "application/json" })),
+			// One tap saves the file: Safari shows its download prompt straight away.
+			const url = URL.createObjectURL(
+				new Blob([json], { type: "application/json" }),
 			);
+			const link = document.createElement("a");
+			link.href = url;
+			link.download = "openlolo-diagnostics.json";
+			link.click();
+			setTimeout(() => URL.revokeObjectURL(url), 60_000);
 		},
 		onError: (error) => toast.error(error.message),
 	});
@@ -154,9 +130,9 @@ function Settings() {
 			<Section
 				title="Box"
 				footer={
-					setupMode
-						? "The setup window is open: the OpenLolo-XXXX Wi-Fi is on and the box pairs the iPhone on its cable."
-						: "Starts the OpenLolo-XXXX Wi-Fi and USB pairing for ten minutes."
+					hasButton
+						? "Hold the top button for Local mode: the box broadcasts its own Wi-Fi so this iPhone reaches it without a router. Press once to go back."
+						: undefined
 				}
 			>
 				<LinkRow
@@ -169,13 +145,6 @@ function Settings() {
 					to="/activity"
 					title="Activity"
 					leading={<IconBadge icon={<FileText />} fill="grey" />}
-				/>
-				<ButtonRow
-					title={setupMode ? "Close setup window" : "Open setup window"}
-					accessory="chevron"
-					leading={<IconBadge icon={<Plus />} fill="good" />}
-					disabled={openWindow.isPending}
-					onClick={() => openWindow.mutate()}
 				/>
 				{canReplace ? (
 					<ButtonRow
@@ -223,36 +192,9 @@ function Settings() {
 				) : null}
 				<ButtonRow
 					title="Export diagnostics"
-					accessory="chevron"
 					leading={<IconBadge icon={<Info />} fill="dark" />}
 					disabled={exportDiagnostics.isPending}
 					onClick={() => exportDiagnostics.mutate()}
-				/>
-				{exported ? (
-					<a
-						href={exported}
-						download="openlolo-diagnostics.json"
-						className="flex min-h-11 items-center gap-3 px-4 py-2"
-					>
-						<IconBadge icon={<Download />} fill="info" />
-						<span className="flex flex-col">
-							<span className="text-base text-foreground">Save the export</span>
-							<span className="text-[13px] text-muted-foreground">
-								openlolo-diagnostics.json
-							</span>
-						</span>
-					</a>
-				) : null}
-			</Section>
-			<Section
-				title="This page"
-				footer="You stay signed in until you sign out, also across restarts."
-			>
-				<ButtonRow
-					title="Sign out"
-					leading={<IconBadge icon={<LogOut />} fill="grey" />}
-					disabled={signOut.isPending}
-					onClick={() => signOut.mutate()}
 				/>
 			</Section>
 			<InstallSheet

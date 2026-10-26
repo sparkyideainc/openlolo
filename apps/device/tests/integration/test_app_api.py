@@ -122,6 +122,7 @@ async def test_info_status_pause_operations_and_clients(box):
         assert info["entry"] == "portal" and info["board"] == "test"
         assert info["setup_mode"] is False and info["features"] == {"network": True, "diagnostics": True}
         assert info["scopes"] == ALL_SCOPES
+        assert info["mcp_url"] == f"{PUBLIC}/mcp"
 
         status = await c.get("/app/status")
         assert status.status_code == 200, status.text

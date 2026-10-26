@@ -110,7 +110,6 @@ export interface BoxApi {
 	): Promise<{ attempt_id?: string } & ProvisioningHealth>;
 	forget(ssid: string, force: boolean): Promise<void>;
 	setupMode(enabled: boolean): Promise<ProvisioningHealth>;
-	pause(): Promise<void>;
 	decide(
 		handle: string,
 		allow: boolean,
@@ -171,7 +170,6 @@ export const liveApi: BoxApi = {
 	resetCancel: (attempt) => request("POST", "/setup/reset/cancel", { attempt }),
 	resetStatus: (attempt) =>
 		request("GET", `/setup/status?${new URLSearchParams({ attempt })}`),
-	pause: () => request("POST", "/app/pause", { operation_id: operationId() }),
 	decide: (handle, allow, window) =>
 		request("POST", `/app/consents/${encodeURIComponent(handle)}`, {
 			decision: allow ? "allow" : "deny",

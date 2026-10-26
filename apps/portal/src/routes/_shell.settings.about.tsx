@@ -4,7 +4,7 @@ import { Input } from "@openlolo/ui/components/input";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { useInfo, useNetwork } from "@/api/queries";
+import { useInfo, useNetwork, useSetupStatus } from "@/api/queries";
 import { ConfirmDialog } from "@/components/dialogs";
 import {
 	ButtonRow,
@@ -16,6 +16,8 @@ import {
 import { Mascot } from "@/components/primitives";
 import { renameBox, useBoxName } from "@/lib/box-name";
 import { text } from "@/lib/format";
+
+const MODE_TEXT = { wifi: "Wi-Fi", local: "Local", setup: "Setup" } as const;
 
 export const Route = createFileRoute("/_shell/settings/about")({
 	component: About,
@@ -29,9 +31,8 @@ function About() {
 	const [renaming, setRenaming] = useState(false);
 	const [newName, setNewName] = useState("");
 	const board = text(info.data?.board, "—");
-	const provisioning = network.data?.provisioning;
-	const setupMode = provisioning?.state === "setup_mode";
-	const expires = provisioning?.expires_in;
+	const mode = useSetupStatus(15_000).data?.mode;
+	const expires = network.data?.provisioning?.expires_in;
 	return (
 		<Page>
 			<PageHeader title={boxName} back="/settings" inline />
@@ -48,11 +49,11 @@ function About() {
 				<LabeledRow label="Address" value={text(network.data?.ip)} />
 				<LabeledRow label="Hostname" value={hostname} />
 				<LabeledRow
-					label="Setup mode"
+					label="Mode"
 					value={
-						setupMode
-							? `On${typeof expires === "number" ? ` · ${Math.ceil(expires / 60)} min left` : ""}`
-							: "Off"
+						mode === "local" || mode === "setup"
+							? `${MODE_TEXT[mode]}${typeof expires === "number" ? ` · ${Math.ceil(expires / 60)} min left` : ""}`
+							: MODE_TEXT.wifi
 					}
 				/>
 			</Section>

@@ -70,7 +70,7 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 	};
 	const cable = true;
 	let setupMode = screen === "setup";
-	let paused = screen === "paused";
+	const paused = screen === "paused";
 	let status: AppStatus = {
 		connection: {
 			state: "connected",
@@ -144,7 +144,7 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			self: false,
 		},
 	];
-	let operations: Operation[] = [
+	const operations: Operation[] = [
 		{
 			id: "1",
 			kind: "tap",
@@ -292,6 +292,7 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 				version: "0.0.1",
 				board: "4b2c",
 				entry: "portal",
+				mcp_url: "https://lolobox-4b2c.tailnet.ts.net/mcp",
 				setup_mode: setupMode,
 				features: { network: true, diagnostics: true },
 			};
@@ -350,21 +351,6 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			requireSession();
 			setupMode = enabled;
 			return provisioning();
-		},
-		async pause() {
-			requireSession();
-			await delay();
-			paused = true;
-			operations = [
-				{
-					id: String(operations.length + 1),
-					kind: "pause",
-					state: "SUCCEEDED",
-					client: "Box page",
-					updated: now(),
-				},
-				...operations,
-			];
 		},
 		async decide(handle, allow) {
 			requireSession();
