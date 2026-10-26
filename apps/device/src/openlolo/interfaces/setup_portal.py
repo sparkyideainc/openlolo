@@ -34,6 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from openlolo.domain.errors import OpenLoloError
 from openlolo.interfaces.json_body import body
+from openlolo.release import installed_release
 
 log = logging.getLogger("openlolo.portal")
 WEB = Path(__file__).resolve().parents[1] / "web" / "portal"
@@ -273,6 +274,8 @@ def create_setup_portal(runtime, *, web: Path = WEB, clock=time.time) -> ASGIApp
         return JSONResponse(
             {
                 "device": runtime.config.setup_name,
+                # The update's health check and the page's reconnect wait for this to change.
+                "version": installed_release(),
                 "hostname": f"{(runtime.config.setup_name or 'openlolo').lower()}.local",
                 "setup_mode": runtime.provisioning.active,
                 "mode": runtime.provisioning.mode,

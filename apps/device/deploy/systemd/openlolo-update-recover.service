@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenLolo software update: finish an interrupted attempt after a restart
+# Waits for the API to answer with the new version, else puts /opt/openlolo/previous back.
+After=openlolo-api.service
+ConditionPathExists=/var/lib/openlolo/update/state.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/openlolo/current/deploy/update/openlolo_update.py recover
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target

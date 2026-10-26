@@ -1,6 +1,6 @@
 # Software update from the box page
 
-**Status: plan, 2026-10-26. Nothing built yet. UI design: [Box Page Software Update canvas](https://claude.ai/artifact/3H3qXsiiowm6PGVhEEHsTx).**
+**Status: plan, 2026-10-26. PR 1 (installer `--upgrade`, update unit) in progress on `jingerpie/update-installer`. UI design: [Box Page Software Update canvas](https://claude.ai/artifact/3H3qXsiiowm6PGVhEEHsTx).**
 
 Today a box changes version only when someone runs `curl … install.sh | sudo sh` over SSH. Owners of a ready-made box have no SSH, so in practice they never update. This plan lets the box find a new GitHub release, ask the owner on the box page, and install it, with no SSH and no way to end up with a box that does not start.
 
@@ -30,7 +30,7 @@ Later (PR 4): an owner-facing `## Highlights` section in each release. The box e
 ### Who checks, who installs
 
 - **The API checks** (it already has the network and the owner's session). Once a day at a random minute, at boot after the box has internet for 5 minutes, and when the owner taps **Check for updates**. Wi-Fi mode only: in Local and Setup mode the box has no internet, so the check is skipped and the page says "Connect the box to Wi-Fi to check for updates".
-- **Root installs**, through a new oneshot unit, the same pattern as `openlolo-reset.service`: `openlolo-update.service` runs `/opt/openlolo/current/deploy/update/openlolo-update.sh`. The API user may only `start` and `stop` it (one more entry in `deploy/polkit/50-openlolo.rules`). The API never passes arguments: it writes the requested version to `/run/openlolo/update-request` (directory owned by the API user), and the root script re-validates it against the GitHub API itself before downloading anything.
+- **Root installs**, through a new oneshot unit, the same pattern as `openlolo-reset.service`: `openlolo-update.service` runs `/usr/bin/python3 /opt/openlolo/current/deploy/update/openlolo_update.py` (standard library only, so a broken release venv cannot stop it). The API user may only `start` it (one more entry in `deploy/polkit/50-openlolo.rules`); cancel is a request file, never `stop`. The API never passes arguments: it writes the requested version to `/run/openlolo/update-request` (directory owned by the API user), and the root script re-validates it against the GitHub API itself before downloading anything.
 - **The script reuses the installer**: download the tarball and `.sha256` with `curl --proto =https`, `sha256sum -c`, unpack under `/var/tmp/openlolo-update/`, run `scripts/install.sh <dir> --upgrade`. `install.sh` already builds in `.staging`, checks imports before touching `current`, swaps, and restores the previous build when the new entry points do not run.
 - **Progress** is a JSON file the root script writes atomically (`/var/lib/openlolo/update/state.json`, readable by the API group): `{attempt, version, step: download|install|restart|verify, result: running|succeeded|failed, error_code, started, updated}`. The API reads it, so the page sees progress before the restart and the outcome after it.
 
@@ -50,13 +50,13 @@ So:
 
 ## Guards (attempts, cancellation, abuse)
 
-- **One update at a time.** `POST /app/update/install` returns the running attempt (same `attempt` id) instead of starting another. The root script holds `flock /run/openlolo/update.lock`; a second start exits at once.
+- **One update at a time.** `POST /app/update/install` returns the running attempt (same `attempt` id) instead of starting another. The root script holds a lock in `/run/openlolo-update/` (the unit's root-only `RuntimeDirectory`); a second start exits at once. Root never follows links in `/run/openlolo`, which the API user owns: the request is opened with `O_NOFOLLOW`.
 - **Refused while busy**: reset challenge or reset running (`RESET_RUNNING`), a Wi-Fi join (`PROVISIONING_BUSY`), Local or Setup mode (`NO_INTERNET`), less than 600 MB free on `/opt` and `/var/tmp` (`LOW_DISK`), and on the Lolo Pocket a battery under 30 % while not charging (`LOW_BATTERY`).
 - **The version is checked twice**: the API offers only what it read from GitHub, and the root script re-reads the release for the requested version and refuses anything that is not newer than `current/RELEASE`, not a `vX.Y.Z` tag on `update_repo`, or missing the asset or checksum (`INVALID_RELEASE`).
 - **Bounded downloads.** The release JSON is read with a 256 KB cap and 10 s timeout; the tarball with a 200 MB cap (`curl --max-filesize`) and 10 min timeout; three attempts with backoff, then `DOWNLOAD_FAILED`. The previous install stays untouched until the checksum passes.
 - **Coalesced checks.** Manual checks within 60 s of the last one return the cached result. Conditional requests with `ETag` keep the daily check inside GitHub's 60 requests per hour unauthenticated limit; a 403 or 429 backs off to the `Retry-After` value and the page shows the last known result.
-- **Cancellation.** Cancel is allowed only during `download` (the script stops, nothing changed). From `install` on there is no cancel: the staging build either swaps in or is discarded, and `previous` is the way back.
-- **Power loss.** Before the swap, the old `current` is untouched (staging is discarded at next start). After the swap, `previous` exists until the health check passes; at boot, a separate root oneshot `openlolo-update-recover.service` (before `openlolo-api`) finishes an interrupted attempt: no healthy API within 120 s means roll back to `previous`.
+- **Cancellation.** Cancel is allowed only during `download`: the API writes `/run/openlolo/update-cancel`, the script checks it between 1 MB chunks and stops with nothing changed. From `install` on there is no cancel: the staging build either swaps in or is discarded, and `previous` is the way back.
+- **Power loss.** Before the swap, the old `current` is untouched (staging is discarded at next start). After the swap, `previous` exists until the health check passes; at boot, a separate root oneshot `openlolo-update-recover.service` (after `openlolo-api`, only when `state.json` exists) finishes an interrupted attempt: no healthy API within 120 s means roll back to `previous`.
 - **Phone control.** Starting an update ends any control lease (the API stops anyway). If an AI holds control when the owner taps **Update now**, the dialog says so first: "Claude is using the iPhone. Updating stops it."
 - **Who can start it**: box page owner session only (`ADMIN_SCOPE`, portal entry). Never exposed through MCP or the SDK.
 - **What the page trusts**: version strings and URLs come from the box API, never from GitHub directly, and `html_url` is rebuilt from `update_repo` and the version rather than taken from the response.
@@ -66,10 +66,10 @@ So:
 ### PR 1: installer `--upgrade` and the update unit (box only, no UI)
 
 - `install.sh`: write `/etc/openlolo/install.env`; `--upgrade` as above; keep `previous`.
-- `deploy/update/openlolo-update.sh`, `deploy/systemd/openlolo-update.service`, `openlolo-update-recover.service`, polkit entry.
+- `deploy/update/openlolo_update.py` (`run`, `recover`, and `--force` for a dev build over SSH), `deploy/systemd/openlolo-update.service`, `openlolo-update-recover.service`, polkit entry.
 - `/setup/status` gains `version` (the health check and the page's reconnect read it).
 - Usable from SSH on its own: `sudo systemctl start openlolo-update` with a request file, so PR 1 can be benched before any API work.
-- Tests: shell-level test for version comparison and request validation (bats-free: a `sh` test script run in CI on Ubuntu with a fake release directory).
+- Tests: `tests/unit/test_update_script.py` loads the script and runs it against a fake GitHub, `install.sh`, `systemctl` and local API (versions, request validation, asset and archive checks, success, rollback, cancel, lock, recovery).
 
 ### PR 2: API check and endpoints
 

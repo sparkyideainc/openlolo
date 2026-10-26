@@ -13,20 +13,27 @@ case "${ID:-}:${VERSION_CODENAME:-}" in
   debian:trixie|raspios:trixie|raspbian:trixie) ;;
   *) echo "Supported systems are Debian 13 ARM64 and Raspberry Pi OS 64-bit (trixie); found ${PRETTY_NAME:-unknown}." >&2; exit 1 ;;
 esac
-usage='Usage: install.sh [source-directory] [--remote tailscale|cloudflare | --no-remote] [--auth-key KEY] [--hostname HOST] [--tunnel-token TOKEN] [--wifi-country CC] [--debug]'
+usage='Usage: install.sh [source-directory] [--remote tailscale|cloudflare | --no-remote] [--auth-key KEY] [--hostname HOST] [--tunnel-token TOKEN] [--wifi-country CC] [--debug] [--upgrade]'
 source_dir=
 remote=tailscale   # Remote MCP entry (ADR 0003) is part of the standard install; --no-remote for LAN-only.
 auth_key=${TS_AUTHKEY:-}           # Tailscale auth key (unattended tailnet join).
 hostname=${OPENLOLO_HOSTNAME:-}   # Cloudflare only (--remote cloudflare): public DNS name; default openlolo-<board id>.<zone>.
 tunnel_token=${TUNNEL_TOKEN:-}     # Cloudflare only: dashboard-managed tunnel token (unattended).
-wifi_country=${WIFI_COUNTRY:-US}
+wifi_country=${WIFI_COUNTRY:-}
 debug=   # --debug: keep the journal across power loss (bench boxes; adds storage writes).
+# --upgrade: unattended update of an installed box (openlolo-update.service). Keeps the options
+# recorded in /etc/openlolo/install.env, leaves remote access alone, skips apt-get when the OS
+# package list is unchanged, and keeps the old build as /opt/openlolo/previous for the caller's
+# health check (deploy/update/openlolo_update.py deletes it or puts it back).
+upgrade=
+install_env=/etc/openlolo/install.env
 while [ $# -gt 0 ]; do
   case "$1" in
     --wifi-country) wifi_country=${2:?--wifi-country needs a two-letter code}; shift 2 ;;
     --remote) remote=${2:?--remote needs a provider (tailscale or cloudflare)}; shift 2 ;;
     --no-remote) remote=; shift ;;
     --debug) debug=1; shift ;;
+    --upgrade) upgrade=1; shift ;;
     --hostname) hostname=${2:?--hostname needs a value}; shift 2 ;;
     --tunnel-token) tunnel_token=${2:?--tunnel-token needs a value}; shift 2 ;;
     --auth-key) auth_key=${2:?--auth-key needs a value}; shift 2 ;;
@@ -35,6 +42,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$source_dir" ] || source_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# Options of the previous install. Values are written by this script only (see the end) and read
+# with sed, never sourced.
+recorded() { sed -n "s/^$1=//p" "$install_env" 2>/dev/null | tail -1; }
+if [ -n "$upgrade" ]; then
+  [ -e /opt/openlolo/current ] || { echo '--upgrade needs an installed box (/opt/openlolo/current)' >&2; exit 1; }
+  if [ -f "$install_env" ]; then
+    remote=$(recorded remote); debug=$(recorded debug); wifi_country=$(recorded wifi_country)
+  else
+    # Installed before install.env existed: keep what the box has now.
+    remote=$(recorded remote)
+    [ ! -e /etc/systemd/journald.conf.d/openlolo-debug.conf ] || debug=1
+  fi
+fi
+remote_record=$remote   # what install.env keeps; an upgrade never runs the remote-access step
+[ -z "$upgrade" ] || remote=
+[ -n "$wifi_country" ] || [ -n "$upgrade" ] || wifi_country=US
 case "$remote" in ''|tailscale|cloudflare) ;; *) echo "Unsupported --remote provider: $remote" >&2; exit 1 ;; esac
 # The version is the GitHub release tag stamped by scripts/package.sh; a plain checkout is a dev build.
 release=$(sed -n 's/^release=//p' "$source_dir/RELEASE" 2>/dev/null | head -1)
@@ -44,11 +67,19 @@ root=/opt/openlolo
 # Older versions are not kept on the box: GitHub Releases hold every tagged build.
 release_dir=$root/.staging
 rm -rf "$release_dir"
-apt-get update
-awk '!/^#/ && NF' "$source_dir/deploy/os-packages.txt" | xargs apt-get install -y
-# GPIO button support is a Raspberry Pi hardware extension; generic ARM64 boxes do not need it.
-if grep -qi 'Raspberry Pi' /proc/device-tree/model 2>/dev/null; then
-  apt-get install -y python3-gpiozero python3-lgpio
+# An upgrade whose OS package list matches the installed one skips apt-get (minutes on a Pi);
+# the board packages below are installed by the same first install that wrote that list.
+skip_apt=
+if [ -n "$upgrade" ] && cmp -s "$source_dir/deploy/os-packages.txt" "$root/current/deploy/os-packages.txt"; then
+  skip_apt=1
+fi
+if [ -z "$skip_apt" ]; then
+  apt-get update
+  awk '!/^#/ && NF' "$source_dir/deploy/os-packages.txt" | xargs apt-get install -y
+  # GPIO button support is a Raspberry Pi hardware extension; generic ARM64 boxes do not need it.
+  if grep -qi 'Raspberry Pi' /proc/device-tree/model 2>/dev/null; then
+    apt-get install -y python3-gpiozero python3-lgpio
+  fi
 fi
 # Board profile. The Lolo Pocket (Radxa ZERO 3W + PiSugar3 on I2C) needs the extra OS setup below;
 # every other box keeps board = "auto" in box.toml.
@@ -59,7 +90,7 @@ esac
 if [ "$board" = radxa-zero3w ]; then
   # python3-smbus2 talks to the PiSugar3; i2c-tools (i2cdetect/i2cget) is kept for support and
   # ships the udev rule that gives the i2c group access to /dev/i2c-*.
-  apt-get install -y i2c-tools python3-smbus2
+  [ -n "$skip_apt" ] || apt-get install -y i2c-tools python3-smbus2
   getent group i2c >/dev/null || groupadd --system i2c
 fi
 # usbmuxd needs the iPhone's multiplexing USB configuration, which apple_mfi_fastcharge undoes
@@ -109,9 +140,11 @@ if [ "$board" = radxa-zero3w ]; then
 fi
 
 # Wi-Fi access-point setup and station mode need a configured regulatory country.
-case "$wifi_country" in [A-Z][A-Z]) ;; *) echo 'Wi-Fi country must be a two-letter code, e.g. US' >&2; exit 1 ;; esac
-if command -v raspi-config >/dev/null 2>&1; then raspi-config nonint do_wifi_country "$wifi_country" || true; fi
-command -v iw >/dev/null 2>&1 && iw reg set "$wifi_country" 2>/dev/null || true
+if [ -n "$wifi_country" ]; then   # empty only on an upgrade of a box installed before install.env
+  case "$wifi_country" in [A-Z][A-Z]) ;; *) echo 'Wi-Fi country must be a two-letter code, e.g. US' >&2; exit 1 ;; esac
+  if command -v raspi-config >/dev/null 2>&1; then raspi-config nonint do_wifi_country "$wifi_country" || true; fi
+  command -v iw >/dev/null 2>&1 && iw reg set "$wifi_country" 2>/dev/null || true
+fi
 command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi 2>/dev/null || true
 nmcli radio wifi on || true
 # The setup access point is hostapd under openlolo-setup-ap.service (ADR 0011 amendment);
@@ -208,7 +241,14 @@ if ! "$root/current/.venv/bin/openlolo" --help >/dev/null 2>&1 \
   exit 1
 fi
 # The pre-0.6 layout kept every release under releases/ behind a current symlink; drop it.
-rm -rf "$root/current.old" "$root/releases" "$root/previous-release"
+rm -rf "$root/releases" "$root/previous-release"
+if [ -n "$upgrade" ] && [ -e "$root/current.old" ]; then
+  rm -rf "$root/previous"
+  mv "$root/current.old" "$root/previous"
+else
+  rm -rf "$root/current.old"
+fi
+install -d -m 0755 /var/lib/openlolo/update
 # Radxa boot tuning (schedutil governor, heartbeat LED off); kept out of deploy/systemd so other
 # boards do not get the unit.
 [ "$board" != radxa-zero3w ] ||
@@ -216,6 +256,7 @@ rm -rf "$root/current.old" "$root/releases" "$root/previous-release"
 systemctl daemon-reload
 systemctl restart usbmuxd
 systemctl enable --now openlolo-device openlolo-api
+systemctl enable openlolo-update-recover.service
 if grep -qi 'Raspberry Pi' /proc/device-tree/model 2>/dev/null && [ -e /dev/gpiochip0 ]; then
   systemctl enable --now openlolo-button || true
 elif [ "$board" = radxa-zero3w ]; then
@@ -299,6 +340,14 @@ case "$remote" in
     [ -z "$remote_failed" ] || printf 'Remote access failed; the box still works on your network.\nRetry: sudo sh %s/scripts/remote-access.sh cloudflare\n' "$source_dir" >&2
     ;;
 esac
+# Options for the next --upgrade. Never auth keys or tunnel tokens.
+printf '# Written by install.sh; read by install.sh --upgrade.\nremote=%s\ndebug=%s\nwifi_country=%s\n' \
+  "$remote_record" "$debug" "$wifi_country" > "$install_env.tmp"
+mv "$install_env.tmp" "$install_env"
+if [ -n "$upgrade" ]; then
+  printf 'OPENLOLO_INSTALL_RESULT release=%s apt=%s\n' "$release" "$([ -n "$skip_apt" ] && echo skipped || echo ran)"
+  exit 0
+fi
 # The per-box Wi-Fi password is created on first start; print the setup card once ready.
 for _ in $(seq 1 30); do
   [ -s /var/lib/openlolo/openlolo.sqlite3 ] && break
