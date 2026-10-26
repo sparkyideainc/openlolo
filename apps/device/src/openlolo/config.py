@@ -31,21 +31,17 @@ class Config(StrictModel):
     auto_mount_ddi: bool = True
     ddi_mount_deadline: float = Field(default=240, ge=10, le=900)
     discovery_seconds: float = Field(default=3, ge=0.5, le=15)  # One Bonjour browse (re-asks each second).
-    # The worker looks for the phone inside bounded windows opened by events (boot, cable
-    # pulled, Wi-Fi session lost, top button, a request that needs the phone, the phone
-    # advertising again). A connection that starts inside the window may finish after it.
+    # The worker looks for the phone only inside bounded windows opened by a trigger: the boot
+    # search (once per OS boot), the cable pulled, the top button, the box page's Reconnect, a new
+    # binding. A connection that starts inside the window may finish after it.
     search_window_seconds: float = Field(default=10, ge=1, le=60)
-    # Safety net while disconnected: one more window after each of these delays (the last
-    # repeats), only with a bound phone off the cable and a default route (not in setup mode).
-    # Any event-driven window or a connect starts the sequence again. Off by default since
-    # 2026-10-18: the top button, an unlock (the phone advertises), a request, a cable change and
-    # boot each open a window, and a timer would blink the status LED of a sleeping box.
+    # Unused since 2026-10-26 (no timed searches or probes); still accepted so box.toml files
+    # written by older releases load.
     search_backoff_seconds: list[Annotated[float, Field(ge=0.01, le=3600)]] = Field(default=[])
-    # Follow avahi's view of RemotePairing advertisements: an unlocked phone shows up at once.
-    wifi_announcements: bool = True
-    # Wi-Fi only: check the session after this long without a request. USB needs no probe; the
-    # cable and the tunnel report their own loss.
     probe_interval: float = Field(default=30, ge=1, le=300)
+    # Follow avahi's view of RemotePairing advertisements to keep the phone's Wi-Fi address fresh
+    # for the next search. Advertisements never start a search.
+    wifi_announcements: bool = True
     reconnect_min_seconds: float = Field(default=1, ge=0.01, le=60)
     reconnect_max_seconds: float = Field(default=15, ge=0.01, le=300)
     recover_wait_seconds: float = Field(default=8, ge=0, le=60)

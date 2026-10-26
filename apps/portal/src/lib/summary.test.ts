@@ -43,7 +43,7 @@ describe("boxSummary", () => {
 			context,
 		);
 		expect(locked.headline).toBe("iPhone is locked");
-		expect(locked.action).toBeUndefined();
+		expect(locked.action).toEqual({ kind: "setup", step: "recover" });
 		const lost = boxSummary(
 			{ connection: { state: "disconnected", message: "Cable out" } },
 			context,
