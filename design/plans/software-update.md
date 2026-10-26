@@ -90,7 +90,7 @@ So:
 
 ## Steps
 
-1. Measure on the Radxa bench: time and peak memory of `install.sh` over an existing install (expected 3 to 5 minutes, mostly `apt-get` and `uv sync`), and free space needed. The dialog's "about 3 minutes" comes from this.
+1. Measure on the Radxa bench: time and peak memory of `install.sh` over an existing install, with and without the `apt-get` step (expected 3 to 5 minutes with it, mostly `apt-get` and `uv sync`), and free space needed. The dialog's "about 3 minutes" comes from this.
 2. PR 1, bench: update 0.0.2 → a test tag on a fork (`update_repo = jingerpie/openlolo`), including a forced verify failure and a power cut during `install`.
 3. PR 2 with unit tests; bench the daily check and the manual check against the fork.
 4. PR 3 from the canvas; full flow on the bench phone.
@@ -108,8 +108,8 @@ So:
 - Idle cost: the checker adds no wakeups outside its daily run; API idle CPU unchanged within 0.5 % of one core.
 - Unit, shell and portal suites green.
 
-## Open questions
+## Decided after review (2026-10-26)
 
-- Auto-install: never in this plan. Revisit only with attestation verification (PR 4) and an owner opt-in.
-- `apt-get update` on every upgrade: needed when `os-packages.txt` changes, slow otherwise. Option: skip it when the new `os-packages.txt` matches the installed one.
-- Boxes on 0.0.2 have no `openlolo-update.service`: their first update still needs SSH (`install.sh` once), or the page shows the SSH command when the unit is missing.
+- **No automatic installs.** The box only ever asks; the owner taps **Update now**. Revisit only after release verification (PR 4) and with an explicit owner opt-in.
+- **Skip `apt-get` when the OS packages have not changed.** `--upgrade` compares the new `deploy/os-packages.txt` with `/opt/openlolo/current/deploy/os-packages.txt` (and the board extras the installer adds); identical files skip `apt-get update` and `apt-get install`. A first install, a plain re-run without `--upgrade`, or any difference runs both as today.
+- **Boxes on 0.0.2 need SSH once.** They have no `openlolo-update.service` and no update screens, so the first release that ships this feature is installed with `curl … install.sh | sudo sh` as today; that release's notes say so. Every update after it works from the box page.
