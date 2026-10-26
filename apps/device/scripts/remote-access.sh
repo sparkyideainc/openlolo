@@ -115,8 +115,7 @@ EOF_PY
 
   install -d -m 0700 /etc/openlolo/cloudflared
   if [ -n "$token" ]; then
-    echo 'Using the dashboard-managed tunnel token. Make sure its public hostname points at'
-    echo "http://localhost:$port in the Zero Trust dashboard."
+    echo "Using your Cloudflare tunnel. Its public hostname must point to http://localhost:$port."
     umask 077
     printf 'TUNNEL_TOKEN=%s\n' "$token" > /etc/openlolo/tunnel.env
     umask 022
@@ -125,8 +124,7 @@ EOF_PY
   else
     rm -f /etc/openlolo/tunnel.env
     if [ ! -s /root/.cloudflared/cert.pem ]; then
-      echo 'Open the URL below in a browser, log in to Cloudflare and pick the zone that will host the hostname.'
-      echo 'Waiting for the login...'
+      echo 'Open the link below, log in to Cloudflare and pick your domain.'
       cloudflared tunnel login
     fi
     name=openlolo-$board_id
@@ -199,7 +197,7 @@ EOF
   # Verify through Cloudflare's own resolver (DNS over HTTPS) and connect to the returned edge
   # address: the LAN resolver may still hold a negative answer for the new name, and asking it
   # now would plant one for up to 30 minutes.
-  echo 'Waiting for the tunnel to answer from the public side...'
+  echo 'Checking remote access...'
   ok=
   for _ in $(seq 1 12); do
     sleep 5
@@ -216,12 +214,9 @@ except Exception:
       | grep -q "\"issuer\": *\"https://$hostname\""; then ok=1; break; fi
   done
   if [ -z "$ok" ]; then
-    echo 'The public URL did not answer through Cloudflare yet. Tunnel side: journalctl -u openlolo-tunnel -n 30' >&2
-  else
-    echo 'Public URL verified through Cloudflare. Your own network may still answer NXDOMAIN for a few'
-    echo 'minutes if the name was looked up before it existed; a phone on mobile data sees it now.'
+    echo 'Remote URL not verified yet. Check: journalctl -u openlolo-tunnel -n 30' >&2
   fi
-  echo "Remote MCP entry: https://$hostname/mcp"
+  echo "Save your Remote MCP URL: https://$hostname/mcp"
   ;;
 
 tailscale)
@@ -231,16 +226,16 @@ tailscale)
       echo 'Joining the tailnet with the provided auth key...'
       tailscale up --auth-key "$auth_key"
     else
-      echo 'Open the URL below (or scan the QR code) and approve this Pi. Waiting for login...'
+      echo 'Approve this box: open the link or scan the QR code below.'
       tailscale up --qr
     fi
   fi
   # Funnel needs HTTPS certificates and the funnel node attribute on the tailnet. On first use
   # Tailscale prints a one-click enable link and waits for it to be applied; older releases exit
   # instead, so retry after the owner confirms.
-  echo 'Enabling Funnel. If Tailscale shows an enable link, open it and approve; this waits.'
+  echo 'Turning on Funnel. If Tailscale shows a link, open it and approve.'
   until tailscale funnel --bg --https=443 "http://127.0.0.1:$port"; do
-    echo 'Funnel is not enabled for this tailnet yet. Enable it via the link above, then press Enter.' >&2
+    echo 'Approve Funnel with the link above, then press Enter.' >&2
     read -r _ </dev/tty || { echo 'No terminal to wait on; rerun after enabling Funnel' >&2; exit 1; }
   done
   hostname=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
@@ -250,9 +245,6 @@ tailscale)
     systemctl disable --now openlolo-tunnel || true
   fi
   configure_box "$hostname"
-  echo "Remote MCP entry: https://$hostname/mcp"
-  echo 'Note: after a network change on the Pi, Funnel may need `sudo systemctl restart tailscaled` (see the runbook).'
+  echo "Save your Remote MCP URL: https://$hostname/mcp"
   ;;
 esac
-
-echo "Approve clients on the box page (Access, or scan the QR on the consent page)."

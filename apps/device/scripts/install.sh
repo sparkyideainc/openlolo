@@ -264,11 +264,11 @@ elif [ -e "$journal_conf" ] || [ -e /etc/openlolo/ramlog-disabled-by-debug ]; th
   systemctl restart systemd-journald
 fi
 if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
-  printf 'Memory cgroup controller absent: MemoryMax is configured but not enforced on this boot. See installation runbook.\n' >&2
+  printf 'Memory limits are inactive this boot. See the installation runbook.\n' >&2
 fi
-printf 'Installed %s. LAN entry %s (sha256:%s)\n' "$release" "$lan_url" "$fingerprint"
-[ -z "$reboot_needed" ] || printf 'Boot configuration changed (%s): reboot the box to enable the PiSugar3 I2C bus.\n' "$env"
-[ -z "$debug_reboot" ] || printf 'Debug logging changed (%s): reboot the box to apply it.\n' "$ramlog"
+printf 'Installed OpenLolo %s.\n' "$release"
+[ -z "$reboot_needed" ] || printf 'Reboot to enable the PiSugar3 I2C bus.\n'
+[ -z "$debug_reboot" ] || printf 'Reboot to apply debug logging.\n'
 # Remote MCP entry (ADR 0003): Tailscale Funnel (default) or Cloudflare Tunnel in front of the
 # loopback gateway. Tailscale: a login URL and QR code, the owner approves the box in their
 # tailnet. Cloudflare: a browser login where the owner picks their domain; the box then takes
@@ -276,27 +276,27 @@ printf 'Installed %s. LAN entry %s (sha256:%s)\n' "$release" "$lan_url" "$finger
 # LAN-only box. Neither provider is known to survive an interface change on the box without a
 # restart of its daemon; that behaviour is under evaluation (ADR 0003, amendment 2026-09-30).
 if [ "$remote" = cloudflare ] && [ -n "$tunnel_token" ] && [ -z "$hostname" ]; then
-  printf -- '--tunnel-token needs --hostname (the dashboard tunnel does not reveal its hostname); remote access skipped.\n' >&2
+  printf -- '--tunnel-token needs --hostname; remote access skipped.\n' >&2
   remote=
 fi
 remote_failed=
 case "$remote" in
   tailscale)
-    printf '\nStep 1 of 2: remote access through Tailscale Funnel. Approve this box in your Tailscale account when asked.\n'
+    printf '\nRemote access (Tailscale)\n'
     if [ -n "$auth_key" ]; then
       sh "$source_dir/scripts/remote-access.sh" tailscale --auth-key "$auth_key" || remote_failed=1
     else
       sh "$source_dir/scripts/remote-access.sh" tailscale || remote_failed=1
     fi
-    [ -z "$remote_failed" ] || printf 'Remote access was not enabled; the box works on the LAN. Retry later with: sudo sh %s/scripts/remote-access.sh\n' "$source_dir" >&2
+    [ -z "$remote_failed" ] || printf 'Remote access failed; the box still works on your network.\nRetry: sudo sh %s/scripts/remote-access.sh\n' "$source_dir" >&2
     ;;
   cloudflare)
-    printf '\nStep 1 of 2: remote access through Cloudflare Tunnel. Log in and pick your domain when asked.\n'
+    printf '\nRemote access (Cloudflare)\n'
     set -- cloudflare
     [ -z "$hostname" ] || set -- "$@" --hostname "$hostname"
     [ -z "$tunnel_token" ] || set -- "$@" --token "$tunnel_token"
     sh "$source_dir/scripts/remote-access.sh" "$@" || remote_failed=1
-    [ -z "$remote_failed" ] || printf 'Remote access was not enabled; the box works on the LAN. Retry later with: sudo sh %s/scripts/remote-access.sh cloudflare\n' "$source_dir" >&2
+    [ -z "$remote_failed" ] || printf 'Remote access failed; the box still works on your network.\nRetry: sudo sh %s/scripts/remote-access.sh cloudflare\n' "$source_dir" >&2
     ;;
 esac
 # The per-box Wi-Fi password is created on first start; print the setup card once ready.
@@ -304,9 +304,8 @@ for _ in $(seq 1 30); do
   [ -s /var/lib/openlolo/openlolo.sqlite3 ] && break
   sleep 1
 done
-printf '\nStep 2 of 2: setup Wi-Fi. Join the OpenLolo network from iPhone Wi-Fi Settings, then follow the local setup page.\n'
-printf 'Connect the iPhone to the box over USB to pair it automatically; unlock the phone and tap Trust if prompted.\n'
-printf '\nWi-Fi name, password, and iPhone join QR:\n'
+printf '\niPhone setup\n'
+printf 'Connect the iPhone by USB. Unlock it and tap Trust if asked.\n'
+printf 'Scan both codes below with the iPhone camera, in order.\n\n'
 sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo setup-card || \
-  printf 'Label not ready yet; run: sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo setup-card\n'
-printf 'Then open the box page on the iPhone; AI clients and scripts are approved there under Access.\n'
+  printf 'Setup card not ready. Run: sudo -u openlolo /opt/openlolo/current/.venv/bin/openlolo setup-card\n'

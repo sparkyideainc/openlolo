@@ -59,7 +59,7 @@ def test_setup_card_prints_wifi_and_page_qr_codes(box, monkeypatch, capsys):
     titles = [
         line for line in lines if line.startswith(("1. Join the setup Wi-Fi", "2. Open the setup page"))
     ]
-    assert len(titles) == 2 and ".local" in titles[1]
+    assert titles == ["1. Join the setup Wi-Fi", "2. Open the setup page"]
     assert sum(1 for line in lines if line.startswith("█▀▀▀▀▀▀▀█")) >= 2  # a finder row per code
 
 
