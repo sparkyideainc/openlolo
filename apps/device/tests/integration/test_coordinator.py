@@ -379,3 +379,22 @@ async def test_outcome_waits_without_cancelling_the_work(runtime, lease):
     await runtime.coordinator.outcome(op, 10)
     assert runtime.phone.operation_status(op, "owner")["state"] == "SUCCEEDED"
     await runtime.coordinator.outcome(str(uuid4()), 10)  # Unknown or finished: returns at once.
+
+
+async def test_requests_count_as_activity_and_are_refused_while_turning_off(runtime, lease):
+    seen = []
+    runtime.coordinator.on_activity = lambda: seen.append(1)
+    await runtime.phone.screenshot()
+    runtime.phone.action(str(uuid4()), "owner", lease, Action(kind="key", key="enter"))
+    assert len(seen) >= 2
+    runtime.coordinator.closing = True
+    for call in (
+        lambda: runtime.phone.screenshot(),
+        lambda: runtime.phone.acquire_control("owner"),
+    ):
+        with pytest.raises(OpenLoloError) as raised:
+            await call()
+        assert raised.value.code == "SHUTTING_DOWN" and raised.value.status == 503
+    with pytest.raises(OpenLoloError):
+        runtime.phone.action(str(uuid4()), "owner", lease, Action(kind="key", key="enter"))
+    runtime.coordinator.closing = False

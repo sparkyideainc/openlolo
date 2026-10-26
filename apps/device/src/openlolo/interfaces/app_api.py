@@ -82,14 +82,27 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
     config = runtime.config
     network = getattr(runtime, "network", None)
     provisioning = getattr(runtime, "provisioning", None)
+    autooff = getattr(runtime, "autooff", None)
     routes: list[RouteSpec] = []
 
     def add(path: str, methods: list[str]):
         def decorator(fn):
-            routes.append((APP_PREFIX + path, methods, guarded(fn)))
+            handler = fn
+            if autooff is not None and "GET" not in methods:
+                # An owner action on the box page restarts auto sleep's count; status polls do not.
+                async def handler(request: Request, fn=fn):
+                    autooff.activity("page")
+                    return await fn(request)
+
+            routes.append((APP_PREFIX + path, methods, guarded(handler)))
             return fn
 
         return decorator
+
+    def need_autooff():
+        if autooff is None:
+            raise OpenLoloError("POWER_UNAVAILABLE", "Auto sleep is not available on this box", 503)
+        return autooff
 
     def need_network():
         if network is None or provisioning is None:
@@ -313,6 +326,25 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         if not isinstance(attempt, str) or len(attempt) > 64:
             raise OpenLoloError("INVALID_REQUEST", "attempt is required", 400)
         return runtime.updates.cancel(attempt)
+
+    @add("/power", ["GET"])
+    async def power_status(request: Request):
+        require(ADMIN_SCOPE)
+        return need_autooff().view()
+
+    @add("/power", ["POST"])
+    async def power_set(request: Request):
+        require(ADMIN_SCOPE)
+        minutes = (await body(request)).get("auto_sleep_minutes")
+        if not isinstance(minutes, int) or isinstance(minutes, bool):
+            raise OpenLoloError("INVALID_SETTING", "auto_sleep_minutes must be a whole number", 400)
+        return need_autooff().set_minutes(minutes)
+
+    @add("/power/keep", ["POST"])
+    async def power_keep(request: Request):
+        """The page's Keep on button during the warning (the POST itself is the activity)."""
+        require(ADMIN_SCOPE)
+        return need_autooff().keep_on()
 
     @add("/diagnostics", ["GET"])
     async def diagnostics(request: Request):

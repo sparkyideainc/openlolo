@@ -386,3 +386,114 @@ def test_reset_patterns_on_the_board_led(rig):
         clock.sleep(ps.FLASH)
     assert frames[:13] == [True, False, True, False, True] + [False] * 8  # Triple flash, 2 s
     assert frames[13:] == frames[:13]
+
+
+# ----- auto sleep: the power socket and the power cut -------------------------------------
+
+
+def started(rig):
+    clock, smbus, daemon, tmp, led = rig
+    daemon.start()
+    smbus.writes.clear()
+    return clock, smbus, daemon
+
+
+def test_status_reports_the_power_source_and_battery(rig):
+    clock, smbus, daemon = started(rig)
+    smbus.regs[0x2A] = 64
+    status = daemon.power_request({"op": "status"})
+    assert status == {
+        "pisugar": True,
+        "daemon_id": daemon.id,
+        "attempt": None,
+        "committed": False,
+        "external_power": False,
+        "battery_percent": 64,
+    }
+    smbus.regs[0x02] |= 0x80
+    assert daemon.power_request({"op": "status"})["external_power"] is False  # Cached 2 s.
+    clock.sleep(2)
+    assert daemon.power_request({"op": "status"})["external_power"] is True
+    assert smbus.writes == []
+
+
+def test_prepare_then_commit_arms_the_cut_in_order(rig):
+    clock, smbus, daemon = started(rig)
+    reply = daemon.power_request({"op": "prepare", "attempt": "a1", "seconds": 10})
+    assert reply == {"ok": True, "daemon_id": daemon.id}
+    daemon.show()
+    assert daemon.pattern == "shutdown"
+    assert smbus.writes == []  # The warning writes nothing to the board.
+    reply = daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})
+    assert reply == {"ok": True, "cut_delay": ps.CUT_DELAY}
+    assert smbus.writes == [(0x09, ps.CUT_DELAY), (0x03, 0x40), (0x02, 0x5C)]
+    assert smbus.regs[0x03] & 0x10 == 0 and smbus.regs[0x02] & 0x20 == 0
+    assert daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})["ok"] is False
+    daemon.show()
+    assert daemon.pattern == "resetting"  # Steady on until the power goes.
+
+
+def test_commit_needs_a_live_prepare_from_this_daemon(rig):
+    clock, smbus, daemon = started(rig)
+
+    def commit(attempt="a1", daemon_id=None):
+        request = {"op": "commit", "attempt": attempt, "daemon_id": daemon_id or daemon.id}
+        return daemon.power_request(request)
+
+    assert commit()["error"] == "STALE_ATTEMPT"  # Nothing prepared.
+    daemon.power_request({"op": "prepare", "attempt": "a1", "seconds": 10})
+    assert commit(daemon_id="other")["error"] == "WRONG_DAEMON"
+    assert commit(attempt="a2")["error"] == "STALE_ATTEMPT"
+    assert daemon.power_request({"op": "prepare", "attempt": "a2", "seconds": 10})["error"] == "BUSY"
+    daemon.power_request({"op": "cancel", "attempt": "a1"})
+    assert commit()["error"] == "STALE_ATTEMPT"  # Cancelled.
+    daemon.power_request({"op": "prepare", "attempt": "a3", "seconds": 10})
+    clock.sleep(10 + ps.PREPARE_GRACE)
+    daemon.show()
+    assert commit(attempt="a3")["error"] == "STALE_ATTEMPT"  # Expired.
+    assert smbus.writes == [] and not daemon.committed
+
+
+def test_commit_refuses_on_external_power(rig):
+    clock, smbus, daemon = started(rig)
+    daemon.power_request({"op": "prepare", "attempt": "a1", "seconds": 10})
+    smbus.regs[0x02] |= 0x80  # Plugged in during the warning.
+    reply = daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})
+    assert reply["error"] == "EXTERNAL_POWER" and smbus.writes == [] and not daemon.committed
+
+
+def test_a_failed_write_leaves_the_output_on(rig):
+    clock, smbus, daemon = started(rig)
+    write = smbus.write_byte_data
+
+    def broken(address, register, value):
+        if register == 0x03:
+            raise OSError(121, "Remote I/O error")
+        write(address, register, value)
+
+    smbus.write_byte_data = broken
+    daemon.power_request({"op": "prepare", "attempt": "a1", "seconds": 10})
+    reply = daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})
+    assert reply["error"] == "I2C_FAILED" and not daemon.committed
+    assert smbus.regs[0x02] & 0x20  # The output switch was never cleared.
+
+
+def test_power_socket_round_trip_and_offline_reply():
+    import json
+    import socket
+    import tempfile
+
+    path = Path(tempfile.mkdtemp(dir="/tmp")) / "power.sock"  # AF_UNIX paths are short.
+    server = ps.PowerServer(path)
+    try:
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(path))
+        client.sendall(b'{"op": "status"}\n')
+        server.poll(ps.offline_request)
+        assert json.loads(client.recv(4096)) == {"pisugar": False}
+        client.close()
+        server.poll(ps.offline_request)  # Nothing pending: returns at once.
+    finally:
+        server.close()
+    assert not path.exists()

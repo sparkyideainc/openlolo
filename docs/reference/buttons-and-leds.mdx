@@ -28,6 +28,10 @@ A wrong count, a hold during the count or a timeout cancels it. A Raspberry Pi b
 
 OpenLolo keeps the PiSugar 3 defaults. Power on with a short press, then press and hold. A long press cuts power at once.
 
+## Auto sleep
+
+On battery, the box turns itself off when no iPhone is connected and nothing has used it for the time set in **Settings > Auto sleep** (5 minutes by default, or Off). It never turns off while plugged into power. Before it turns off, the status LED flickers fast for 10 seconds: press the top button, or tap **Keep on** on the box page, to keep it on. Press the power button to turn it back on.
+
 <Callout type="warn">A long press is not a clean shutdown. Shut down from the box page when you can.</Callout>
 
 ## Status LED
@@ -37,6 +41,7 @@ OpenLolo keeps the PiSugar 3 defaults. Power on with a short press, then press a
 | Fast blink | Local or Setup mode: the box's own Wi-Fi is on |
 | Steady on | Phone connected |
 | Slow blink | Looking for the phone |
+| Fast flicker | Auto sleep: turning off in 10 seconds. Press the top button to keep it on |
 | Off | Not connected and not looking |
 
 {/* TODO: confirm the box page has a shutdown action; add the four PiSugar battery LEDs once battery handling ships. */}

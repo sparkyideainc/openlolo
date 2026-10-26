@@ -9,6 +9,7 @@ from openlolo.adapters.system.fake import FakeNetwork
 from openlolo.adapters.system.network import NetworkManager, SystemHealth
 from openlolo.adapters.system.network import run as run_command
 from openlolo.adapters.system.setup_ap import ensure_setup_identity
+from openlolo.application.autooff import POWEROFF_UNIT, AutoOff
 from openlolo.application.autopair import AutoPair
 from openlolo.application.coordinator import Coordinator
 from openlolo.application.phone import Phone
@@ -79,8 +80,27 @@ class Runtime:
             reset=self.reset,
             start_unit=None if config.backend == "simulated" else self.start_update,
         )
+        self.autooff = AutoOff(
+            config,
+            device=device,
+            coordinator=self.coordinator,
+            provisioning=self.provisioning,
+            reset=self.reset,
+            poweroff=self.poweroff,
+        )
+        self.coordinator.on_activity = self.provisioning.on_activity = self.autooff.activity
         self.door_provider, self.door_gateway = build_door(self)
         self.lock = None
+
+    async def poweroff(self) -> None:
+        """Auto sleep: a clean shutdown after the PiSugar power cut is armed. Simulated: nothing."""
+        if self.config.backend == "simulated":
+            return
+        code, output = await run_command(
+            "systemctl", "start", "--no-block", POWEROFF_UNIT, timeout=10, quiet=False
+        )
+        if code != 0:
+            raise OpenLoloError("POWEROFF_FAILED", output or "Could not start the poweroff", 502)
 
     async def factory_reset(self) -> bool:
         """Back to first-time setup. True when done in process (the simulator); otherwise the
@@ -90,6 +110,8 @@ class Runtime:
             if not self.provisioning.active:
                 await self.provisioning.enter("reset")
             return True
+        # Never auto sleep in the middle of a reset; this process ends with it.
+        self.autooff.held_locally += 1
         # The unit stops this service, so it must run on its own: --no-block returns at once.
         code, output = await run_command(
             "systemctl", "start", "--no-block", RESET_UNIT, timeout=10, quiet=False
@@ -123,8 +145,10 @@ class Runtime:
             self.provisioning.start()
             self.autopair.start()
             self.updates.start()
+            self.autooff.start()
 
     async def close(self):
+        await self.autooff.close()
         await self.updates.close()
         await self.autopair.close()
         await self.provisioning.close()

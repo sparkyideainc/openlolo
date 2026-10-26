@@ -1,6 +1,6 @@
 # Lolo Pocket: phone search only at boot or on request, auto power-off when idle
 
-**Status: draft 2026-10-26, waiting for owner review. Design discussed with Codex (read-only review of this worktree). Power-off over sleep decided by the owner 2026-10-26 (see "Why power-off, not sleep"). Nothing implemented.**
+**Status: PR 1 (search policy) and PR 2 (auto sleep, box page setting) implemented 2026-10-26 on `jingerpie/auto-sleep` and `jingerpie/auto-off`; tests green, not yet run on hardware. `CUT_DELAY` is 45 s until the bench measures shutdown time. PR 3 (Raspberry Pi + PiSugar3) waits for the owner's bench test.**
 
 The user asked for two changes:
 

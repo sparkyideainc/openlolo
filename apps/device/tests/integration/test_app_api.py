@@ -283,6 +283,29 @@ async def test_box_page_keeps_control_and_its_operations_across_the_sweep(box):
         assert single.status_code == 200 and single.json()["kind"] == "pause"
 
 
+async def test_power_routes(box):
+    runtime, portal = box
+    async with box_page(portal) as c:
+        view = (await c.get("/app/power")).json()
+        # The simulator has no button daemon: no PiSugar, so no auto sleep, but the choice is kept.
+        assert view["supported"] is False and view["auto_sleep_minutes"] == 5
+        assert view["choices"] == [0, 5, 15, 30, 60]
+        generation = runtime.autooff.generation
+        changed = await c.post("/app/power", json={"auto_sleep_minutes": 15})
+        assert changed.status_code == 200 and changed.json()["auto_sleep_minutes"] == 15
+        assert runtime.autooff.generation > generation  # A change counts as activity.
+        for bad in (7, "15", True, None):
+            refused = await c.post("/app/power", json={"auto_sleep_minutes": bad})
+            assert refused.status_code == 400, bad
+            assert refused.json()["error"]["code"] == "INVALID_SETTING"
+        assert (await c.post("/app/power/keep", json={})).status_code == 200
+        generation = runtime.autooff.generation
+        await c.get("/app/power")
+        await c.get("/app/status")
+        assert runtime.autooff.generation == generation  # Polls are not activity.
+        assert (await c.get("/app/power")).json()["auto_sleep_minutes"] == 15
+
+
 async def test_diagnostics_are_redacted(box):
     runtime, portal = box
     async with box_page(portal) as c:
@@ -333,7 +356,14 @@ async def test_owner_routes_need_the_box_page(box):
     _, portal = box
     # Another device on the LAN without a session gets nothing.
     async with box_page(portal, client=LAPTOP, session=False) as laptop:
-        for path in ("/app/status", "/app/operations", "/app/network", "/app/clients", "/app/consents"):
+        for path in (
+            "/app/status",
+            "/app/operations",
+            "/app/network",
+            "/app/clients",
+            "/app/consents",
+            "/app/power",
+        ):
             anonymous = await laptop.get(path)
             assert anonymous.status_code == 401, path
             assert anonymous.json()["error"]["code"] == "LOGIN_REQUIRED"

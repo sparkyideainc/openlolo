@@ -8,6 +8,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	FileText,
 	Info,
+	Moon,
 	RefreshCw,
 	Smartphone,
 	SquarePlus,
@@ -18,7 +19,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/api";
-import { useNetwork, useSetupStatus, useUpdate } from "@/api/queries";
+import { useNetwork, usePower, useSetupStatus, useUpdate } from "@/api/queries";
 import { ConfirmDialog } from "@/components/dialogs";
 import { InstallSheet } from "@/components/install-sheet";
 import {
@@ -33,6 +34,7 @@ import { useBoxName } from "@/lib/box-name";
 import { text } from "@/lib/format";
 import { useReachable } from "@/lib/hooks";
 import { needsInstall } from "@/lib/platform";
+import { sleepLabel } from "@/lib/power";
 import { setOnboardingComplete } from "@/lib/store";
 import { versionText } from "@/lib/update";
 
@@ -48,6 +50,7 @@ function Settings() {
 	const network = useNetwork(15_000);
 	const setup = useSetupStatus(5000);
 	const update = useUpdate();
+	const power = usePower(30_000);
 	const reachable = useReachable(
 		network.dataUpdatedAt,
 		network.errorUpdatedAt,
@@ -143,6 +146,18 @@ function Settings() {
 					title="Wi-Fi"
 					value={text(network.data?.ssid, "Not set")}
 					leading={<IconBadge icon={<Wifi />} fill="info" />}
+				/>
+				<LinkRow
+					to="/settings/power"
+					title="Auto sleep"
+					value={
+						power.data
+							? power.data.supported
+								? sleepLabel(power.data.auto_sleep_minutes)
+								: "Unavailable"
+							: undefined
+					}
+					leading={<IconBadge icon={<Moon />} fill="dark" />}
 				/>
 				<LinkRow
 					to="/activity"

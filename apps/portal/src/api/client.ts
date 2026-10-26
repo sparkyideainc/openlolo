@@ -10,6 +10,7 @@ import type {
 	DiscoveredPhone,
 	NetworkStatus,
 	OperationsPage,
+	PowerStatus,
 	ProvisioningHealth,
 	ResetStart,
 	SetupKind,
@@ -124,6 +125,10 @@ export interface BoxApi {
 		payload: Record<string, unknown>,
 	): Promise<{ state?: string; id?: string }>;
 	diagnostics(): Promise<unknown>;
+	power(): Promise<PowerStatus>;
+	setAutoSleep(minutes: number): Promise<PowerStatus>;
+	/** Cancels the auto sleep warning and restarts the count. */
+	keepOn(): Promise<PowerStatus>;
 	/** Back to first-time setup on a box without the top button; the box checks the typed name. */
 	reset(device: string): Promise<{ state: string }>;
 	/** Opens a reset challenge; the box's top button finishes it. */
@@ -205,4 +210,8 @@ export const liveApi: BoxApi = {
 			})
 		).attempt,
 	updateCancel: (attempt) => request("POST", "/app/update/cancel", { attempt }),
+	power: () => request("GET", "/app/power"),
+	setAutoSleep: (minutes) =>
+		request("POST", "/app/power", { auto_sleep_minutes: minutes }),
+	keepOn: () => request("POST", "/app/power/keep", {}),
 };

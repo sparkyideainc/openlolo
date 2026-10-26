@@ -99,6 +99,7 @@ class Provisioning:
         # Status LED: ``indicator`` is the file the button daemon reads; ``link`` returns the
         # device health ({"connection": {"state", "searching"}}), polled about once a second.
         self.indicator, self.link = indicator, link
+        self.on_activity = None  # Set by the runtime: auto sleep's activity hook.
         self.link_word = "idle"
         self.phone_connected = False  # Last worker poll; an unreachable worker is not connected.
         self.holdable = False  # Opened by enter(): Local mode holds while the phone is connected.
@@ -369,6 +370,12 @@ class Provisioning:
             elif status.get("ssid"):
                 self.grace_used = True  # Online once: never auto-enter again this boot.
 
+    def _activity(self) -> None:
+        """A button press or hold: auto sleep restarts its count."""
+        if self.on_activity is not None:
+            with contextlib.suppress(Exception):
+                self.on_activity()
+
     def _drop_buttons(self) -> None:
         for flag, seen in ((self.button_flag, "button_seen"), (self.pair_flag, "pair_seen")):
             if flag is None:
@@ -392,6 +399,7 @@ class Provisioning:
         if stamp <= self.button_seen:
             return False
         self.button_seen = stamp
+        self._activity()
         # Consume the edge-triggered marker so a service restart cannot reopen the window from a
         # stale file left by the last physical press.
         with contextlib.suppress(OSError):
@@ -423,6 +431,7 @@ class Provisioning:
         if stamp <= self.pair_seen:
             return
         self.pair_seen = stamp
+        self._activity()
         with contextlib.suppress(OSError):
             self.pair_flag.unlink()
         if self.state in {ProvisioningState.JOINING, ProvisioningState.VERIFYING}:

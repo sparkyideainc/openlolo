@@ -1,0 +1,8 @@
+[Unit]
+Description=OpenLolo auto sleep: clean shutdown after the PiSugar power cut is armed
+# Started by the API (polkit allows only this unit) once the button daemon has armed the cut,
+# which turns the board off a fixed delay later whatever happens here.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl poweroff
