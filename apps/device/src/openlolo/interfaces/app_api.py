@@ -77,7 +77,7 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
     """Every ``/app/*`` route as (path, methods, guarded handler); ``entry`` names the door."""
     from openlolo import __version__
     from openlolo.interfaces import tls
-    from openlolo.interfaces.mcp_http import grant_from_choice
+    from openlolo.interfaces.mcp_http import MCP_PATH, grant_from_choice
 
     config = runtime.config
     network = getattr(runtime, "network", None)
@@ -114,6 +114,8 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
             "board": config.box_id,
             "entry": entry,
             "issuer": provider.issuer,
+            # Remote MCP URL the owner pastes into an AI app (Tailscale Funnel or tunnel); None when off.
+            "mcp_url": config.public_url + MCP_PATH if config.public_url else None,
             "fingerprint": fingerprint,
             "scopes": ALL_SCOPES,
             "setup_mode": bool(provisioning.active) if provisioning is not None else False,

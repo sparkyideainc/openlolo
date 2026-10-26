@@ -261,10 +261,3 @@ export function showManualPhoneSection(
 }
 
 /** Footnote under the Pause button (three states, as in the app). */
-export function pauseFootnote(status: AppStatus | null | undefined): string {
-	if (isPaused(status))
-		return "Paused. Resume phone actions from your AI client when ready.";
-	if (!isPhoneConnected(status))
-		return "Nothing to pause until the iPhone is connected.";
-	return "Stops every AI action at once. Resume from your AI client.";
-}

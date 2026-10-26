@@ -101,6 +101,8 @@ export interface AppInfo {
 	version?: string;
 	board?: string | null;
 	entry?: string;
+	/** Remote MCP URL (Tailscale Funnel or tunnel) for AI apps; null when remote access is off. */
+	mcp_url?: string | null;
 	setup_mode?: boolean;
 	features?: { network?: boolean; diagnostics?: boolean };
 }

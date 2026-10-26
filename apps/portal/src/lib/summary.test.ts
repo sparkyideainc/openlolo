@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AppStatus } from "@/api/types";
-import {
-	boxSummary,
-	pauseFootnote,
-	showManualPhoneSection,
-} from "@/lib/summary";
+import { boxSummary, showManualPhoneSection } from "@/lib/summary";
 
 const context = { reachable: true, hostname: "openlolo-4b2c.local" };
 
@@ -101,15 +97,5 @@ describe("boxSummary", () => {
 		).toBe(true);
 		expect(showManualPhoneSection({ setup_required: false }, 0)).toBe(false);
 		expect(showManualPhoneSection({ setup_required: false }, 1)).toBe(true);
-	});
-
-	it("explains the pause button", () => {
-		expect(pauseFootnote({ control: { paused: true } })).toContain("Paused.");
-		expect(pauseFootnote({ connection: { state: "disconnected" } })).toContain(
-			"Nothing to pause",
-		);
-		expect(pauseFootnote({ connection: { state: "connected" } })).toContain(
-			"Stops every AI action",
-		);
 	});
 });
