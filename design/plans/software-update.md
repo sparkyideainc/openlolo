@@ -1,6 +1,6 @@
 # Software update from the box page
 
-**Status: plan, 2026-10-26. PR 1 (installer `--upgrade`, update unit) in progress on `jingerpie/update-installer`. UI design: [Box Page Software Update canvas](https://claude.ai/artifact/3H3qXsiiowm6PGVhEEHsTx).**
+**Status: plan, 2026-10-26. PR 1 (installer `--upgrade`, update unit) merged 2026-10-27 (#31); PR 2 (API check and endpoints) in progress on `jingerpie/update-api`. UI design: [Box Page Software Update canvas](https://claude.ai/artifact/3H3qXsiiowm6PGVhEEHsTx).**
 
 Today a box changes version only when someone runs `curl … install.sh | sudo sh` over SSH. Owners of a ready-made box have no SSH, so in practice they never update. This plan lets the box find a new GitHub release, ask the owner on the box page, and install it, with no SSH and no way to end up with a box that does not start.
 
@@ -51,7 +51,7 @@ So:
 ## Guards (attempts, cancellation, abuse)
 
 - **One update at a time.** `POST /app/update/install` returns the running attempt (same `attempt` id) instead of starting another. The root script holds a lock in `/run/openlolo-update/` (the unit's root-only `RuntimeDirectory`); a second start exits at once. Root never follows links in `/run/openlolo`, which the API user owns: the request is opened with `O_NOFOLLOW`.
-- **Refused while busy**: reset challenge or reset running (`RESET_RUNNING`), a Wi-Fi join (`PROVISIONING_BUSY`), Local or Setup mode (`NO_INTERNET`), less than 600 MB free on `/opt` and `/var/tmp` (`LOW_DISK`), and on the Lolo Pocket a battery under 30 % while not charging (`LOW_BATTERY`).
+- **Refused while busy**: reset challenge or reset running (`RESET_RUNNING`), a Wi-Fi join (`PROVISIONING_BUSY`), Local or Setup mode (`NO_INTERNET`), less than 600 MB free on `/opt` and `/var/tmp` (`LOW_DISK`), and on the Lolo Pocket a battery under 30 % while not charging (`LOW_BATTERY`). The API has no battery reading yet, so `LOW_BATTERY` waits for the battery work in the auto-sleep PRs.
 - **The version is checked twice**: the API offers only what it read from GitHub, and the root script re-reads the release for the requested version and refuses anything that is not newer than `current/RELEASE`, not a `vX.Y.Z` tag on `update_repo`, or missing the asset or checksum (`INVALID_RELEASE`).
 - **Bounded downloads.** The release JSON is read with a 256 KB cap and 10 s timeout; the tarball with a 200 MB cap (`curl --max-filesize`) and 10 min timeout; three attempts with backoff, then `DOWNLOAD_FAILED`. The previous install stays untouched until the checksum passes.
 - **Coalesced checks.** Manual checks within 60 s of the last one return the cached result. Conditional requests with `ETag` keep the daily check inside GitHub's 60 requests per hour unauthenticated limit; a 403 or 429 backs off to the `Retry-After` value and the page shows the last known result.

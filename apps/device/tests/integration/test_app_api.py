@@ -2,6 +2,7 @@
 
 import asyncio
 import html
+import json
 import re
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -294,6 +295,38 @@ async def test_diagnostics_are_redacted(box):
         assert "samples" not in data["status"].get("profile", {}).get("calibration", {})
         assert isinstance(data["logs"], list) and isinstance(data["journal"]["recent"], list)
         assert data["network"]["saved"] == ["home"] and "psk" not in str(data).lower()
+
+
+async def test_software_update_routes(box, monkeypatch):
+    runtime, portal = box
+    updates = runtime.updates
+    updates.installed = "0.0.2"
+
+    async def github(url, headers):
+        prefix = "https://github.com/sparkyideainc/openlolo/releases/download/v0.0.3/"
+        name = "openlolo-device-0.0.3.tar.gz"
+        assets = [
+            {"name": name, "browser_download_url": prefix + name},
+            {"name": name + ".sha256", "browser_download_url": prefix + name + ".sha256"},
+        ]
+        return 200, {}, json.dumps({"tag_name": "v0.0.3", "assets": assets}).encode()
+
+    monkeypatch.setattr(updates, "fetch", github)
+    async with box_page(portal, client=LAPTOP, session=False) as laptop:
+        for path in ("/app/update/check", "/app/update/install", "/app/update/cancel"):
+            assert (await laptop.post(path, json={})).status_code == 401, path
+        assert (await laptop.get("/app/update")).status_code == 401
+    async with box_page(portal) as c:
+        view = (await c.get("/app/update")).json()
+        assert view["installed"] == "0.0.2" and view["available"] is False and view["attempt"] is None
+        view = (await c.post("/app/update/check")).json()
+        assert view["available"] is True and view["latest"] == "0.0.3"
+        assert (await c.post("/app/update/install", json={})).status_code == 400
+        # The simulator has no root update unit to start.
+        refused = await c.post("/app/update/install", json={"version": "0.0.3"})
+        assert refused.status_code == 409 and refused.json()["error"]["code"] == "UPDATE_UNAVAILABLE"
+        refused = await c.post("/app/update/cancel", json={"attempt": "nothing"})
+        assert refused.status_code == 409 and refused.json()["error"]["code"] == "CANCEL_UNAVAILABLE"
 
 
 async def test_owner_routes_need_the_box_page(box):
