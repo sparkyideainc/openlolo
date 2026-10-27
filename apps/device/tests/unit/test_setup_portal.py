@@ -7,6 +7,7 @@ import pytest
 
 from openlolo.interfaces import setup_portal
 from openlolo.interfaces.setup_portal import CLIENT_HEADER, SESSION_COOKIE, create_setup_portal
+from openlolo.release import installed_release
 
 PHONE = ("192.168.1.77", 50000)  # The simulated phone's RemotePairing address.
 LAPTOP = ("192.168.1.20", 50000)
@@ -81,6 +82,7 @@ async def test_status_is_local_only(portal, runtime):
     async with browser(portal, client=LAPTOP) as c:
         status = (await c.get("/setup/status")).json()
         assert status["hostname"] == f"{runtime.config.setup_name.lower()}.local"
+        assert status["version"] == installed_release()
         assert status["bound"] is True and status["session"] is False
         assert status["mode"] == "wifi" and status["setup_mode"] is False
         assert status["access"] == {

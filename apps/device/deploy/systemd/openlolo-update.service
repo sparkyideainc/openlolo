@@ -1,0 +1,14 @@
+[Unit]
+Description=OpenLolo software update (box page; design/plans/software-update.md)
+# Started by the API through polkit after it writes /run/openlolo/update-request. Runs as root
+# from the system Python so a broken release venv cannot stop it; install.sh --upgrade restarts
+# the API and worker, not this unit.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/openlolo/current/deploy/update/openlolo_update.py run
+RuntimeDirectory=openlolo-update
+RuntimeDirectoryMode=0700
+# Download, apt-get, uv sync and the health check; the script enforces its own step limits.
+TimeoutStartSec=45min

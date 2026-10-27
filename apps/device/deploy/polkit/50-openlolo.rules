@@ -1,6 +1,7 @@
 // What the OpenLolo API user may do without a password: NetworkManager station actions
-// (scan, connect and manage profiles), the systemd units behind the setup access point, and the
-// factory reset unit.
+// (scan, connect and manage profiles), the systemd units behind the setup access point, the
+// factory reset unit, and starting a software update (never stopping it: cancel is a request
+// file the update reads while it downloads).
 polkit.addRule(function (action, subject) {
   if (subject.user !== "openlolo") {
     return polkit.Result.NOT_HANDLED;
@@ -24,6 +25,9 @@ polkit.addRule(function (action, subject) {
       "openlolo-reset.service",
     ];
     if (units.indexOf(unit) >= 0 && ["start", "stop", "restart"].indexOf(verb) >= 0) {
+      return polkit.Result.YES;
+    }
+    if (unit === "openlolo-update.service" && verb === "start") {
       return polkit.Result.YES;
     }
   }
