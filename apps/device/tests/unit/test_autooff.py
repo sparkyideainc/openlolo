@@ -27,7 +27,7 @@ class FakePower:
     def __init__(self):
         self.status = {"pisugar": True, "external_power": False, "battery_percent": 64, "daemon_id": "d1"}
         self.calls: list[dict] = []
-        self.commit_reply = {"ok": True, "cut_delay": 45}
+        self.commit_reply = {"ok": True, "cut_delay": 30}
 
     async def call(self, request):
         self.calls.append(request)

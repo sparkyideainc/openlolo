@@ -57,7 +57,7 @@ POWER, SOFT, CUT_DELAY_REG, BATTERY = 0x02, 0x03, 0x09, 0x2A
 EXTERNAL_BIT = 0x80  # 0x02 bit 7: external power present (read only)
 OUTPUT_BIT = 0x20  # 0x02 bit 5: 5 V output to the host; clearing it cuts power after 0x09 s
 SOFT_BIT = 0x10  # 0x03 bit 4: soft shutdown mode; must be off before the cut (stuck state)
-CUT_DELAY = 45  # seconds; above the measured shutdown time with margin (OPENLOLO_CUT_DELAY)
+CUT_DELAY = 30  # seconds; Radxa bench shutdown took ~11 s on 2026-10-26 (OPENLOLO_CUT_DELAY)
 STATUS_CACHE = 2.0  # seconds a power reading is reused
 PREPARE_GRACE = 5.0  # a prepared attempt outlives its warning by this long, then expires
 

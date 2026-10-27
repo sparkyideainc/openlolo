@@ -1,6 +1,6 @@
 # Lolo Pocket: phone search only at boot or on request, auto power-off when idle
 
-**Status: PR 1 (search policy) and PR 2 (auto sleep, box page setting) implemented 2026-10-26 on `jingerpie/auto-sleep` and `jingerpie/auto-off`; tests green, not yet run on hardware. `CUT_DELAY` is 45 s until the bench measures shutdown time. PR 3 (Raspberry Pi + PiSugar3) waits for the owner's bench test.**
+**Status: PR 1 (search policy) and PR 2 (auto sleep, box page setting) implemented 2026-10-26 on `jingerpie/auto-sleep` and `jingerpie/auto-off`. First bench power-off on the Radxa + PiSugar3 passed 2026-10-26: clean shutdown in ~11 s (8.3 s of it `openlolo-api` hitting its stop timeout), so `CUT_DELAY` is 30 s. The bench PiSugar3 drops off I2C for 30-60 s every few minutes; a gap under 90 s keeps the idle count. Not yet run on hardware: cancel by button or by plugging in during the warning, the box page on the box, the PR 1 soak. PR 3 (Raspberry Pi + PiSugar3) waits for the owner's bench test.**
 
 The user asked for two changes:
 
