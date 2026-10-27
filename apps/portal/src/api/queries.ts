@@ -20,6 +20,7 @@ export const keys = {
 	operations: ["app", "operations"] as const,
 	network: ["app", "network"] as const,
 	scan: ["app", "scan"] as const,
+	update: ["app", "update"] as const,
 };
 
 type Interval = number | false;
@@ -100,5 +101,17 @@ export function useWifiScan(enabled = true) {
 		enabled,
 		staleTime: 20_000,
 		refetchOnWindowFocus: false,
+	});
+}
+
+/** Software update state. While an attempt runs the box restarts: failed polls keep the last
+ * answer and keep polling until the new API answers. */
+export function useUpdate(interval: Interval = 60_000) {
+	return useQuery({
+		queryKey: keys.update,
+		queryFn: () => api.update(),
+		refetchInterval: (query) =>
+			query.state.data?.attempt?.result === "running" ? 2000 : interval,
+		retry: false,
 	});
 }

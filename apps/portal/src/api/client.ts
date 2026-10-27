@@ -14,6 +14,8 @@ import type {
 	ResetStart,
 	SetupKind,
 	SetupStatus,
+	UpdateAttempt,
+	UpdateView,
 	WifiNetwork,
 } from "@/api/types";
 
@@ -129,6 +131,14 @@ export interface BoxApi {
 	resetCancel(attempt: string | null): Promise<{ cancelled: boolean }>;
 	/** The bootstrap status as seen by the browser that started `attempt` (it may read the target). */
 	resetStatus(attempt: string): Promise<SetupStatus>;
+	/** Software update: the installed and offered release and the latest attempt. */
+	update(): Promise<UpdateView>;
+	/** Ask GitHub now (the box returns its cached answer within a minute of the last check). */
+	updateCheck(): Promise<UpdateView>;
+	/** Start installing the offered release; a running attempt is returned as is. */
+	updateInstall(version: string): Promise<UpdateAttempt>;
+	/** Stop an attempt that is still downloading. */
+	updateCancel(attempt: string): Promise<void>;
 }
 
 function operationId(): string {
@@ -186,4 +196,13 @@ export const liveApi: BoxApi = {
 			payload,
 		}),
 	diagnostics: () => request("GET", "/app/diagnostics"),
+	update: () => request("GET", "/app/update"),
+	updateCheck: () => request("POST", "/app/update/check", {}),
+	updateInstall: async (version) =>
+		(
+			await request<{ attempt: UpdateAttempt }>("POST", "/app/update/install", {
+				version,
+			})
+		).attempt,
+	updateCancel: (attempt) => request("POST", "/app/update/cancel", { attempt }),
 };

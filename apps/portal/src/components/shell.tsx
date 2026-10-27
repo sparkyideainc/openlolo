@@ -15,9 +15,15 @@ const TABS = [
 export function Shell({
 	children,
 	badge = 0,
+	settingsDot = false,
+	locked = false,
 }: {
 	children: ReactNode;
 	badge?: number;
+	/** A software update is available. */
+	settingsDot?: boolean;
+	/** A software update is running: the page stays on its progress screen. */
+	locked?: boolean;
 }) {
 	return (
 		<div className="min-h-dvh bg-background md:flex">
@@ -32,7 +38,9 @@ export function Shell({
 						<li key={to} className="flex-1 md:flex-none">
 							<Link
 								to={to}
-								className="flex h-14 flex-col items-center justify-center gap-[3px] rounded-[20px] font-medium text-[10px] text-muted-foreground leading-3 transition-colors md:h-auto md:flex-row md:gap-3 md:rounded-xl md:px-3 md:py-2.5 md:text-[15px] md:leading-normal md:hover:bg-card"
+								disabled={locked}
+								aria-disabled={locked || undefined}
+								className="flex h-14 flex-col items-center justify-center gap-[3px] rounded-[20px] font-medium text-[10px] text-muted-foreground leading-3 transition-colors aria-disabled:pointer-events-none aria-disabled:opacity-50 md:h-auto md:flex-row md:gap-3 md:rounded-xl md:px-3 md:py-2.5 md:text-[15px] md:leading-normal md:hover:bg-card"
 								activeProps={{ className: "text-primary md:bg-card" }}
 								activeOptions={{ exact: false }}
 							>
@@ -46,6 +54,13 @@ export function Shell({
 										>
 											{badge}
 										</span>
+									) : null}
+									{to === "/settings" && settingsDot ? (
+										<span
+											className="absolute -top-0.5 -right-1 size-2.5 rounded-full border-2 border-card bg-destructive"
+											role="status"
+											aria-label="Update available"
+										/>
 									) : null}
 								</span>
 								{title}

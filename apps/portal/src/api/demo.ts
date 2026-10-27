@@ -2,7 +2,7 @@
 // sent anywhere. Enable with `?demo=1`; `?screen=` picks a preset.
 
 import type { BoxApi } from "@/api/client";
-import { ApiError } from "@/api/client";
+import { ApiError, OfflineError } from "@/api/client";
 import type {
 	AppStatus,
 	Client,
@@ -11,6 +11,8 @@ import type {
 	Operation,
 	ResetAttempt,
 	SetupStatus,
+	UpdateAttempt,
+	UpdateView,
 	WifiNetwork,
 } from "@/api/types";
 
@@ -25,7 +27,14 @@ export type DemoScreen =
 	| "paused"
 	| "setup"
 	| "connect"
-	| "stranger";
+	| "stranger"
+	// Software update: the offer (with the dialog), each step, and the outcomes.
+	| "update"
+	| "updating"
+	| "updated"
+	| "update-failed"
+	| "uptodate"
+	| "update-dev";
 
 function now(): number {
 	return Date.now() / 1000;
@@ -230,6 +239,82 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 		if (!session) throw new ApiError("LOGIN_REQUIRED", "Sign in first", 401);
 	};
 
+	// Demo update: the offer is v0.0.3 over v0.0.2; Update now downloads, installs and restarts
+	// (the box is unreachable for a few seconds) on a timer.
+	const UPDATE_STEPS = [
+		{ step: "download", seconds: 4 },
+		{ step: "install", seconds: 4 },
+		{ step: "restart", seconds: 4 },
+	] as const;
+	let installed =
+		screen === "updated" || screen === "uptodate" ? "0.0.3" : "0.0.2";
+	if (screen === "update-dev") installed = "20261027-1a2b3c4";
+	let checkedAt: number | null = screen === "update-dev" ? null : t - 3 * 3600;
+	let updateStarted: number | null = screen === "updating" ? now() - 5 : null;
+	let attempt: UpdateAttempt | null =
+		screen === "updated"
+			? demoAttempt("succeeded", "restart")
+			: screen === "update-failed"
+				? {
+						...demoAttempt("failed", "download"),
+						error_code: "DOWNLOAD_FAILED",
+					}
+				: null;
+	function demoAttempt(
+		result: UpdateAttempt["result"],
+		step: UpdateAttempt["step"],
+	): UpdateAttempt {
+		return {
+			id: `demo-${Math.round(t)}`,
+			version: "0.0.3",
+			step,
+			result,
+			error_code: null,
+			started: t - 200,
+			updated: t - 20,
+		};
+	}
+	const updateView = (): UpdateView => {
+		if (updateStarted !== null) {
+			let elapsed = now() - updateStarted;
+			let current: UpdateAttempt["step"] | null = null;
+			for (const { step, seconds } of UPDATE_STEPS) {
+				if (elapsed < seconds) {
+					current = step;
+					break;
+				}
+				elapsed -= seconds;
+			}
+			if (current === "restart" && elapsed < 3) throw new OfflineError();
+			attempt = current
+				? { ...demoAttempt("running", current), id: "demo-run" }
+				: { ...demoAttempt("succeeded", "restart"), id: "demo-run" };
+			if (!current) {
+				installed = "0.0.3";
+				updateStarted = null;
+			}
+		}
+		const dev = !/^\d+\.\d+\.\d+$/.test(installed);
+		const latest = dev ? null : "0.0.3";
+		const available = latest !== null && latest !== installed;
+		return {
+			installed,
+			dev_build: dev,
+			latest,
+			available,
+			checked_at: checkedAt,
+			changelog_url: dev
+				? null
+				: `https://github.com/sparkyideainc/openlolo/releases/tag/v${available ? latest : installed}`,
+			check: {
+				blocked: dev ? "DEV_BUILD" : setupMode ? "NO_INTERNET" : null,
+				error: null,
+				automatic: true,
+			},
+			attempt,
+		};
+	};
+
 	return {
 		async setupStatus() {
 			await delay(50);
@@ -424,6 +509,42 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 		async resetStatus(attempt) {
 			const status = await this.setupStatus();
 			return { ...status, reset: resetView(attempt) };
+		},
+		async update() {
+			requireSession();
+			await delay(80);
+			return updateView();
+		},
+		async updateCheck() {
+			requireSession();
+			await delay(1400);
+			checkedAt = now();
+			return updateView();
+		},
+		async updateInstall(version) {
+			requireSession();
+			await delay();
+			const view = updateView();
+			if (view.attempt?.result === "running") return view.attempt;
+			if (!view.available || version !== view.latest)
+				throw new ApiError(
+					"UPDATE_NOT_AVAILABLE",
+					"That version is not offered to this box",
+					409,
+				);
+			updateStarted = now();
+			const started = updateView().attempt;
+			if (!started)
+				throw new ApiError("UPDATE_START_FAILED", "Not started", 502);
+			return started;
+		},
+		async updateCancel() {
+			requireSession();
+			throw new ApiError(
+				"CANCEL_UNAVAILABLE",
+				"Only a download in progress can be cancelled",
+				409,
+			);
 		},
 		async diagnostics() {
 			requireSession();

@@ -1,8 +1,11 @@
-// Per-browser conveniences, like the app's UserDefaults: the local box name and whether the
-// owner finished onboarding here. Both survive a box restart and never reach the box.
+// Per-browser conveniences, like the app's UserDefaults: the local box name, whether the
+// owner finished onboarding here, and which update the dialog already asked about. All survive
+// a box restart and never reach the box.
 
 const NAME = "box.name";
 const COMPLETE = "onboarding.complete";
+const PROMPTED = "update.prompted";
+const ACKNOWLEDGED = "update.acknowledged";
 
 function read(key: string): string | null {
 	try {
@@ -35,4 +38,22 @@ export function onboardingComplete(): boolean {
 
 export function setOnboardingComplete(value: boolean): void {
 	write(COMPLETE, value ? "true" : null);
+}
+
+/** The release the update dialog last asked about: it asks once per version. */
+export function promptedUpdate(): string | null {
+	return read(PROMPTED);
+}
+
+export function setPromptedUpdate(version: string): void {
+	write(PROMPTED, version);
+}
+
+/** The update attempt whose outcome (updated or failed) the owner already closed here. */
+export function acknowledgedUpdate(): string | null {
+	return read(ACKNOWLEDGED);
+}
+
+export function setAcknowledgedUpdate(attempt: string): void {
+	write(ACKNOWLEDGED, attempt);
 }

@@ -1,5 +1,5 @@
-// Settings: the box card, Wi-Fi, activity, replacing the phone, reset, diagnostics. The box's
-// network mode (Wi-Fi, Local, Setup) is set by the top button, not here.
+// Settings: the box card, Wi-Fi, activity, software update, replacing the phone, reset,
+// diagnostics. The box's network mode (Wi-Fi, Local, Setup) is set by the top button, not here.
 
 import { Input } from "@openlolo/ui/components/input";
 import { Label } from "@openlolo/ui/components/label";
@@ -8,6 +8,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	FileText,
 	Info,
+	RefreshCw,
 	Smartphone,
 	SquarePlus,
 	Trash2,
@@ -17,7 +18,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/api";
-import { useNetwork, useSetupStatus } from "@/api/queries";
+import { useNetwork, useSetupStatus, useUpdate } from "@/api/queries";
 import { ConfirmDialog } from "@/components/dialogs";
 import { InstallSheet } from "@/components/install-sheet";
 import {
@@ -33,6 +34,7 @@ import { text } from "@/lib/format";
 import { useReachable } from "@/lib/hooks";
 import { needsInstall } from "@/lib/platform";
 import { setOnboardingComplete } from "@/lib/store";
+import { versionText } from "@/lib/update";
 
 export const Route = createFileRoute("/_shell/settings/")({
 	component: Settings,
@@ -45,6 +47,7 @@ function Settings() {
 	const queryClient = useQueryClient();
 	const network = useNetwork(15_000);
 	const setup = useSetupStatus(5000);
+	const update = useUpdate();
 	const reachable = useReachable(
 		network.dataUpdatedAt,
 		network.errorUpdatedAt,
@@ -145,6 +148,27 @@ function Settings() {
 					to="/activity"
 					title="Activity"
 					leading={<IconBadge icon={<FileText />} fill="grey" />}
+				/>
+				<LinkRow
+					to="/settings/update"
+					title="Software update"
+					value={
+						update.data && !update.data.available
+							? versionText(update.data.installed)
+							: undefined
+					}
+					trailing={
+						update.data?.available ? (
+							<span
+								className="flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 font-bold text-[12px] text-white"
+								role="status"
+								aria-label="Update available"
+							>
+								1
+							</span>
+						) : undefined
+					}
+					leading={<IconBadge icon={<RefreshCw />} fill="dark" />}
 				/>
 				{canReplace ? (
 					<ButtonRow
