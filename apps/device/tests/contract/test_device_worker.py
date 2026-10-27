@@ -6,7 +6,7 @@ import pytest
 from support import raises_code
 
 from openlolo.coredevice.hid import ReportGate
-from openlolo.coredevice.worker import DeviceWorker
+from openlolo.coredevice.worker import DeviceWorker, claim_boot_search
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Binding, CaptureOptions, Frame, FrameMetadata
 from openlolo.workers.protocol import rpc, serve
@@ -79,8 +79,9 @@ class FakeManager:
     async def close(self):
         self.calls.append("close")
 
-    async def connect(self, binding):
+    async def connect(self, binding, search=True):
         self.calls.append(("connect", binding.transport))
+        self.searched = search
         return {"state": "unavailable", "connection": {"state": "waiting_for_device"}}
 
     def status(self):
@@ -206,3 +207,23 @@ async def test_worker_search_and_usb_events_ops(runtime):
     for bad in ({"since": "x", "timeout": 1}, {"since": 0, "timeout": 26}, {"since": 0, "timeout": -1}):
         with raises_code("INVALID_REQUEST"):
             await worker.dispatch({"op": "usb_events", **bad})
+
+
+def test_boot_search_runs_once_per_boot(tmp_path):
+    boot_id, marker = tmp_path / "boot_id", tmp_path / "boot-search"
+    boot_id.write_text("first-boot\n")
+    assert claim_boot_search(marker, boot_id) is True
+    assert claim_boot_search(marker, boot_id) is False  # A worker restart in the same boot.
+    boot_id.write_text("second-boot\n")
+    assert claim_boot_search(marker, boot_id) is True
+    assert claim_boot_search(marker, tmp_path / "missing") is True  # No boot ID: every start.
+
+
+async def test_worker_restart_in_the_same_boot_skips_the_search(runtime, monkeypatch, tmp_path):
+    boot_id = tmp_path / "boot_id"
+    boot_id.write_text("one-boot\n")
+    monkeypatch.setattr("openlolo.coredevice.worker.BOOT_ID", boot_id)
+    first, second = FakeManager(), FakeManager()
+    await DeviceWorker(runtime.config, first).start()
+    await DeviceWorker(runtime.config, second).start()
+    assert first.searched is True and second.searched is False

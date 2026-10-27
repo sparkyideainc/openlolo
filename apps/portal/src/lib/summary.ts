@@ -152,14 +152,15 @@ export function boxSummary(
 				action: { kind: "setup", step: "mount_ddi" },
 			};
 		case "phone_locked":
-			// A locked iPhone refuses new Wi-Fi sessions; it advertises again once unlocked and
-			// the box reconnects by itself.
+			// A locked iPhone refuses new Wi-Fi sessions. The box does not search again by itself
+			// (only at boot, on a cable pull, a button press or Reconnect).
 			return {
 				headline: "iPhone is locked",
 				detail: "On Wi-Fi · waiting for it to be unlocked",
 				tone: "warn",
-				instruction:
-					"Unlock the iPhone. The box reconnects by itself, or plug it in by USB.",
+				instruction: "Unlock the iPhone, then reconnect. Or plug it in by USB.",
+				actionTitle: "Reconnect iPhone",
+				action: { kind: "setup", step: "recover" },
 			};
 		case "connecting":
 		case "switching":

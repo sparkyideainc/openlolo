@@ -3,8 +3,10 @@
 import argparse
 import asyncio
 import base64
+import contextlib
 import logging
 import signal
+from pathlib import Path
 
 from openlolo.adapters.storage.binding import BindingStore
 from openlolo.config import load_config
@@ -28,6 +30,24 @@ BOUND_OPS = {
 }
 # Longest ``usb_events`` long poll; the client's RPC timeout covers it.
 USB_EVENTS_MAX = 25
+BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
+
+
+def claim_boot_search(marker: Path, boot_id: Path | None = None) -> bool:
+    """True the first time this is called in an OS boot: the boot search runs once, and a worker
+    restarted later in the same boot (a crash, an update) only checks the cable. The marker lives
+    in the runtime directory and holds the kernel's boot ID; without a boot ID every start counts
+    as a boot."""
+    try:
+        current = (boot_id or BOOT_ID).read_text().strip()
+    except OSError:
+        return True
+    with contextlib.suppress(OSError):
+        if marker.read_text().strip() == current:
+            return False
+    with contextlib.suppress(OSError):
+        marker.write_text(current + "\n")
+    return True
 
 
 class DeviceWorker:
@@ -40,7 +60,8 @@ class DeviceWorker:
         await self.manager.start()
         binding = self.bindings.read()
         if binding is not None:
-            await self.manager.connect(binding)
+            search = claim_boot_search(self.config.runtime_dir / "boot-search")
+            await self.manager.connect(binding, search=search)
 
     async def close(self):
         await self.manager.close()

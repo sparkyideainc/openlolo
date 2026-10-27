@@ -30,8 +30,7 @@ class State(str, Enum):
 
 # Errors the owner must resolve on the phone or through explicit setup. The supervisor does not
 # retry these on a timer: the next attempt follows a cable attach, a search window (top button,
-# a request, the phone advertising again) or an explicit recover. PHONE_LOCKED alone also allows
-# the rare background search, since unlocking needs no setup.
+# cable pulled) or an explicit recover.
 OWNER_STATES = {
     "TRUST_REQUIRED": State.TRUST_REQUIRED,
     "WIFI_PAIRING_REQUIRED": State.WIFI_PAIRING_REQUIRED,
@@ -45,7 +44,7 @@ OWNER_STATES = {
 
 STATE_MESSAGES = {
     State.DISCONNECTED: "No phone is connected",
-    State.WAITING_FOR_DEVICE: "Press the top button or plug in the phone",
+    State.WAITING_FOR_DEVICE: "Press the top button, tap Reconnect iPhone on the box page, or plug in the phone",
     State.TRUST_REQUIRED: "Unlock the bound phone and run explicit owner pairing",
     State.WIFI_PAIRING_REQUIRED: "Run explicit owner pairing over USB once before using Wi-Fi mode",
     State.PHONE_LOCKED: "Unlock the phone: a locked phone refuses new Wi-Fi sessions",
