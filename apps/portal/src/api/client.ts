@@ -126,7 +126,7 @@ export interface BoxApi {
 	): Promise<{ state?: string; id?: string }>;
 	diagnostics(): Promise<unknown>;
 	power(): Promise<PowerStatus>;
-	setAutoSleep(minutes: number): Promise<PowerStatus>;
+	setAutoSleep(seconds: number): Promise<PowerStatus>;
 	/** Cancels the auto sleep warning and restarts the count. */
 	keepOn(): Promise<PowerStatus>;
 	/** Back to first-time setup on a box without the top button; the box checks the typed name. */
@@ -211,7 +211,7 @@ export const liveApi: BoxApi = {
 		).attempt,
 	updateCancel: (attempt) => request("POST", "/app/update/cancel", { attempt }),
 	power: () => request("GET", "/app/power"),
-	setAutoSleep: (minutes) =>
-		request("POST", "/app/power", { auto_sleep_minutes: minutes }),
+	setAutoSleep: (seconds) =>
+		request("POST", "/app/power", { auto_sleep_seconds: seconds }),
 	keepOn: () => request("POST", "/app/power/keep", {}),
 };

@@ -153,7 +153,7 @@ function Settings() {
 					value={
 						power.data
 							? power.data.supported
-								? sleepLabel(power.data.auto_sleep_minutes)
+								? sleepLabel(power.data.auto_sleep_seconds)
 								: "Unavailable"
 							: undefined
 					}

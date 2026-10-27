@@ -1,9 +1,8 @@
 // Auto sleep labels shared by Settings and the Auto sleep page.
 
-/** "Off", "5 min", "1 hour". */
-export function sleepLabel(minutes: number): string {
-	if (minutes === 0) return "Off";
-	if (minutes % 60 === 0)
-		return minutes === 60 ? "1 hour" : `${minutes / 60} hours`;
-	return `${minutes} min`;
+/** "Off", "30 seconds", "1 minute", "3 minutes": the iPhone Auto-Lock wording. */
+export function sleepLabel(seconds: number): string {
+	if (seconds === 0) return "Off";
+	if (seconds % 60 !== 0) return `${seconds} seconds`;
+	return seconds === 60 ? "1 minute" : `${seconds / 60} minutes`;
 }

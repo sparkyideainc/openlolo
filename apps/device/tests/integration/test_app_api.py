@@ -288,14 +288,14 @@ async def test_power_routes(box):
     async with box_page(portal) as c:
         view = (await c.get("/app/power")).json()
         # The simulator has no button daemon: no PiSugar, so no auto sleep, but the choice is kept.
-        assert view["supported"] is False and view["auto_sleep_minutes"] == 5
-        assert view["choices"] == [0, 5, 15, 30, 60]
+        assert view["supported"] is False and view["auto_sleep_seconds"] == 180
+        assert view["choices"] == [0, 30, 60, 120, 180, 240, 300]
         generation = runtime.autooff.generation
-        changed = await c.post("/app/power", json={"auto_sleep_minutes": 15})
-        assert changed.status_code == 200 and changed.json()["auto_sleep_minutes"] == 15
+        changed = await c.post("/app/power", json={"auto_sleep_seconds": 30})
+        assert changed.status_code == 200 and changed.json()["auto_sleep_seconds"] == 30
         assert runtime.autooff.generation > generation  # A change counts as activity.
-        for bad in (7, "15", True, None):
-            refused = await c.post("/app/power", json={"auto_sleep_minutes": bad})
+        for bad in (7, 900, "30", True, None):
+            refused = await c.post("/app/power", json={"auto_sleep_seconds": bad})
             assert refused.status_code == 400, bad
             assert refused.json()["error"]["code"] == "INVALID_SETTING"
         assert (await c.post("/app/power/keep", json={})).status_code == 200
@@ -303,7 +303,7 @@ async def test_power_routes(box):
         await c.get("/app/power")
         await c.get("/app/status")
         assert runtime.autooff.generation == generation  # Polls are not activity.
-        assert (await c.get("/app/power")).json()["auto_sleep_minutes"] == 15
+        assert (await c.get("/app/power")).json()["auto_sleep_seconds"] == 30
 
 
 async def test_diagnostics_are_redacted(box):

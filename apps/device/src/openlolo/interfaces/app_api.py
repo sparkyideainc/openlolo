@@ -335,10 +335,10 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
     @add("/power", ["POST"])
     async def power_set(request: Request):
         require(ADMIN_SCOPE)
-        minutes = (await body(request)).get("auto_sleep_minutes")
-        if not isinstance(minutes, int) or isinstance(minutes, bool):
-            raise OpenLoloError("INVALID_SETTING", "auto_sleep_minutes must be a whole number", 400)
-        return need_autooff().set_minutes(minutes)
+        seconds = (await body(request)).get("auto_sleep_seconds")
+        if not isinstance(seconds, int) or isinstance(seconds, bool):
+            raise OpenLoloError("INVALID_SETTING", "auto_sleep_seconds must be a whole number", 400)
+        return need_autooff().set_seconds(seconds)
 
     @add("/power/keep", ["POST"])
     async def power_keep(request: Request):
