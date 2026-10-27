@@ -164,10 +164,69 @@ Consequences for PR 3:
   (bursts of app state events). Bounded retries are needed so that it does not become a usability
   problem.
 
+## 3. Speed spike (2026-10-27)
+
+Question: can the gate be enforced without slowing each step much? Ideas were reviewed with
+Codex first (overlap the post-action check with settle: keep; cheaper query: spike; keep an
+answer valid until a notification: needs evidence; skip checks for "safe" input or dispatch
+first and check later: rejected). Same box and phone, Wi-Fi, box build `main` d23e736 with this
+PR cherry-picked and a bench-only spike op (not committed). The phone now runs ~500 processes
+(~340 on 10-20).
+
+### Cheaper query: none found
+
+- **`runningProcesses` (current):** p50 416-800 ms, ~250 ms worker CPU per call. Profile of one
+  call: ~0.53 s waiting for the phone, ~0.3 s Python plist decoding (13k objects). Only this
+  call reports `foregroundRunning`.
+- **DTX round-trip floor** (`isRunningPid:`): ~100 ms. No query can be faster than this.
+- **sysmontap** with only `pid` + `priority`: after a 32 KB first sample it streams only changed
+  rows (~1.4 KB every 0.25-0.5 s). The foreground app goes to priority 31 and background apps to 4,
+  but services such as `WidgetRenderer` and `MomentsUIService` also go to 31, the old app was
+  demoted ~3 s after Home, and the stream cost ~10% of a core. Rejected.
+- No other DVT service in pymobiledevice3 reports foreground state. The accessibility audit
+  service was not tried (it drives the phone's accessibility inspector).
+
+### Notifications cannot extend validity
+
+App state events around agent-driven actions:
+
+- Home from Notes: no event for Notes (it stays "Running" in the background); only
+  `WidgetRenderer_ Running` 0.5 s later.
+- Launching Notes over Preferences while Notes was still running in the background: no Notes
+  event; the first event (`Preferences Suspended`) came 1.5 s later.
+
+So a foreground change can produce no event about the app that changed, or an event 1.5 s late.
+Keeping an answer valid until a notification is rejected; notifications stay invalidation-only.
+
+### Latency rerun with invalidation after every effect (demand mode, 15 steps)
+
+| | p50 | p95 | max |
+|---|---|---|---|
+| Extra wait after action (floor 0.3 s, settle 0.5 s) | 324 ms | 759 ms | 782 ms |
+| Wait before next action | 596 ms | 608 ms | 611 ms |
+
+12 of 15 post-action answers were `ambiguous` (old and new app both listed), so with
+enforcement they would wait for a later query.
+
+### New: the Home screen reports a widget renderer as an app
+
+On the Home screen the process list now reports `com.apple.chrono.WidgetRenderer-Default` as a
+foreground application (it was not seen on 10-20). The classifier therefore reads the Home
+screen as context `app`. PR 3 must treat widget renderers (and similar system surfaces) as
+`system`, never as an app an owner could allow. Lag after Home: old app alone up to ~0.5 s, old
+app plus renderer to ~0.9 s, renderer alone after that. Launch: new app at once, old app listed
+until ~0.5-1.2 s.
+
+### Consequence
+
+With the measured calls, the remaining lever is scheduling, not a cheaper query: overlap the
+post-action check with settle and capture, and accept one ~0.6 s check before an action that
+follows a long think. Expected cost per step is about +0.3 s (p95 ~0.8 s) after an action and
++0.6 s before the next one on Wi-Fi.
+
 ### Not measured yet
 
 - USB transport (the phone stayed on Wi-Fi).
 - The untested rows of the overlay matrix, repeated Home, lock/unlock, reconnect and observer death.
 - Read-only clients after idle, zero settle, long text input, notification storms.
-- A lighter DVT call than the full process list. At 0.2 s CPU per query, this decides whether
-  poll mode is affordable on the Radxa.
+- Hand-driven changes (the agent-driven ones already rule out notification-only validity).
