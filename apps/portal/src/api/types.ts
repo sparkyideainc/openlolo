@@ -25,6 +25,8 @@ export interface SetupStatus {
 	reset_method?: "button" | "name";
 	/** The open or just-finished reset attempt; `target` only for the browser that started it. */
 	reset?: ResetAttempt | null;
+	/** Installed release (`0.0.3`, or a dev build name). */
+	version?: string;
 }
 
 export interface PageAccess {
@@ -88,7 +90,13 @@ export interface AppStatus {
 		message?: string;
 		[key: string]: unknown;
 	};
-	control?: { active?: boolean; paused?: boolean; queue_depth?: number };
+	/** `active`: someone holds the control lease; `owned`: this page holds it. */
+	control?: {
+		active?: boolean;
+		owned?: boolean;
+		paused?: boolean;
+		queue_depth?: number;
+	};
 	transport?: string;
 	setup_required?: boolean;
 	setup_mode?: boolean;
@@ -195,3 +203,36 @@ export type SetupKind =
 	| "developer_mode"
 	| "mount_ddi"
 	| "unbind";
+
+/** One software update attempt as root recorded it (state.json), or the one just requested. */
+export interface UpdateAttempt {
+	id: string;
+	version: string;
+	step: "download" | "install" | "restart" | "verify";
+	result: "running" | "succeeded" | "failed" | "cancelled";
+	/** Why a failed attempt ended: DOWNLOAD_FAILED, CHECKSUM_MISMATCH, INSTALL_FAILED, VERIFY_FAILED… */
+	error_code: string | null;
+	started: number | null;
+	updated: number | null;
+}
+
+/** GET /app/update — what is installed, what GitHub offers, and the latest attempt. */
+export interface UpdateView {
+	installed: string;
+	/** Not a `X.Y.Z` release: updates are off. */
+	dev_build: boolean;
+	latest: string | null;
+	available: boolean;
+	checked_at: number | null;
+	/** GitHub release page of `latest` when available, else of the installed release. */
+	changelog_url: string | null;
+	check: {
+		/** DEV_BUILD, or NO_INTERNET in Local and Setup mode. */
+		blocked: "DEV_BUILD" | "NO_INTERNET" | null;
+		/** The last check failed (CHECK_FAILED) or GitHub asked the box to wait (RATE_LIMITED). */
+		error: string | null;
+		/** The box checks once a day by itself. */
+		automatic: boolean;
+	};
+	attempt: UpdateAttempt | null;
+}

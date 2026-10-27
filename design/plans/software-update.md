@@ -1,6 +1,6 @@
 # Software update from the box page
 
-**Status: plan, 2026-10-26. PR 1 (installer `--upgrade`, update unit) merged 2026-10-27 (#31); PR 2 (API check and endpoints) in progress on `jingerpie/update-api`. UI design: [Box Page Software Update canvas](https://claude.ai/artifact/3H3qXsiiowm6PGVhEEHsTx).**
+**Status: plan, 2026-10-26. PR 1 (installer `--upgrade`, update unit) merged 2026-10-27 (#31); PR 2 (API check and endpoints) open as #37; PR 3 (box page) in progress on `jingerpie/update-page`. UI design: [Box Page Software Update canvas](https://claude.ai/artifact/3H3qXsiiowm6PGVhEEHsTx).**
 
 Today a box changes version only when someone runs `curl … install.sh | sudo sh` over SSH. Owners of a ready-made box have no SSH, so in practice they never update. This plan lets the box find a new GitHub release, ask the owner on the box page, and install it, with no SSH and no way to end up with a box that does not start.
 
