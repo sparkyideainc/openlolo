@@ -286,6 +286,34 @@ def app_routes(runtime, gateway, provider, *, entry: str) -> list[RouteSpec]:
         attempt = await prov.connect(ssid, psk)
         return JSONResponse({"attempt_id": attempt, **prov.health()}, status_code=202)
 
+    # Software update (application/update.py). Owner session only: never through MCP or the SDK.
+    @add("/update", ["GET"])
+    async def update_status(request: Request):
+        require(ADMIN_SCOPE)
+        return runtime.updates.view()
+
+    @add("/update/check", ["POST"])
+    async def update_check(request: Request):
+        require(ADMIN_SCOPE)
+        return await runtime.updates.check(manual=True)
+
+    @add("/update/install", ["POST"])
+    async def update_install(request: Request):
+        require(ADMIN_SCOPE)
+        version = (await body(request)).get("version")
+        if not isinstance(version, str) or len(version) > 32:
+            raise OpenLoloError("INVALID_REQUEST", "version is required", 400)
+        attempt = await runtime.updates.install(version)
+        return JSONResponse({"attempt": attempt}, status_code=202)
+
+    @add("/update/cancel", ["POST"])
+    async def update_cancel(request: Request):
+        require(ADMIN_SCOPE)
+        attempt = (await body(request)).get("attempt")
+        if not isinstance(attempt, str) or len(attempt) > 64:
+            raise OpenLoloError("INVALID_REQUEST", "attempt is required", 400)
+        return runtime.updates.cancel(attempt)
+
     @add("/diagnostics", ["GET"])
     async def diagnostics(request: Request):
         require(ADMIN_SCOPE)

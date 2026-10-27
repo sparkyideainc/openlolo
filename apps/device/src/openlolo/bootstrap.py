@@ -14,9 +14,11 @@ from openlolo.application.coordinator import Coordinator
 from openlolo.application.phone import Phone
 from openlolo.application.provisioning import Provisioning, ProvisioningState
 from openlolo.application.reset import ResetChallenge
+from openlolo.application.update import UPDATE_UNIT, Updates
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.models import Binding
 from openlolo.domain.profiles import ProfileStore
+from openlolo.release import installed_release
 
 RESET_UNIT = "openlolo-reset.service"  # Root unit: deploy/reset/openlolo-reset.sh
 
@@ -70,6 +72,13 @@ class Runtime:
         self.autopair = self.phone.autopair = AutoPair(
             config, self.phone, self.provisioning, self.bindings, self.journal
         )
+        self.updates = Updates(
+            config,
+            installed=installed_release(),
+            provisioning=self.provisioning,
+            reset=self.reset,
+            start_unit=None if config.backend == "simulated" else self.start_update,
+        )
         self.door_provider, self.door_gateway = build_door(self)
         self.lock = None
 
@@ -88,6 +97,10 @@ class Runtime:
         if code != 0:
             raise OpenLoloError("RESET_FAILED", output or "Could not start the reset", 502)
         return False
+
+    async def start_update(self) -> tuple[int, str]:
+        # The unit stops this service during the install, so it must run on its own.
+        return await run_command("systemctl", "start", "--no-block", UPDATE_UNIT, timeout=10, quiet=False)
 
     async def start(self):
         import fcntl
@@ -109,8 +122,10 @@ class Runtime:
         if self.config.backend != "simulated":
             self.provisioning.start()
             self.autopair.start()
+            self.updates.start()
 
     async def close(self):
+        await self.updates.close()
         await self.autopair.close()
         await self.provisioning.close()
         await self.door_gateway.close()
