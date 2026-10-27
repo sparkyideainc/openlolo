@@ -130,16 +130,17 @@ def setup_card_command(args, parser):
         # Safari, which keeps the page through the Wi-Fi handoff and can add it to the Home Screen.
         for title, data in (
             (
-                f"1. Join the setup Wi-Fi: scan with the iPhone camera ({name})",
+                "1. Join the setup Wi-Fi",
                 f"WIFI:T:WPA;S:{name};P:{password};;",
             ),
-            (f"2. Open the setup page: scan with the iPhone camera ({page})", page),
+            ("2. Open the setup page", page),
         ):
             qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=1)
             qr.add_data(data)
             print(title)
             qr.print_ascii(invert=True)
-    print("After joining, follow the local setup page. Keep these details with the box.")
+    print("Follow the setup page. Approve AI clients there under Access.")
+    print("Keep these details with the box.")
 
 
 def main():
