@@ -196,6 +196,41 @@ async def test_a_condition_failing_during_the_warning_cancels_it(rig):
     assert rig.power.ops() == ["prepare", "cancel"] and rig.offs == []
 
 
+async def test_a_short_pisugar_gap_keeps_the_count(rig):
+    status = dict(rig.power.status)
+    await run_for(rig, 200)
+    rig.power.status = None  # The board drops off I2C for 60 s.
+    await run_for(rig, 60)
+    assert rig.power.ops() == [] and rig.auto.view()["supported"]
+    rig.power.status = dict(status)
+    await run_for(rig, 40)  # 300 s since the count began.
+    assert rig.power.ops() == ["prepare"]
+
+
+async def test_a_silent_board_never_warns_and_a_long_gap_resets(rig):
+    await run_for(rig, 290)
+    rig.power.status = None
+    await run_for(rig, 88)  # Deadline passes while silent: no warning.
+    assert rig.power.ops() == []
+    await run_for(rig, 4)  # Past the 90 s grace: unsupported, count reset.
+    assert rig.auto.view()["state"] == "unsupported"
+    rig.power.status = {"pisugar": True, "external_power": False, "daemon_id": "d1"}
+    await run_for(rig, 200)
+    assert rig.power.ops() == []
+
+
+async def test_a_gap_during_the_warning_warns_again_when_the_board_returns(rig):
+    status = dict(rig.power.status)
+    await run_for(rig, 300)
+    assert rig.power.ops() == ["prepare"]
+    rig.power.status = None
+    await run_for(rig, 30)
+    assert rig.power.ops() == ["prepare", "cancel"] and rig.offs == []
+    rig.power.status = status
+    await rig.auto.step()
+    assert rig.power.ops() == ["prepare", "cancel", "prepare"]
+
+
 async def test_a_refused_commit_reopens_the_box(rig):
     rig.power.commit_reply = {"ok": False, "error": "EXTERNAL_POWER"}
     await run_for(rig, 312)
@@ -230,6 +265,9 @@ async def test_view_reports_support_and_battery(rig):
     assert view["supported"] and view["on_battery"] and view["battery_percent"] == 64
     assert view["auto_sleep_minutes"] == 5 and view["choices"] == [0, 5, 15, 30, 60]
     rig.power.status = None
+    await rig.auto.step()
+    assert rig.auto.view()["supported"]  # A brief gap keeps the last reading.
+    rig.clock.advance(90)
     await rig.auto.step()
     view = rig.auto.view()
     assert view["supported"] is False and view["state"] == "unsupported"

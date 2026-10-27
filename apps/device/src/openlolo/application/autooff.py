@@ -6,7 +6,8 @@ hold: the PiSugar3 answers and reports no external power, the worker answered wi
 tick and reports no phone session (not connected, connecting, switching or mounting), no search
 window is open, no control lease is live and no action is queued or running, Local or Setup mode
 is off, no Wi-Fi join or reset is in progress, and no maintenance inhibitor is held. Any of them
-failing restarts the count from zero.
+failing restarts the count from zero, except a PiSugar3 that stops answering for less than
+``POWER_GAP_SECONDS``: that keeps the count but holds off any warning until the board is back.
 
 Activity restarts the count too: an accepted AI or SDK request (the coordinator), an owner
 action on the box page (any POST), a button press or hold, a change of the setting. Page status
@@ -39,6 +40,9 @@ log = logging.getLogger("openlolo.autooff")
 CHOICES = (0, 5, 15, 30, 60)  # Minutes; 0 = Off.
 TICK_SECONDS = 2.0
 POWER_TIMEOUT = 3.0
+# The PiSugar3 drops off I2C for 30-60 s every few minutes on the Radxa bench box. A gap this
+# short keeps the count (no warning while the board is silent); a longer one resets it.
+POWER_GAP_SECONDS = 90.0
 POWEROFF_UNIT = "openlolo-poweroff.service"  # Root unit: systemctl poweroff.
 # Phone session states that keep the box on: the phone is in use or being reached.
 PHONE_BUSY = {"connected", "connecting", "switching", "mounting_ddi", "reconnecting"}
@@ -142,6 +146,7 @@ class AutoOff:
         self.daemon_id: str | None = None
         self.state = "off"
         self.last_power: dict | None = None
+        self.power_seen: float | None = None  # Last status with the board answering.
         self.committed = False
         self.task: asyncio.Task | None = None
         self.woken = asyncio.Event()
@@ -225,12 +230,17 @@ class AutoOff:
             return False
         return not (self.held_locally or inhibitor_alive(self.inhibitor))
 
-    async def _eligible(self) -> tuple[bool, str]:
-        """(may count, view state when not): one snapshot of every condition."""
+    async def _eligible(self) -> tuple[bool, str | None]:
+        """(may count, view state when not): one snapshot of every condition. A state of None
+        means the board went silent a moment ago: keep the count, but do not warn or cut."""
         power = await self.power.call({"op": "status"})
-        self.last_power = power
+        now = self.clock()
         if not power or not power.get("pisugar"):
+            if self.power_seen is not None and now - self.power_seen < POWER_GAP_SECONDS:
+                return False, None
+            self.last_power, self.power_seen = power, None
             return False, "unsupported"
+        self.last_power, self.power_seen = power, now
         self.daemon_id = power.get("daemon_id")
         if self.settings.minutes() == 0:
             return False, "off"
@@ -278,13 +288,20 @@ class AutoOff:
             else:
                 ok, state = await self._eligible()
                 if not ok:
+                    idle_since = self.idle_since
                     await self._cancel_warning()
-                    self.idle_since, self.state = self.clock(), state
-                    log.info("auto sleep cancelled: %s", state)
+                    if state is None:  # Board silent: warn again once it answers.
+                        self.idle_since = idle_since
+                        log.info("auto sleep warning stopped: PiSugar3 not answering")
+                    else:
+                        self.idle_since, self.state = self.clock(), state
+                        log.info("auto sleep cancelled: %s", state)
                 elif now >= self.warn_until:
                     await self._commit()
                 return
         ok, state = await self._eligible()
+        if state is None:
+            return
         if not ok:
             self.idle_since, self.state = self.clock(), state
             return
