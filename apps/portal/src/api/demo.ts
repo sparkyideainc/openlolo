@@ -207,16 +207,16 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			updated: t - 4 * 86_400,
 		},
 	];
-	let autoSleep = 5;
+	let autoSleep = 180;
 	let warning = screen === "sleep";
 	const powerView = (): PowerStatus => ({
-		auto_sleep_minutes: autoSleep,
-		choices: [0, 5, 15, 30, 60],
+		auto_sleep_seconds: autoSleep,
+		choices: [0, 30, 60, 120, 180, 240, 300],
 		supported: true,
 		on_battery: true,
 		battery_percent: 64,
 		state: autoSleep === 0 ? "off" : warning ? "warning" : "counting",
-		seconds_left: autoSleep === 0 ? null : warning ? 8 : 192,
+		seconds_left: autoSleep === 0 ? null : warning ? 8 : 132,
 	});
 	const network: NetworkStatus = {
 		ssid: screen === "setup" ? null : "Home-5G",
@@ -419,9 +419,9 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			requireSession();
 			return powerView();
 		},
-		async setAutoSleep(minutes) {
+		async setAutoSleep(seconds) {
 			requireSession();
-			autoSleep = minutes;
+			autoSleep = seconds;
 			warning = false;
 			return powerView();
 		},

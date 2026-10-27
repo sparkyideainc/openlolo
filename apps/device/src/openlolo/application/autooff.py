@@ -1,7 +1,7 @@
 """Auto sleep: turn a battery-powered box off when no phone is connected and nothing uses it.
 
-The owner picks the idle time on the box page (Off, 5, 15, 30 or 60 minutes; ``power.json`` in
-the state directory, ``auto_off_seconds`` until set). The box counts only while all of these
+The owner picks the idle time on the box page (Off, 30 seconds, or 1 to 5 minutes, as on an
+iPhone; ``power.json`` in the state directory, ``auto_off_seconds`` until set). The box counts only while all of these
 hold: the PiSugar3 answers and reports no external power, the worker answered within the last
 tick and reports no phone session (not connected, connecting, switching or mounting), no search
 window is open, no control lease is live and no action is queued or running, Local or Setup mode
@@ -39,7 +39,7 @@ from openlolo.domain.errors import OpenLoloError
 
 log = logging.getLogger("openlolo.autooff")
 
-CHOICES = (0, 5, 15, 30, 60)  # Minutes; 0 = Off.
+CHOICES = (0, 30, 60, 120, 180, 240, 300)  # Seconds; 0 = Off. iPhone Auto-Lock's choices.
 TICK_SECONDS = 2.0
 POWER_TIMEOUT = 3.0
 # A commit retries each I2C access on a flaky bus; it can take several seconds to answer.
@@ -79,29 +79,41 @@ class PowerClient:
                     await writer.wait_closed()
 
 
+def nearest(seconds: float) -> int:
+    """The closest choice other than Off."""
+    return min(CHOICES[1:], key=lambda choice: abs(choice - seconds))
+
+
 class Settings:
     """The owner's choice in ``power.json``; a missing or invalid file falls back to config."""
 
     def __init__(self, path: Path, default_seconds: float):
         self.path = path
-        self.default = min(CHOICES, key=lambda m: abs(m * 60 - default_seconds)) if default_seconds else 0
+        self.default = nearest(default_seconds) if default_seconds else 0
 
-    def minutes(self) -> int:
+    def seconds(self) -> int:
         try:
-            value = json.loads(self.path.read_text()).get("auto_sleep_minutes")
+            saved = json.loads(self.path.read_text())
+            value = saved.get("auto_sleep_seconds")
+            if value is None:
+                # Before the iPhone choices: whole minutes (5, 15, 30, 60). Snap to the nearest.
+                minutes = saved.get("auto_sleep_minutes")
+                if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes >= 0:
+                    value = nearest(minutes * 60) if minutes else 0
         except (OSError, ValueError, AttributeError):
             return self.default
-        return value if isinstance(value, int) and value in CHOICES else self.default
+        ok = isinstance(value, int) and not isinstance(value, bool) and value in CHOICES
+        return value if ok else self.default
 
-    def set(self, minutes: int) -> None:
-        if minutes not in CHOICES or isinstance(minutes, bool):
+    def set(self, seconds: int) -> None:
+        if seconds not in CHOICES or isinstance(seconds, bool):
             raise OpenLoloError(
-                "INVALID_SETTING", f"Choose one of {', '.join(map(str, CHOICES))} minutes", 400
+                "INVALID_SETTING", f"Choose one of {', '.join(map(str, CHOICES))} seconds", 400
             )
         temporary = self.path.with_name(f".{self.path.name}.tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as handle:
-            json.dump({"auto_sleep_minutes": minutes}, handle)
+            json.dump({"auto_sleep_seconds": seconds}, handle)
             handle.write("\n")
         temporary.replace(self.path)
 
@@ -177,8 +189,8 @@ class AutoOff:
             self.held_locally -= 1
             self.activity("hold end")
 
-    def set_minutes(self, minutes) -> dict:
-        self.settings.set(minutes)
+    def set_seconds(self, seconds) -> dict:
+        self.settings.set(seconds)
         self.activity("setting")
         return self.view()
 
@@ -192,9 +204,9 @@ class AutoOff:
         power = self.last_power or {}
         supported = bool(power.get("pisugar"))
         external = power.get("external_power")
-        minutes = self.settings.minutes()
+        seconds = self.settings.seconds()
         result = {
-            "auto_sleep_minutes": minutes,
+            "auto_sleep_seconds": seconds,
             "choices": list(CHOICES),
             "supported": supported,
             "on_battery": supported and external is False,
@@ -203,7 +215,7 @@ class AutoOff:
             "seconds_left": None,
         }
         if self.state == "counting":
-            result["seconds_left"] = max(0, int(self.idle_since + minutes * 60 - self.clock()))
+            result["seconds_left"] = max(0, int(self.idle_since + seconds - self.clock()))
         elif self.state == "warning":
             result["seconds_left"] = max(0, int(self.warn_until - self.clock() + 0.999))
         return result
@@ -246,7 +258,7 @@ class AutoOff:
             return False, "unsupported"
         self.last_power, self.power_seen = power, now
         self.daemon_id = power.get("daemon_id")
-        if self.settings.minutes() == 0:
+        if self.settings.seconds() == 0:
             return False, "off"
         if power.get("external_power") is not False:
             return False, "plugged_in"
@@ -312,7 +324,7 @@ class AutoOff:
         if self.state != "counting":
             self.state = "counting"
             self.idle_since = min(self.idle_since, now)
-        if now - self.idle_since < self.settings.minutes() * 60:
+        if now - self.idle_since < self.settings.seconds():
             return
         await self._prepare()
 

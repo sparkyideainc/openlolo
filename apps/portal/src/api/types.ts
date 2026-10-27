@@ -190,8 +190,8 @@ export interface NetworkStatus {
 
 /** Auto sleep: a PiSugar3 box on battery turns off after this long with no phone and no use. */
 export interface PowerStatus {
-	/** 0 = Off. */
-	auto_sleep_minutes: number;
+	/** Seconds; 0 = Off. */
+	auto_sleep_seconds: number;
 	choices: number[];
 	/** False without a PiSugar3 (the box cannot cut its own power). */
 	supported: boolean;

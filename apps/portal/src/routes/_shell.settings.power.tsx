@@ -19,7 +19,7 @@ export const Route = createFileRoute("/_shell/settings/power")({
 	component: AutoSleep,
 });
 
-const FALLBACK_CHOICES = [0, 5, 15, 30, 60];
+const FALLBACK_CHOICES = [0, 30, 60, 120, 180, 240, 300];
 
 function AutoSleep() {
 	const queryClient = useQueryClient();
@@ -28,7 +28,7 @@ function AutoSleep() {
 	const update = (next: PowerStatus) =>
 		queryClient.setQueryData(keys.power, next);
 	const choose = useMutation({
-		mutationFn: (minutes: number) => api.setAutoSleep(minutes),
+		mutationFn: (seconds: number) => api.setAutoSleep(seconds),
 		onSuccess: update,
 		onError: (error) => toast.error(error.message),
 	});
@@ -65,7 +65,7 @@ function AutoSleep() {
 								Turning off in {data.seconds_left ?? 0} s
 							</span>
 							<span className="text-[13px] text-muted-foreground leading-snug">
-								Idle for {sleepLabel(data.auto_sleep_minutes)}
+								Idle for {sleepLabel(data.auto_sleep_seconds)}
 							</span>
 						</span>
 					</div>
@@ -100,17 +100,17 @@ function AutoSleep() {
 						supported ? "Press the power button to turn it back on." : undefined
 					}
 				>
-					{choices.map((minutes) => (
+					{choices.map((seconds) => (
 						<ButtonRow
-							key={minutes}
-							title={sleepLabel(minutes)}
+							key={seconds}
+							title={sleepLabel(seconds)}
 							accessory={
-								supported && data?.auto_sleep_minutes === minutes
+								supported && data?.auto_sleep_seconds === seconds
 									? "check"
 									: "none"
 							}
 							disabled={!supported || choose.isPending}
-							onClick={() => choose.mutate(minutes)}
+							onClick={() => choose.mutate(seconds)}
 						/>
 					))}
 				</Section>
@@ -135,6 +135,6 @@ function statusDetail(power: PowerStatus): string {
 		case "shutting_down":
 			return "Turning off";
 		default:
-			return `Turns off after idle for ${sleepLabel(power.auto_sleep_minutes)}`;
+			return `Turns off after idle for ${sleepLabel(power.auto_sleep_seconds)}`;
 	}
 }

@@ -99,8 +99,9 @@ class Config(StrictModel):
     )
     update_check: bool = True
     # Auto sleep (PiSugar3 boxes on battery): turn off after this long with no phone and no use,
-    # until the owner picks a value on the box page (state_dir/power.json); 0 = off.
-    auto_off_seconds: float = Field(default=300, ge=0, le=3600)
+    # until the owner picks a value on the box page (state_dir/power.json); 0 = off. Snapped to the
+    # nearest choice (30 s or 1-5 min).
+    auto_off_seconds: float = Field(default=180, ge=0, le=3600)
     # Status LED warning before the power cut; activity in this time keeps the box on.
     auto_off_warning_seconds: float = Field(default=10, ge=3, le=60)
 

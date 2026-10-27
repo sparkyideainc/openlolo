@@ -73,7 +73,7 @@ class FakeCoordinator:
 @pytest.fixture
 def rig(tmp_path):
     clock = Clock()
-    config = Config(backend="simulated", state_dir=tmp_path, runtime_dir=tmp_path)
+    config = Config(backend="simulated", state_dir=tmp_path, runtime_dir=tmp_path, auto_off_seconds=300)
     power, device, coordinator = FakePower(), FakeDevice(), FakeCoordinator()
     provisioning = types.SimpleNamespace(active=False, state=types.SimpleNamespace(value="idle"))
     reset = types.SimpleNamespace(stage=None)
@@ -187,7 +187,7 @@ async def test_each_condition_keeps_the_box_on(rig, block):
     elif block == "inhibitor":
         (rig.tmp / "inhibit-sleep").write_text(f"{os.getpid()}\n")
     elif block == "off":
-        rig.auto.set_minutes(0)
+        rig.auto.set_seconds(0)
     await run_for(rig, 3600, tick=30)
     assert rig.power.ops() == [] and rig.offs == []
 
@@ -262,31 +262,41 @@ async def test_an_unclear_commit_shuts_down_unless_the_cut_is_ruled_out(rig, rep
 
 
 async def test_the_setting_changes_the_deadline_and_survives_a_restart(rig):
-    rig.auto.set_minutes(15)
-    await run_for(rig, 600)
+    rig.auto.set_seconds(30)
+    await run_for(rig, 28)
     assert rig.power.ops() == []
-    await run_for(rig, 302)
+    await run_for(rig, 4)
     assert rig.power.ops() == ["prepare"]
-    assert json.loads((rig.tmp / "power.json").read_text()) == {"auto_sleep_minutes": 15}
-    assert Settings(rig.tmp / "power.json", 300).minutes() == 15
+    assert json.loads((rig.tmp / "power.json").read_text()) == {"auto_sleep_seconds": 30}
+    assert Settings(rig.tmp / "power.json", 300).seconds() == 30
     assert oct((rig.tmp / "power.json").stat().st_mode & 0o777) == "0o600"
-    with raises_code("INVALID_SETTING"):
-        rig.auto.set_minutes(7)
+    for bad in (45, 900, True):
+        with raises_code("INVALID_SETTING"):
+            rig.auto.set_seconds(bad)
 
 
 def test_a_bad_settings_file_falls_back_to_config(tmp_path):
     path = tmp_path / "power.json"
     path.write_text("{not json")
-    assert Settings(path, 300).minutes() == 5
-    path.write_text('{"auto_sleep_minutes": 7}')
-    assert Settings(path, 0).minutes() == 0
+    assert Settings(path, 300).seconds() == 300
+    assert Settings(path, 180).seconds() == 180
+    assert Settings(path, 1000).seconds() == 300  # Config snaps to the nearest choice.
+    path.write_text('{"auto_sleep_seconds": 45}')
+    assert Settings(path, 0).seconds() == 0
+
+
+@pytest.mark.parametrize(("minutes", "seconds"), [(0, 0), (5, 300), (15, 300), (60, 300)])
+def test_a_minutes_file_from_before_the_iphone_choices_snaps(tmp_path, minutes, seconds):
+    path = tmp_path / "power.json"
+    path.write_text(json.dumps({"auto_sleep_minutes": minutes}))
+    assert Settings(path, 180).seconds() == seconds
 
 
 async def test_view_reports_support_and_battery(rig):
     await rig.auto.step()
     view = rig.auto.view()
     assert view["supported"] and view["on_battery"] and view["battery_percent"] == 64
-    assert view["auto_sleep_minutes"] == 5 and view["choices"] == [0, 5, 15, 30, 60]
+    assert view["auto_sleep_seconds"] == 300 and view["choices"] == [0, 30, 60, 120, 180, 240, 300]
     rig.power.status = None
     await rig.auto.step()
     assert rig.auto.view()["supported"]  # A brief gap keeps the last reading.
