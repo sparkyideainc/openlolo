@@ -9,6 +9,7 @@ import type {
 	Consent,
 	NetworkStatus,
 	Operation,
+	PowerStatus,
 	ResetAttempt,
 	SetupStatus,
 	UpdateAttempt,
@@ -34,7 +35,9 @@ export type DemoScreen =
 	| "updated"
 	| "update-failed"
 	| "uptodate"
-	| "update-dev";
+	| "update-dev"
+	// Auto sleep: the warning before the box turns off.
+	| "sleep";
 
 function now(): number {
 	return Date.now() / 1000;
@@ -204,6 +207,17 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 			updated: t - 4 * 86_400,
 		},
 	];
+	let autoSleep = 5;
+	let warning = screen === "sleep";
+	const powerView = (): PowerStatus => ({
+		auto_sleep_minutes: autoSleep,
+		choices: [0, 5, 15, 30, 60],
+		supported: true,
+		on_battery: true,
+		battery_percent: 64,
+		state: autoSleep === 0 ? "off" : warning ? "warning" : "counting",
+		seconds_left: autoSleep === 0 ? null : warning ? 8 : 192,
+	});
 	const network: NetworkStatus = {
 		ssid: screen === "setup" ? null : "Home-5G",
 		ip: screen === "setup" ? "192.168.4.1" : "192.168.1.40",
@@ -400,6 +414,21 @@ export function createDemoApi(screen: DemoScreen | null): BoxApi {
 				next_cursor: end < operations.length ? String(end) : null,
 				has_more: end < operations.length,
 			};
+		},
+		async power() {
+			requireSession();
+			return powerView();
+		},
+		async setAutoSleep(minutes) {
+			requireSession();
+			autoSleep = minutes;
+			warning = false;
+			return powerView();
+		},
+		async keepOn() {
+			requireSession();
+			warning = false;
+			return powerView();
 		},
 		async network() {
 			requireSession();

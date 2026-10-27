@@ -50,6 +50,16 @@ class Coordinator:
         self.changed = asyncio.Event()
         # Serializes drop and acquire so a drop's stop_input cannot cancel the next holder's work.
         self.control_lock = asyncio.Lock()
+        # Auto sleep: called on every accepted request; ``closing`` refuses new work once the box
+        # is turning off.
+        self.on_activity = None
+        self.closing = False
+
+    def _active(self):
+        if self.closing:
+            raise OpenLoloError("SHUTTING_DOWN", "The box is turning off", 503)
+        if self.on_activity is not None:
+            self.on_activity()
 
     async def start(self):
         self.journal.recover_interrupted()
@@ -100,8 +110,11 @@ class Coordinator:
             and secrets.compare_digest(lease.token, token or "")
         ):
             self.touch(lease)
+            if self.on_activity is not None:
+                self.on_activity()
 
     async def acquire(self, owner):
+        self._active()
         async with self.control_lock:
             if self.lease and not self.live():
                 await self._drop()
@@ -158,12 +171,14 @@ class Coordinator:
         return {"paused": True, "release_error": self.release_error}
 
     def resume(self, owner, token):
+        self._active()
         self.check(owner, token, allow_paused=True)
         self.touch()
         self.paused = False
         return {"paused": False}
 
     def submit(self, operation_id, owner, token, kind, payload, run):
+        self._active()
         self.check(owner, token)
         self.touch()
         operation, fresh = self.journal.reserve(operation_id, owner, kind, payload)
@@ -178,6 +193,7 @@ class Coordinator:
         return operation
 
     async def observe(self, run):
+        self._active()
         if self.queue.full():
             raise OpenLoloError("QUEUE_FULL", status=429)
         future = asyncio.get_running_loop().create_future()

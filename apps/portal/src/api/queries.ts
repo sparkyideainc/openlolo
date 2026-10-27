@@ -21,6 +21,7 @@ export const keys = {
 	network: ["app", "network"] as const,
 	scan: ["app", "scan"] as const,
 	update: ["app", "update"] as const,
+	power: ["app", "power"] as const,
 };
 
 type Interval = number | false;
@@ -82,6 +83,14 @@ export function useOperations(limit: number, interval: Interval = 10_000) {
 		initialPageParam: null as string | null,
 		getNextPageParam: (last) =>
 			last.has_more ? (last.next_cursor ?? null) : null,
+		refetchInterval: interval,
+	});
+}
+
+export function usePower(interval: Interval = 5000) {
+	return useQuery({
+		queryKey: keys.power,
+		queryFn: () => api.power(),
 		refetchInterval: interval,
 	});
 }

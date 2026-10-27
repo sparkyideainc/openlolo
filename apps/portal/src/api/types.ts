@@ -188,6 +188,27 @@ export interface NetworkStatus {
 	[key: string]: unknown;
 }
 
+/** Auto sleep: a PiSugar3 box on battery turns off after this long with no phone and no use. */
+export interface PowerStatus {
+	/** 0 = Off. */
+	auto_sleep_minutes: number;
+	choices: number[];
+	/** False without a PiSugar3 (the box cannot cut its own power). */
+	supported: boolean;
+	on_battery: boolean;
+	battery_percent: number | null;
+	state:
+		| "off"
+		| "unsupported"
+		| "plugged_in"
+		| "in_use"
+		| "counting"
+		| "warning"
+		| "shutting_down";
+	/** Seconds until the warning (counting) or until the power cut (warning). */
+	seconds_left: number | null;
+}
+
 export interface DiscoveredPhone {
 	udid: string;
 	name?: string;

@@ -20,9 +20,19 @@ ZERO 3W on a PiSugar3). One thread, one tick every 100 ms.
   flash every 2 s, ``resetting`` steady on. The PiSugar3's four LEDs stay the firmware's battery gauge: its charge animation overwrites ``0xE0`` between
   writes, so a pattern there was unreadable on USB power (bench 2026-10-18).
 
-The power button keeps the PiSugar3 defaults: this daemon never writes ``0x02``, ``0x03`` or
-``0x09``. Soft mode without the power-button code would leave the power button unable to turn
-the box off.
+- Auto sleep: the API asks over ``/run/openlolo/power.sock`` (one JSON line each way) for the
+  power source (``status``), a warning on the LED (``prepare``, fast flicker, expires on its
+  own), ``cancel``, and ``commit``: re-read external power, then set the cut delay ``0x09``, turn
+  soft mode off (``0x03`` bit 4) and clear the output switch (``0x02`` bit 5). The board cuts
+  power ``OPENLOLO_CUT_DELAY`` seconds later while the API shuts the OS down. A commit needs the
+  attempt and daemon IDs of a live ``prepare``, runs at most once per daemon, and a failed write
+  turns the output switch back on; when that cannot be confirmed after the output write, the
+  reply says ``maybe_armed`` so the API shuts down cleanly. Writes are locked again
+  (``0x0B = 0x00``) afterwards, best effort.
+
+Outside a commit the power button keeps the PiSugar3 defaults: this daemon never writes
+``0x02``, ``0x03`` or ``0x09``. Soft mode without the power-button code would leave the power
+button unable to turn the box off.
 
 Bench facts this relies on (see design/hardware/pisugar3.md):
 - Back-to-back I2C accesses fail ~18%; accesses are spaced 20 ms and retried 3 times 50 ms apart,
@@ -30,8 +40,10 @@ Bench facts this relies on (see design/hardware/pisugar3.md):
 - A stale top-button event can be latched at boot; it is cleared at start without acting on it.
 """
 
+import json
 import os
 import secrets
+import socket
 import sys
 import time
 from pathlib import Path
@@ -42,6 +54,14 @@ UNLOCK_REG, UNLOCK = 0x0B, 0x29
 TAP = 0x08  # bits 0-1: 1 single, 2 double, 3 long
 FIRMWARE = 0xE2  # ASCII version string, one byte per register
 FIRMWARE_MAX = 16
+
+POWER, SOFT, CUT_DELAY_REG, BATTERY = 0x02, 0x03, 0x09, 0x2A
+EXTERNAL_BIT = 0x80  # 0x02 bit 7: external power present (read only)
+OUTPUT_BIT = 0x20  # 0x02 bit 5: 5 V output to the host; clearing it cuts power after 0x09 s
+SOFT_BIT = 0x10  # 0x03 bit 4: soft shutdown mode; must be off before the cut (stuck state)
+CUT_DELAY = 30  # seconds; Radxa bench shutdown took ~11 s on 2026-10-26 (OPENLOLO_CUT_DELAY)
+STATUS_CACHE = 2.0  # seconds a power reading is reused
+PREPARE_GRACE = 5.0  # a prepared attempt outlives its warning by this long, then expires
 
 SINGLE, DOUBLE, LONG = 1, 2, 3
 KINDS = {SINGLE: "single", DOUBLE: "double", LONG: "long"}
@@ -68,6 +88,7 @@ PATTERNS = {
     "challenge": ([False], 1.0),  # reset challenge: off; each press seen flashes (see show())
     "armed": ([True, False, True, False, True] + [False] * 8, FLASH),  # triple flash, 2 s
     "resetting": ([True], 1.0),
+    "shutdown": ([True, False], 0.125),  # auto sleep warning: fast flicker, 4 Hz; then steady
 }
 
 
@@ -135,6 +156,13 @@ class Bus:
                 raise I2CError(f"read back 0x{back:02x}")
 
         self._retry(attempt, f"write 0x{register:02x}=0x{value:02x}")
+
+    def lock(self) -> None:
+        """Re-lock writes (``0x0B = 0x00``), best effort: the next write unlocks again anyway."""
+        try:
+            self._access(self.smbus.write_byte_data, UNLOCK_REG, 0x00)
+        except OSError:
+            pass
 
 
 class StatusLed:
@@ -231,6 +259,13 @@ class Daemon:
         self.indicator_word = "idle"
         self.pattern = "idle"
         self.pattern_start = 0.0
+        # Auto sleep (see the module docstring).
+        self.id = secrets.token_hex(6)
+        self.cut_delay = CUT_DELAY
+        self.attempt: str | None = None
+        self.attempt_until = 0.0
+        self.committed = False
+        self.power_cache: tuple[float, dict] | None = None
 
     # Start-up --------------------------------------------------------------------------------
 
@@ -339,6 +374,13 @@ class Daemon:
     def show(self) -> None:
         pattern = self.read_indicator()
         now = self.clock()
+        if self.attempt is not None and now >= self.attempt_until:
+            log("auto sleep warning expired")
+            self.attempt = None
+        if self.committed:
+            pattern = "resetting"  # steady on until the power goes
+        elif self.attempt is not None:
+            pattern = "shutdown"
         if pattern != self.pattern:
             self.pattern, self.pattern_start = pattern, now
             log(f"status LED: {pattern}")
@@ -351,19 +393,180 @@ class Daemon:
         frames, seconds = PATTERNS[pattern]
         self.led.set(frames[int((now - self.pattern_start) / seconds) % len(frames)])
 
+    # Auto sleep ------------------------------------------------------------------------------
+
+    def power_status(self) -> dict:
+        now = self.clock()
+        if self.power_cache is None or now - self.power_cache[0] >= STATUS_CACHE:
+            power = self.bus.read(POWER)
+            try:
+                percent = self.bus.read(BATTERY)
+            except I2CError:
+                percent = None
+            reading = {
+                "external_power": bool(power & EXTERNAL_BIT),
+                "battery_percent": percent if percent is not None and 0 <= percent <= 100 else None,
+            }
+            self.power_cache = (now, reading)
+        return {
+            "pisugar": True,
+            "daemon_id": self.id,
+            "attempt": self.attempt,
+            "committed": self.committed,
+            **self.power_cache[1],
+        }
+
+    def power_request(self, request: dict) -> dict:
+        op = request.get("op")
+        try:
+            if op == "status":
+                return self.power_status()
+            if self.committed:
+                return {"ok": False, "error": "COMMITTED"}
+            if op == "prepare":
+                return self.prepare(request)
+            if op == "cancel":
+                if request.get("attempt") == self.attempt and self.attempt is not None:
+                    self.attempt = None
+                    log("auto sleep warning cancelled")
+                return {"ok": True}
+            if op == "commit":
+                return self.commit(request)
+        except I2CError as exc:
+            return {"ok": False, "error": "I2C_FAILED", "message": str(exc)}
+        return {"ok": False, "error": "UNKNOWN_OPERATION"}
+
+    def prepare(self, request: dict) -> dict:
+        attempt, seconds = request.get("attempt"), request.get("seconds")
+        if not isinstance(attempt, str) or not attempt or not isinstance(seconds, (int, float)):
+            return {"ok": False, "error": "INVALID_REQUEST"}
+        if not 0 < seconds <= 60:
+            return {"ok": False, "error": "INVALID_REQUEST"}
+        if self.attempt is not None and self.attempt != attempt:
+            return {"ok": False, "error": "BUSY"}
+        self.attempt, self.attempt_until = attempt, self.clock() + seconds + PREPARE_GRACE
+        log(f"auto sleep warning: power off in {seconds:.0f} s unless cancelled")
+        return {"ok": True, "daemon_id": self.id}
+
+    def commit(self, request: dict) -> dict:
+        if request.get("daemon_id") != self.id:
+            return {"ok": False, "error": "WRONG_DAEMON"}
+        if (
+            self.attempt is None
+            or request.get("attempt") != self.attempt
+            or self.clock() >= self.attempt_until
+        ):
+            return {"ok": False, "error": "STALE_ATTEMPT"}
+        self.attempt = None
+        if self.bus.read(POWER) & EXTERNAL_BIT:
+            self.power_cache = None
+            return {"ok": False, "error": "EXTERNAL_POWER"}
+        output_written = False  # From the output write on, a failure may still have armed it.
+        try:
+            self.bus.write(CUT_DELAY_REG, self.cut_delay)
+            soft = self.bus.read(SOFT)
+            self.bus.write(SOFT, soft & ~SOFT_BIT & 0xFF, SOFT_BIT)
+            power = self.bus.read(POWER)
+            output_written = True
+            self.bus.write(POWER, power & ~OUTPUT_BIT & 0xFF, OUTPUT_BIT)
+        except I2CError as exc:
+            restored = self.restore_output()
+            self.bus.lock()
+            if output_written and not restored:
+                # The cut may be counting down: tell the API to shut down cleanly anyway.
+                self.committed = True
+                log(f"auto sleep: power cut may be armed ({exc})", 3)
+                return {"ok": False, "error": "I2C_FAILED", "maybe_armed": True, "message": str(exc)}
+            log(f"auto sleep: power cut not armed ({exc})", 3)
+            return {"ok": False, "error": "I2C_FAILED", "message": str(exc)}
+        self.bus.lock()
+        self.committed = True
+        log(f"auto sleep: power cut armed, output off in {self.cut_delay} s", 4)
+        return {"ok": True, "cut_delay": self.cut_delay}
+
+    def restore_output(self) -> bool:
+        """Turn the output switch back on; True when it reads back on."""
+        try:
+            power = self.bus.read(POWER)
+            if not power & OUTPUT_BIT:
+                self.bus.write(POWER, power | OUTPUT_BIT, OUTPUT_BIT)
+            return True
+        except I2CError as exc:
+            log(f"auto sleep: output switch not restored ({exc}); the box may turn off", 3)
+            return False
+
     def lost(self) -> None:
         """The board stopped answering: presses may be missed, so a reset challenge must fail."""
         if self.events is not None:
             self.events.append("lost")
 
 
-def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep) -> None:
+OFFLINE_REPLY = {"pisugar": False}
+
+
+def offline_request(request: dict) -> dict:
+    """The power socket while the board does not answer: no PiSugar, so no auto sleep."""
+    if request.get("op") == "status":
+        return dict(OFFLINE_REPLY)
+    return {"ok": False, "error": "PISUGAR_OFFLINE"}
+
+
+class PowerServer:
+    """``power.sock``: polled once per tick, one JSON line in and one out per connection."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            self.sock.bind(str(path))
+        finally:
+            os.umask(old)
+        self.sock.listen(4)
+        self.sock.setblocking(False)
+
+    def poll(self, handler) -> None:
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except (BlockingIOError, InterruptedError):
+                return
+            with conn:
+                try:
+                    conn.settimeout(0.5)
+                    data = b""
+                    while not data.endswith(b"\n") and len(data) < 4096:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    request = json.loads(data or b"{}")
+                    reply = handler(request if isinstance(request, dict) else {})
+                    conn.sendall(json.dumps(reply).encode() + b"\n")
+                except (OSError, ValueError) as exc:
+                    log(f"power socket request dropped ({type(exc).__name__})", 4)
+
+    def close(self) -> None:
+        self.sock.close()
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep, power=None) -> None:
     """Run until ``stop()``; a missing or silent board is logged once and retried every 30 s."""
     reported = False
 
     def pause(seconds: float) -> None:
         end = clock() + seconds
         while not stop() and clock() < end:
+            if power is not None:
+                power.poll(offline_request)
             sleep(min(TICK, end - clock()))
 
     while not stop():
@@ -382,8 +585,15 @@ def serve(open_bus, daemon_factory, stop, clock=time.monotonic, sleep=time.sleep
         while not stop() and not daemon.offline:
             started = clock()
             daemon.tick()
-            pause(max(0.0, TICK - (clock() - started)))
+            if power is not None:
+                power.poll(daemon.power_request)
+            rest = max(0.0, TICK - (clock() - started))
+            end = clock() + rest
+            while not stop() and clock() < end:
+                sleep(min(TICK, end - clock()))
         if daemon.offline:
+            if daemon.committed:
+                return  # The power is going: nothing left to do.
             log(f"PiSugar3 stopped answering; retrying every {RETRY_OFFLINE:.0f} s", 4)
             daemon.lost()
             reported = True
@@ -400,6 +610,12 @@ def main(stop) -> int:
     led = StatusLed(Path(os.environ.get("OPENLOLO_STATUS_LED", STATUS_LED)))
     run_dir = Path(os.environ.get("OPENLOLO_RUN_DIR", "/run/openlolo"))
     events = EventLog(run_dir / "button-events")
+    cut_delay = int(os.environ.get("OPENLOLO_CUT_DELAY", str(CUT_DELAY)))
+    try:
+        power = PowerServer(run_dir / "power.sock")
+    except OSError as exc:
+        log(f"power socket not opened ({exc}); auto sleep off", 4)
+        power = None
     opened = []
 
     def open_bus():
@@ -410,7 +626,7 @@ def main(stop) -> int:
         return Bus(smbus)
 
     def factory(bus):
-        return Daemon(
+        daemon = Daemon(
             bus,
             setup_flag=Path(os.environ.get("OPENLOLO_BUTTON_FLAG", run_dir / "setup-button")),
             pair_flag=Path(os.environ.get("OPENLOLO_PAIR_FLAG", run_dir / "pair-button")),
@@ -418,10 +634,14 @@ def main(stop) -> int:
             led=led,
             events=events,
         )
+        daemon.cut_delay = max(10, min(255, cut_delay))
+        return daemon
 
     try:
-        serve(open_bus, factory, stop)
+        serve(open_bus, factory, stop, power=power)
     finally:
+        if power is not None:
+            power.close()
         led.set(False)
         while opened:
             opened.pop().close()
