@@ -73,6 +73,16 @@ class DeviceWorker:
         if op == "release":
             await self.manager.release_all()
             return {"released": True}
+        if op == "hold_stream":
+            ttl = request.get("ttl")
+            if not isinstance(ttl, int | float) or isinstance(ttl, bool):
+                raise OpenLoloError("INVALID_REQUEST", status=400)
+            return self.manager.hold_stream(request.get("hold_id"), float(ttl))
+        if op == "release_stream":
+            hold_id = request.get("hold_id")
+            if hold_id is not None and not isinstance(hold_id, str):
+                raise OpenLoloError("INVALID_REQUEST", status=400)
+            return self.manager.release_stream(hold_id)
         if op == "report":
             await self.manager.report(request["generation"], request["kind"], request["value"])
             return {"accepted": True}

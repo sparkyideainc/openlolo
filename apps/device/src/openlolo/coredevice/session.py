@@ -13,6 +13,7 @@ import time
 from PIL import Image
 
 from openlolo.adapters.storage.binding import device_tag
+from openlolo.coredevice.screen_stream import ScreenDecoder, stop_streams
 from openlolo.coredevice.state import State, classify, transport_lost
 from openlolo.domain.errors import OpenLoloError
 from openlolo.domain.geometry import geometry_epoch
@@ -54,7 +55,13 @@ class DeviceSession:
         self.decoder = None
         self.content: tuple[int, int] | None = None
         self.hid_started = 0.0
-        self.hid_used = 0.0
+        self.hid_used = 0.0  # Last touch, keyboard or button use.
+        self.stream_used = 0.0  # Last screenshot or input that needed the media stream.
+        # Set by the manager while a control lease holds the stream: idleness never closes it.
+        self.stream_held = False
+        # Called when the stream ends by itself, so the manager can reopen a held one.
+        self.on_stream_end = None
+        self.closing = False
         self.last_touch = None
         self.keys_held = False
         self.lost_hid = False
@@ -171,6 +178,7 @@ class DeviceSession:
         await self._invoke(self.info_factory, lambda svc: svc.get_device_info(), 8, "probe")
 
     async def close(self):
+        self.closing = True
         await self.stop_hid()
 
     # ----- screenshots ---------------------------------------------------------------
@@ -181,9 +189,11 @@ class DeviceSession:
             frame = await self._stream_screenshot(binding, options, started)
             if frame is not None:
                 return frame
-            # Stream miss (not started, stale, or lost): tear the stream down before the discrete
-            # capture, which the running stream would otherwise wedge, then fall back to PNG.
-            await self.stop_hid()
+            # Stream miss (not started, no keyframe, or lost): tear the stream down before the
+            # discrete capture, which a running stream would wedge, then fall back to PNG.
+            left = await self.stop_hid()
+            if left:
+                raise OpenLoloError("CAPTURE_FAILED", "The phone's screen stream did not stop; try again")
         result = await self._invoke(
             self.screen_factory, lambda svc: svc.capture_screenshot(), deadline, "screenshot"
         )
@@ -243,19 +253,41 @@ class DeviceSession:
         return None
 
     async def _ensure_stream_locked(self):
-        from openlolo.coredevice.screen_stream import ScreenDecoder
-
+        if self.closing:
+            raise OpenLoloError("DEVICE_DISCONNECTED", "The phone session is closing")
         if self.decoder is not None and self.decoder.running:
-            self.hid_used = time.monotonic()
+            self.stream_used = time.monotonic()
             return
+        if self.decoder is not None:
+            # Ended by itself (the phone closed it): clean up before a new one.
+            await self.decoder.stop()
+            self.decoder = None
         if self.content is None:
             self.content = await self._content_size()
-        decoder = ScreenDecoder(self.rsd, self.config, self.on_lost)
+        decoder = ScreenDecoder(self.rsd, self.config, self.on_lost, self._stream_ended)
         if self.content is not None:
             decoder.set_content(*self.content)
-        await decoder.start()
-        self.decoder = decoder
-        self.hid_used = time.monotonic()
+        self.decoder = decoder  # Published before start, so a cancelled start is still stopped.
+        try:
+            await decoder.start()
+        except BaseException:
+            await decoder.stop()
+            self.decoder = None
+            raise
+        self.stream_used = time.monotonic()
+
+    def _stream_ended(self):
+        if self.on_stream_end is not None:
+            self.on_stream_end()
+
+    @property
+    def stream_running(self) -> bool:
+        return self.decoder is not None and self.decoder.running
+
+    async def hold_stream(self):
+        """Open the media stream for a control lease (stream source only); no input services."""
+        async with self.hid_lock:
+            await self._ensure_stream_locked()
 
     async def _stream_screenshot(self, binding, options, started: float) -> Frame | None:
         try:
@@ -264,15 +296,14 @@ class DeviceSession:
         except OpenLoloError:
             return None
         decoder = self.decoder
-        if decoder is None or not await decoder.wait_frame(self.config.stream_start_seconds):
+        if decoder is None:
             return None
-        # A tap's result can be on screen before the decoder reaches it: catch up first, which
-        # usually takes one keyframe round trip. A cold stream starts behind, so allow the start
-        # window; a frame still more than stream_frame_ttl behind falls back to a discrete capture.
-        await decoder.catch_up(self.config.stream_start_seconds)
-        grabbed = await decoder.grab(options.max_size)
+        # Decoded from a keyframe the phone sends after this request, so a tap's result is in
+        # it; usually one round trip. None (no keyframe in time) falls back to a discrete capture.
+        grabbed = await decoder.capture(self.config.stream_start_seconds, options.max_size)
         if grabbed is None:
             return None
+        self.stream_used = time.monotonic()  # The lease-less warm window counts from here.
         image, age, (native_width, native_height) = grabbed
         epoch = geometry_epoch(native_width, native_height, device_tag(binding))
         buffer = io.BytesIO()
@@ -292,7 +323,7 @@ class DeviceSession:
             received_at=time.time(),
             request_seconds=time.monotonic() - started,
             source_age_seconds=round(age, 3),
-            source_clock="pi hevc decode; age = lag behind screen",
+            source_clock="pi arrival of requested keyframe; age = request to keyframe",
             media_type=f"image/{options.format}",
         )
         return Frame(metadata, buffer.getvalue())
@@ -302,6 +333,11 @@ class DeviceSession:
     @property
     def hid_active(self) -> bool:
         return self.hid is not None or (self.decoder is not None and self.decoder.running)
+
+    @property
+    def input_open(self) -> bool:
+        """Touch/keyboard services are open, so a touch or key may be held."""
+        return self.hid is not None
 
     async def ensure_hid(self):
         """Open the touch/keyboard/button services behind the media-stream authentication gate."""
@@ -417,7 +453,7 @@ class DeviceSession:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(service.close(), 2)
 
-    async def _stop_hid_locked(self):
+    async def _stop_hid_locked(self) -> int | None:
         if self.hid is not None:
             # Let the last report be processed before the surfaces disappear.
             remaining = 0.25 - (time.monotonic() - self.hid_used)
@@ -430,8 +466,9 @@ class DeviceSession:
         self.keyboard_id = None
         self.last_touch = None
         self.keys_held = False
+        left: int | None = 0
         if decoder is not None:
-            await decoder.stop()
+            left = await decoder.stop()
         if drain is not None:
             drain.cancel()
             with contextlib.suppress(BaseException):
@@ -441,59 +478,36 @@ class DeviceSession:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(service.close(), 2)
         if display is not None and not self.lost:
-            await self._stop_stream()
+            left = await stop_streams(self.rsd)
         if media is not None:
             with contextlib.suppress(Exception):
                 media.close()
         if display is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(display.close(), 2)
+        return left
 
-    async def _stream_sessions(self) -> int | None:
-        """Number of media-stream sessions the phone still holds, or None when unknown."""
-        from pymobiledevice3.remote.core_device.display_service import DisplayService
-
-        try:
-            async with DisplayService(self.rsd) as display:
-                status = await asyncio.wait_for(display.get_media_stream_server_status(), 5)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None
-        sessions = status.get("sessions") if isinstance(status, dict) else None
-        return len(sessions) if isinstance(sessions, list) else None
-
-    async def _stop_stream(self):
-        """Stop the authentication stream on a fresh connection and wait until the phone reports
-        no sessions. The screen-capture daemon wedges permanently (until a phone reboot) when a
-        screenshot races a stream that was only abandoned, so this is never skipped."""
-        from pymobiledevice3.remote.core_device.display_service import DisplayService
-
-        started = time.monotonic()
-        for attempt in range(3):
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(DisplayService.stop_all_streams(self.rsd), 5)
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                remaining = await self._stream_sessions()
-                if remaining == 0:
-                    logger.info(
-                        "hid stream stopped in %.2fs (attempt %d)", time.monotonic() - started, attempt + 1
-                    )
-                    return
-                await asyncio.sleep(0.25)
-        logger.warning(
-            "hid stream still reported after %.1fs; screenshots may stall", time.monotonic() - started
-        )
-
-    async def stop_hid(self):
+    async def stop_hid(self) -> int | None:
+        """Close input and the media stream; returns the phone streams left (0 or None = none
+        known)."""
         async with self.hid_lock:
-            await self._stop_hid_locked()
+            return await self._stop_hid_locked()
 
     async def idle_check(self):
-        active = self.hid is not None or (self.decoder is not None and self.decoder.running)
-        if active and time.monotonic() - self.hid_used > self.config.hid_idle_seconds:
-            await self.stop_hid()
+        """Close what has gone unused for ``hid_idle_seconds``: the input services after no
+        input, the media stream after no use unless a control lease holds it."""
+        async with self.hid_lock:
+            now, limit = time.monotonic(), self.config.hid_idle_seconds
+            if self.config.screenshot_source != "stream":
+                if self.hid is not None and now - self.hid_used > limit:
+                    await self._stop_hid_locked()
+                return
+            if self.hid is not None and now - self.hid_used > limit:
+                await self._stop_hid_services()
+            if self.decoder is None or self.stream_held:
+                return
+            if now - max(self.stream_used, self.hid_used) > limit:
+                await self._stop_hid_locked()
 
     def _hid(self):
         if self.hid is None:
@@ -512,7 +526,12 @@ class DeviceSession:
             if isinstance(exc, TimeoutError) or transport_lost(exc):
                 logger.warning("input session closed (%s)", type(exc).__name__)
                 self.lost_hid = True
-                await self.stop_hid()
+                if self.config.screenshot_source == "stream":
+                    # Only the input services failed; the media stream closes on its own failure.
+                    async with self.hid_lock:
+                        await self._stop_hid_services()
+                else:
+                    await self.stop_hid()
                 raise OpenLoloError("INPUT_INTERRUPTED", "The phone closed the input session") from None
             raise classify(exc) from None
 

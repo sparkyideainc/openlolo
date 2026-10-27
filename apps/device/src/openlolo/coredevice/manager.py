@@ -78,6 +78,13 @@ BOOT_NETWORK_SECONDS, NETWORK_POLL = 90.0, 1.0
 LOCKED_RETRY_SECONDS = 2.0
 # Touch-session idle check cadence while an input session is open.
 HID_IDLE_TICK = 5.0
+# Stream hold (the control lease's screen-recording indicator): longest accepted time to live,
+# reopen delays after a failed open on a healthy session (then every HOLD_RETRY_LATER), and how
+# often a held stream is checked when nothing else wakes the reconciler.
+HOLD_TTL_MAX = 120.0
+HOLD_RETRY = (2.0, 5.0, 10.0)
+HOLD_RETRY_LATER = 30.0
+HOLD_CHECK = 30.0
 
 
 def _key(udid: str) -> str:
@@ -161,6 +168,16 @@ class CoreDeviceManager:
         self.unplugged = False
         # Pulsed on every state, cable or window change; waiters take the current event.
         self._changed = asyncio.Event()
+        # Stream hold for the control lease, owned by the API's coordinator and renewed while
+        # its lease lives: an ID (never the lease token) and a deadline on ``clock``. The
+        # reconciler keeps the media stream open while it is live.
+        self.hold_id: str | None = None
+        self.hold_expires = float("-inf")
+        self.hold_attempts = 0
+        self.hold_retry_at = float("-inf")
+        self.hold_error: dict | None = None
+        self.holding = None  # The session the reconciler marked held, if any.
+        self.reconciler: asyncio.Task | None = None
 
     # ----- lifecycle -----------------------------------------------------------------
 
@@ -171,8 +188,18 @@ class CoreDeviceManager:
             self.listener = asyncio.create_task(self._usb_events())
         if self.announcer is None and self.announcements is not None:
             self.announcer = asyncio.create_task(self._follow_announcements())
+        if self.reconciler is None:
+            self.reconciler = asyncio.create_task(self._reconcile())
 
     async def close(self):
+        self.release_stream(None)
+        for name in ("reconciler",):
+            task = getattr(self, name)
+            setattr(self, name, None)
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         await self.disconnect()
         for name in ("watchdog", "listener", "announcer"):
             task = getattr(self, name)
@@ -202,6 +229,7 @@ class CoreDeviceManager:
         return self.status()
 
     async def disconnect(self) -> dict:
+        self.release_stream(None)
         await self._stop_supervisor()
         self.binding = None
         self.connection = Connection()
@@ -457,6 +485,7 @@ class CoreDeviceManager:
                 if rsd.udid and not same_udid(str(rsd.udid), udid):
                     raise OpenLoloError("IDENTITY_MISMATCH", "The reachable phone is not the bound phone")
                 session = self.session_factory(rsd, self.config, self.lost.set)
+                session.on_stream_end = self._pulse
                 prepared = await session.prepare(
                     self.config.auto_mount_ddi or self.mount_requested, self._set
                 )
@@ -705,6 +734,10 @@ class CoreDeviceManager:
     def status(self) -> dict:
         if self.session is not None:
             self.connection.hid_active = self.session.hid_active
+        self.connection.indication = self._indication()
+        self.connection.indication_error = (
+            self.hold_error if self.connection.indication == "unavailable" else None
+        )
         return {
             "state": "ready" if self.connection.state == State.CONNECTED.value else "unavailable",
             "connection": self.connection.as_dict(),
@@ -779,14 +812,135 @@ class CoreDeviceManager:
 
     async def _release(self):
         session = self.session
-        # Nothing can be held without an open input session; do not wait behind a capture.
-        if session is not None and session.hid_active:
+        # Nothing can be held without open input services; do not wait behind a capture.
+        if session is not None and session.input_open:
             async with self.io_lock:
                 await session.release_all()
 
     async def release_all(self):
         self.gate.release()
         await self._release()
+
+    # ----- stream hold ----------------------------------------------------------------
+
+    def hold_stream(self, hold_id: str, ttl: float) -> dict:
+        """Create or renew the control lease's stream hold; returns at once, the reconciler opens
+        the stream. A new ID replaces the old hold."""
+        if not isinstance(hold_id, str) or not 8 <= len(hold_id) <= 128:
+            raise OpenLoloError("INVALID_REQUEST", status=400)
+        if not 1 <= ttl <= HOLD_TTL_MAX:
+            raise OpenLoloError("INVALID_REQUEST", status=400)
+        if hold_id != self.hold_id:
+            self.hold_id = hold_id
+            self.hold_attempts, self.hold_retry_at, self.hold_error = 0, float("-inf"), None
+        self.hold_expires = self.clock() + ttl
+        self._pulse()
+        return {"held": True, "indication": self._indication()}
+
+    def release_stream(self, hold_id: str | None) -> dict:
+        """End the hold now (``None``: whatever hold exists). Unknown IDs change nothing. The hold
+        is cleared before anything waits, so an open still in flight closes when it lands."""
+        if self.hold_id is not None and hold_id in (None, self.hold_id):
+            self.hold_id, self.hold_expires, self.hold_error = None, float("-inf"), None
+            self._pulse()
+        return {"released": True}
+
+    def _held(self) -> bool:
+        return (
+            self.hold_id is not None
+            and self.hold_expires > self.clock()
+            and self.binding is not None
+            and self.config.hold_stream_with_lease
+            and self.config.screenshot_source == "stream"
+        )
+
+    def _indication(self) -> str:
+        if not self._held():
+            return "off"
+        session = self.session
+        if session is not None and session.stream_running:
+            return "on"
+        return "unavailable" if self.hold_error is not None else "opening"
+
+    async def _reconcile(self):
+        """Keep the media stream open while the hold lives, and close it when the hold ends.
+
+        The only task that opens or closes a stream in the background. It takes ``io_lock``, so it
+        never runs between a capture's stream stop and its PNG capture, and it never opens on a
+        session that is not the published, connected one. A lost transport is left to the
+        supervisor; a failed open on a healthy session is retried on ``HOLD_RETRY``."""
+        while True:
+            try:
+                # Look again at once after acting: the hold may have changed during the open.
+                if await self._reconcile_once():
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("stream hold reconcile failed")
+            wait = HOLD_CHECK
+            if self._held():
+                wait = min(wait, max(0.0, self.hold_expires - self.clock()))
+                session = self.session
+                if session is not None and not session.stream_running:
+                    wait = min(wait, max(0.0, self.hold_retry_at - self.clock()))
+            await self._changes(wait if self.hold_id is not None or self.holding is not None else None)
+
+    async def _reconcile_once(self) -> bool:
+        """One step toward the wanted state; True when it opened or closed something."""
+        session = self.session
+        if self.holding is not None and self.holding is not session:
+            self.holding.stream_held = False  # A session that went away; its teardown closed it.
+            self.holding = None
+            self.hold_attempts, self.hold_retry_at = 0, float("-inf")
+        usable = (
+            session is not None
+            and self.connection.state == State.CONNECTED.value
+            and not getattr(session, "lost", False)
+            and not self.lost.is_set()  # The transport went; the supervisor rebuilds it.
+        )
+        if self._held() and usable:
+            assert session is not None
+            session.stream_held = True
+            self.holding = session
+            if session.stream_running or self.clock() < self.hold_retry_at:
+                return False
+            async with self.io_lock:
+                if self.session is not session or not self._held() or session.stream_running:
+                    return True
+                started = time.monotonic()
+                try:
+                    await session.hold_stream()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    error = classify(exc)
+                    attempt = self.hold_attempts
+                    delay = HOLD_RETRY[attempt] if attempt < len(HOLD_RETRY) else HOLD_RETRY_LATER
+                    self.hold_attempts += 1
+                    self.hold_retry_at = self.clock() + delay
+                    self.hold_error = error.as_dict()
+                    log.warning("stream hold open failed (%s); retry in %.0f s", error.code, delay)
+                else:
+                    self.hold_attempts, self.hold_retry_at, self.hold_error = 0, float("-inf"), None
+                    log.info("stream held, open in %.2fs", time.monotonic() - started)
+            self._pulse()
+            return True
+        if self.holding is session and session is not None and not self._held():
+            async with self.io_lock:
+                if self._held():
+                    return True  # Held again while waiting: the next step keeps it open.
+                # Cleared under the lock, so a new hold cannot find the stream unprotected.
+                session.stream_held = False
+                self.holding = None
+                if self.session is session and session.stream_running:
+                    left = await session.stop_hid()
+                    log.info(
+                        "stream hold released (%s phone streams left)", "unknown" if left is None else left
+                    )
+            self._pulse()
+            return True
+        return False
 
     async def verify(self, binding) -> dict:
         if binding.transport == "auto":

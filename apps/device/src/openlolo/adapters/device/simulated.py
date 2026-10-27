@@ -32,6 +32,9 @@ class SimulatedDevice:
         self.generation = None
         self.connected = True
         self.releases = 0
+        # Stream hold calls in order, ("hold", id, ttl) or ("release", id), and the live hold.
+        self.holds: list[tuple] = []
+        self.hold_id: str | None = None
         self.transport = None
         self.since = time.time()
         self.clipboard: dict = {"text": None, "change_count": 0}
@@ -56,6 +59,7 @@ class SimulatedDevice:
             "developer_mode": True,
             "ddi_mounted": True,
             "hid_active": self.generation is not None,
+            "indication": "on" if self.hold_id is not None else "off",
             "simulated": True,
         }
 
@@ -166,6 +170,17 @@ class SimulatedDevice:
         self.releases += 1
         self.reports.append(("keyboard", []))
         self.reports.append(("release", []))
+
+    async def hold_stream(self, hold_id, ttl):
+        self.holds.append(("hold", hold_id, ttl))
+        self.hold_id = hold_id
+        return {"held": True, "indication": "on"}
+
+    async def release_stream(self, hold_id=None):
+        self.holds.append(("release", hold_id))
+        if hold_id in (None, self.hold_id):
+            self.hold_id = None
+        return {"released": True}
 
     async def health(self):
         return {

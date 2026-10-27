@@ -20,9 +20,10 @@ hid_refresh_seconds = 15    # Reopen the authentication media stream when older 
 hid_stream_sink = "drain"   # Where the authentication stream's video goes: drain, blackhole, device.
 hid_stop_before_capture = true  # false keeps the input stream up across screenshots (needs MemoryMax >= 1G).
 # Screenshot source: "png" = discrete lossless full-res PNG from the phone (~2.8s). "stream" =
-# decode the phone's mirroring H.265 on the Pi and serve the latest frame (~0.4s, slightly lossy,
-# needs PyAV; reuses the HID auth stream and idle-closes with hid_idle_seconds).
+# decode a keyframe of the phone's mirroring H.265 on the Pi per screenshot (~0.1-0.3s, slightly
+# lossy, needs PyAV; reuses the HID auth stream and idle-closes with hid_idle_seconds).
 screenshot_source = "stream"
+hold_stream_with_lease = true  # Keep the stream (and the phone's screen-recording indicator) on for the whole control lease.
 stream_jpeg_quality = 60
 tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in the worker unit.
 # Remote MCP entry for AI clients. Set to the public HTTPS origin your tunnel serves
