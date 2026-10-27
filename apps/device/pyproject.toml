@@ -25,7 +25,7 @@ mcp = [
 # CoreDevice worker only (separate venv on the Pi). Exact pin: the tunnel, HID and screenshot
 # services rely on reverse-engineered wire formats that can change between releases.
 device = [
-    "pymobiledevice3==11.34.0",
+    "pymobiledevice3==11.43.1",
 ]
 
 [dependency-groups]
