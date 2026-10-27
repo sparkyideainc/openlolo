@@ -1,5 +1,9 @@
 name: CI
-on: [push, pull_request]
+# Pull requests run once on their own event; pushes run only on main, after a merge.
+on:
+  push:
+    branches: [main]
+  pull_request:
 permissions:
   contents: read
 jobs:
