@@ -17,7 +17,9 @@ At the deadline the button daemon (the only process on I2C) shows a warning on t
 for ``auto_off_warning_seconds``; activity or a failed check cancels it. Then, after one last
 check, the coordinator refuses new work, the daemon arms the PiSugar power cut (with a delay
 long enough for a clean shutdown) and the API starts ``openlolo-poweroff.service``. Once armed
-the cut always happens. The power button or external power turns the box back on.
+the cut always happens, so a commit whose result is unclear (no reply, or a write that may have
+landed) also shuts down unless the daemon's status rules the cut out. The power button or
+external power turns the box back on.
 
 The daemon talks over ``power.sock`` in the runtime directory, one JSON line each way:
 ``status``, ``prepare``, ``cancel``, ``commit``. A box without the socket (a GPIO button, no
@@ -40,6 +42,8 @@ log = logging.getLogger("openlolo.autooff")
 CHOICES = (0, 5, 15, 30, 60)  # Minutes; 0 = Off.
 TICK_SECONDS = 2.0
 POWER_TIMEOUT = 3.0
+# A commit retries each I2C access on a flaky bus; it can take several seconds to answer.
+COMMIT_TIMEOUT = 15.0
 # The PiSugar3 drops off I2C for 30-60 s every few minutes on the Radxa bench box. A gap this
 # short keeps the count (no warning while the board is silent); a longer one resets it.
 POWER_GAP_SECONDS = 90.0
@@ -54,12 +58,12 @@ class PowerClient:
     def __init__(self, path: Path, timeout: float = POWER_TIMEOUT):
         self.path, self.timeout = path, timeout
 
-    async def call(self, request: dict) -> dict | None:
+    async def call(self, request: dict, timeout: float | None = None) -> dict | None:
         if not self.path.exists():
             return None
         writer = None
         try:
-            async with asyncio.timeout(self.timeout):
+            async with asyncio.timeout(timeout or self.timeout):
                 reader, writer = await asyncio.open_unix_connection(str(self.path))
                 writer.write(json.dumps(request).encode() + b"\n")
                 await writer.drain()
@@ -326,6 +330,15 @@ class AutoOff:
         self.state = "warning"
         log.info("auto sleep: turning off in %d s unless the box is used", seconds)
 
+    async def _maybe_armed(self, reply: dict | None) -> bool:
+        """After a failed or lost commit reply: could the PiSugar3 cut still be counting down?"""
+        if reply is not None and not reply.get("maybe_armed"):
+            return False  # The daemon answered: the output switch was never cleared.
+        status = await self.power.call({"op": "status"}, timeout=COMMIT_TIMEOUT)
+        if status and status.get("pisugar") and status.get("daemon_id") == self.daemon_id:
+            return bool(status.get("committed"))
+        return True  # Unknown: a clean shutdown is safer than a cut while running.
+
     async def _cancel_warning(self) -> None:
         attempt, self.attempt = self.attempt, None
         if attempt is None:
@@ -343,8 +356,17 @@ class AutoOff:
             self.coordinator.closing = False
             await self._cancel_warning()
             return
-        reply = await self.power.call({"op": "commit", "attempt": attempt, "daemon_id": self.daemon_id})
-        if not reply or not reply.get("ok"):
+        request = {"op": "commit", "attempt": attempt, "daemon_id": self.daemon_id}
+        reply = await self.power.call(request, timeout=COMMIT_TIMEOUT)
+        if reply and reply.get("ok"):
+            log.warning("auto sleep: power cut armed in %s s; shutting down", reply.get("cut_delay"))
+        elif await self._maybe_armed(reply):
+            # A cut that may be counting down must not hit a running box: shut down cleanly.
+            log.error(
+                "auto sleep: power cut may be armed (%s); shutting down",
+                (reply or {}).get("error", "no reply"),
+            )
+        else:
             self.coordinator.closing = False
             log.warning("auto sleep: power cut not armed (%s)", (reply or {}).get("error", "no reply"))
             await self._cancel_warning()
@@ -352,7 +374,6 @@ class AutoOff:
         self.attempt = None
         self.committed = True
         self.state = "shutting_down"
-        log.warning("auto sleep: power cut armed in %s s; shutting down", reply.get("cut_delay"))
         if self.poweroff is not None:
             try:
                 await self.poweroff()

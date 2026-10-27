@@ -55,6 +55,7 @@ class FakeSMBus:
         self.writes: list[tuple[int, int]] = []  # landed writes, unlock excluded
         self.accesses: list[float] = []
         self.missing = False
+        self.relocks = 0
 
     def _access(self, address):
         assert address == ADDRESS
@@ -74,6 +75,7 @@ class FakeSMBus:
         self._access(address)
         if register == 0x0B:
             self.regs[0x0B] = 1 if value == 0x29 else 0
+            self.relocks += value == 0x00
             return
         if self.regs[0x0B] != 1:
             return  # write protected: ignored
@@ -428,6 +430,7 @@ def test_prepare_then_commit_arms_the_cut_in_order(rig):
     assert reply == {"ok": True, "cut_delay": ps.CUT_DELAY}
     assert smbus.writes == [(0x09, ps.CUT_DELAY), (0x03, 0x40), (0x02, 0x5C)]
     assert smbus.regs[0x03] & 0x10 == 0 and smbus.regs[0x02] & 0x20 == 0
+    assert smbus.relocks == 1  # Writes locked again once the cut is armed.
     assert daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})["ok"] is False
     daemon.show()
     assert daemon.pattern == "resetting"  # Steady on until the power goes.
@@ -476,6 +479,22 @@ def test_a_failed_write_leaves_the_output_on(rig):
     reply = daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})
     assert reply["error"] == "I2C_FAILED" and not daemon.committed
     assert smbus.regs[0x02] & 0x20  # The output switch was never cleared.
+
+
+def test_an_output_write_that_may_have_landed_reports_maybe_armed(rig):
+    clock, smbus, daemon = started(rig)
+    write = smbus.write_byte_data
+
+    def lands_then_bus_dies(address, register, value):
+        write(address, register, value)
+        if register == 0x02:
+            smbus.missing = True  # The write landed; every later access fails.
+
+    smbus.write_byte_data = lands_then_bus_dies
+    daemon.power_request({"op": "prepare", "attempt": "a1", "seconds": 10})
+    reply = daemon.power_request({"op": "commit", "attempt": "a1", "daemon_id": daemon.id})
+    assert reply["error"] == "I2C_FAILED" and reply["maybe_armed"] is True
+    assert daemon.committed and smbus.regs[0x02] & 0x20 == 0
 
 
 def test_power_socket_round_trip_and_offline_reply():

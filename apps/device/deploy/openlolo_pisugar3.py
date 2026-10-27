@@ -26,7 +26,9 @@ ZERO 3W on a PiSugar3). One thread, one tick every 100 ms.
   soft mode off (``0x03`` bit 4) and clear the output switch (``0x02`` bit 5). The board cuts
   power ``OPENLOLO_CUT_DELAY`` seconds later while the API shuts the OS down. A commit needs the
   attempt and daemon IDs of a live ``prepare``, runs at most once per daemon, and a failed write
-  turns the output switch back on.
+  turns the output switch back on; when that cannot be confirmed after the output write, the
+  reply says ``maybe_armed`` so the API shuts down cleanly. Writes are locked again
+  (``0x0B = 0x00``) afterwards, best effort.
 
 Outside a commit the power button keeps the PiSugar3 defaults: this daemon never writes
 ``0x02``, ``0x03`` or ``0x09``. Soft mode without the power-button code would leave the power
@@ -154,6 +156,13 @@ class Bus:
                 raise I2CError(f"read back 0x{back:02x}")
 
         self._retry(attempt, f"write 0x{register:02x}=0x{value:02x}")
+
+    def lock(self) -> None:
+        """Re-lock writes (``0x0B = 0x00``), best effort: the next write unlocks again anyway."""
+        try:
+            self._access(self.smbus.write_byte_data, UNLOCK_REG, 0x00)
+        except OSError:
+            pass
 
 
 class StatusLed:
@@ -452,27 +461,39 @@ class Daemon:
         if self.bus.read(POWER) & EXTERNAL_BIT:
             self.power_cache = None
             return {"ok": False, "error": "EXTERNAL_POWER"}
+        output_written = False  # From the output write on, a failure may still have armed it.
         try:
             self.bus.write(CUT_DELAY_REG, self.cut_delay)
             soft = self.bus.read(SOFT)
             self.bus.write(SOFT, soft & ~SOFT_BIT & 0xFF, SOFT_BIT)
             power = self.bus.read(POWER)
+            output_written = True
             self.bus.write(POWER, power & ~OUTPUT_BIT & 0xFF, OUTPUT_BIT)
         except I2CError as exc:
-            self.restore_output()
+            restored = self.restore_output()
+            self.bus.lock()
+            if output_written and not restored:
+                # The cut may be counting down: tell the API to shut down cleanly anyway.
+                self.committed = True
+                log(f"auto sleep: power cut may be armed ({exc})", 3)
+                return {"ok": False, "error": "I2C_FAILED", "maybe_armed": True, "message": str(exc)}
             log(f"auto sleep: power cut not armed ({exc})", 3)
             return {"ok": False, "error": "I2C_FAILED", "message": str(exc)}
+        self.bus.lock()
         self.committed = True
         log(f"auto sleep: power cut armed, output off in {self.cut_delay} s", 4)
         return {"ok": True, "cut_delay": self.cut_delay}
 
-    def restore_output(self) -> None:
+    def restore_output(self) -> bool:
+        """Turn the output switch back on; True when it reads back on."""
         try:
             power = self.bus.read(POWER)
             if not power & OUTPUT_BIT:
                 self.bus.write(POWER, power | OUTPUT_BIT, OUTPUT_BIT)
+            return True
         except I2CError as exc:
             log(f"auto sleep: output switch not restored ({exc}); the box may turn off", 3)
+            return False
 
     def lost(self) -> None:
         """The board stopped answering: presses may be missed, so a reset challenge must fail."""

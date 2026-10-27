@@ -28,17 +28,21 @@ class FakePower:
         self.status = {"pisugar": True, "external_power": False, "battery_percent": 64, "daemon_id": "d1"}
         self.calls: list[dict] = []
         self.commit_reply = {"ok": True, "cut_delay": 30}
+        self.committed = False  # What status reports after a commit.
+        self.after_commit_status = True  # False: the daemon stops answering after a commit.
 
-    async def call(self, request):
+    async def call(self, request, timeout=None):
         self.calls.append(request)
         op = request["op"]
         if op == "status":
-            return dict(self.status) if self.status else None
+            if self.calls[-2:-1] and self.calls[-2]["op"] == "commit" and not self.after_commit_status:
+                return None
+            return dict(self.status, committed=self.committed) if self.status else None
         if op == "prepare":
             return {"ok": True, "daemon_id": "d1"}
         if op == "cancel":
             return {"ok": True}
-        return dict(self.commit_reply)
+        return dict(self.commit_reply) if self.commit_reply else None
 
     def ops(self):
         return [c["op"] for c in self.calls if c["op"] != "status"]
@@ -236,6 +240,25 @@ async def test_a_refused_commit_reopens_the_box(rig):
     await run_for(rig, 312)
     assert rig.power.ops()[:3] == ["prepare", "commit", "cancel"]
     assert rig.offs == [] and rig.coordinator.closing is False and rig.auto.committed is False
+
+
+@pytest.mark.parametrize(
+    ("reply", "committed", "answers", "off"),
+    [
+        (None, True, True, True),  # Reply lost, but the daemon armed the cut.
+        (None, False, True, False),  # Reply lost and the daemon says nothing was armed.
+        (None, False, False, True),  # No way to know: shut down cleanly.
+        ({"ok": False, "error": "I2C_FAILED", "maybe_armed": True}, True, True, True),
+        ({"ok": False, "error": "I2C_FAILED"}, False, True, False),
+    ],
+)
+async def test_an_unclear_commit_shuts_down_unless_the_cut_is_ruled_out(rig, reply, committed, answers, off):
+    rig.power.commit_reply = reply
+    rig.power.committed = committed
+    rig.power.after_commit_status = answers
+    await run_for(rig, 310)
+    assert (len(rig.offs) == 1) is off
+    assert rig.coordinator.closing is off and rig.auto.committed is off
 
 
 async def test_the_setting_changes_the_deadline_and_survives_a_restart(rig):
