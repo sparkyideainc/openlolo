@@ -53,6 +53,7 @@ from openlolo.domain.errors import OpenLoloError
 log = logging.getLogger("openlolo.provisioning")
 
 HANDOFF_READ_SECONDS = 6  # Captive sheet time to show the next address before the AP drops.
+HANDOFF_SECONDS = 1  # Off the setup network the 202 response only needs to reach the browser.
 BUTTON_POLL_SECONDS = 0.2  # The daemon acts on release; a fast poll keeps the box's reply immediate.
 SEARCH_SHOW_SECONDS = 3  # A search often ends within a second; keep the slow blink visible.
 RECLAIM_SECONDS = 15  # How often, with the window closed, the mDNS host name is checked.
@@ -249,7 +250,7 @@ class Provisioning:
         # single Wi-Fi radio leaves AP mode. On the setup network the captive sheet dies with
         # the AP, so the page must stay long enough to be read: it tells the owner which
         # address to open next.
-        delay = HANDOFF_READ_SECONDS if self.window else 1
+        delay = HANDOFF_READ_SECONDS if self.window else HANDOFF_SECONDS
         self.worker = asyncio.create_task(
             self._join_after_response(ssid, psk, f"{slug(ssid)}-{attempt}", delay)
         )

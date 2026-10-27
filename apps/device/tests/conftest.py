@@ -1,5 +1,6 @@
 import pytest
 
+from openlolo.application import fullpage, provisioning
 from openlolo.bootstrap import Runtime
 from openlolo.config import Config
 
@@ -7,6 +8,16 @@ from openlolo.config import Config
 def pytest_configure(config):
     # pytest creates basetemp itself, but a fresh checkout has no ignored .tmp parent.
     (config.rootpath / ".tmp").mkdir(exist_ok=True)
+
+
+@pytest.fixture(autouse=True)
+def fast_waits(monkeypatch):
+    # Real-time waits sized for a phone; the simulator answers at once.
+    monkeypatch.setattr(fullpage, "LAG_MAX", 0.3)
+    monkeypatch.setattr(fullpage, "PROBE_INTERVAL", 0.01)
+    monkeypatch.setattr(fullpage, "STABLE_MAX", 0.3)
+    monkeypatch.setattr(provisioning, "HANDOFF_READ_SECONDS", 0.01)
+    monkeypatch.setattr(provisioning, "HANDOFF_SECONDS", 0.01)
 
 
 @pytest.fixture

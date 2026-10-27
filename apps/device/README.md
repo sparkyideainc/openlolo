@@ -131,7 +131,7 @@ uv run --extra mcp ty check src tests
 uv run --extra mcp pytest -q
 ```
 
-CI runs the same checks on Python 3.11, 3.13, and 3.14. Type hints are gradual: `ty`
+CI runs the same checks on Python 3.13, the system Python on the box. Type hints are gradual: `ty`
 checks annotated code and infers the rest, so annotate new and touched code. The
 `coredevice` worker modules import pymobiledevice3 lazily and are exempt from import
 resolution on development machines; `uv sync --extra device` installs it locally.
