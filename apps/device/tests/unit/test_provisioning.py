@@ -174,7 +174,7 @@ async def test_connect_while_joining_is_busy(tmp_path):
     net.connect_delay = 0.2
     prov, _ = build(tmp_path, net)
     await prov.connect("HomeNet", "correct horse")
-    await asyncio.sleep(1.05)  # Past the handoff delay; the join itself is still in flight.
+    await asyncio.sleep(0.05)  # Past the handoff delay; the join itself is still in flight.
     assert prov.state == ProvisioningState.JOINING
     with pytest.raises(OpenLoloError) as info:
         await prov.connect("HomeNet", "correct horse")

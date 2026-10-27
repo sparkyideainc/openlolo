@@ -24,7 +24,6 @@ from support import (
     web,
 )
 
-from openlolo.application import provisioning as provisioning_module
 from openlolo.bootstrap import Runtime
 from openlolo.interfaces.auth import digest
 from openlolo.interfaces.mcp_http import (
@@ -208,9 +207,8 @@ async def test_reset_needs_the_box_name(box):
         assert (await c.get("/app/info")).json()["setup_mode"] is True
 
 
-async def test_network_routes(box, monkeypatch):
+async def test_network_routes(box):
     runtime, portal = box
-    monkeypatch.setattr(provisioning_module, "HANDOFF_READ_SECONDS", 0.1)  # No captive-sheet pause in tests.
     async with box_page(portal) as c:
         network = await c.get("/app/network")
         assert network.status_code == 200, network.text

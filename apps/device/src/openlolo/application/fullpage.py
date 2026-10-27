@@ -408,7 +408,14 @@ def _advanced(match: Match, band: int) -> bool:
 
 
 async def capture_full_page(
-    capture, swipe, probe=None, *, max_pages: int, settle: float, do_stitch: bool, lag_max: float = LAG_MAX
+    capture,
+    swipe,
+    probe=None,
+    *,
+    max_pages: int,
+    settle: float,
+    do_stitch: bool,
+    lag_max: float | None = None,
 ) -> Result:
     """Drive the scroll-and-capture loop.
 
@@ -421,6 +428,7 @@ async def capture_full_page(
     started = time.monotonic()
     loop = asyncio.get_running_loop()
     probe = probe or capture
+    lag_max = LAG_MAX if lag_max is None else lag_max
 
     async def page_from(frame) -> Page:
         image = await loop.run_in_executor(None, lambda: gray(decode(frame.image)))
