@@ -143,7 +143,7 @@ resolution on development machines; `uv sync --extra device` installs it locally
   returns `TRUST_REQUIRED`; a missing Wi-Fi record returns `WIFI_PAIRING_REQUIRED`.
 - Developer Mode must be enabled on the phone (iOS 16+). The developer disk image is
   mounted automatically after each phone reboot when `auto_mount_ddi` is set; this needs
-  internet access. iOS 17.4 or later is required for the USB tunnel.
+  internet access. OpenLolo supports iOS 26 or later.
 - Screenshots are the phone's native PNG; JPEG and aspect-preserving resizing are applied
   on the Pi. The phone reports no capture timestamp; source age remains unknown.
 - Touch coordinates are normalized within the portrait phone image. Use portrait
