@@ -332,7 +332,7 @@ async def test_no_scope_request_offers_registered_scopes(remote):
             },
         )
         page = await c.get(started.headers["location"])
-        assert "touch, type and press buttons" in page.text and "name='window'" not in page.text
+        assert "Touch and type" in page.text and "name='window'" not in page.text
         # A client registered for read only (Claude copies the 401 challenge's scope) is still
         # offered control; the owner decides.
         read_only = await register(c, scope="phone:read")
@@ -348,7 +348,7 @@ async def test_no_scope_request_offers_registered_scopes(remote):
             },
         )
         page = await c.get(started.headers["location"])
-        assert "touch, type and press buttons" in page.text
+        assert "Touch and type" in page.text
         # A client that only asks for read still gets control offered; the owner decides.
         started = await c.get(
             "/authorize",
@@ -362,7 +362,7 @@ async def test_no_scope_request_offers_registered_scopes(remote):
             },
         )
         page = await c.get(started.headers["location"])
-        assert "touch, type and press buttons" in page.text
+        assert "Touch and type" in page.text
 
 
 async def test_consent_rejections_and_pkce_downgrade(remote):
