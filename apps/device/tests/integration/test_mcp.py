@@ -251,12 +251,15 @@ async def test_bridge_screenshots_keep_control_and_release_hands_over(runtime):
     assert runtime.coordinator.lease is None
 
 
-async def test_end_session_tool_releases_and_actions_remind_the_model(runtime):
+async def test_session_tools_and_actions_remind_the_model_to_end(runtime):
     bridge = await bridge_for(runtime)
     server = create_server(bridge)
     # The rule leads the instructions: some clients keep only their start.
     assert "openlolo_end_session" in (server.instructions or "")[:200]
     async with Client(server) as client:
+        started = await client.call_tool("openlolo_start_session", {})
+        assert not started.is_error, started
+        assert runtime.coordinator.lease is not None and bridge.lease is not None
         keyed = await client.call_tool("openlolo_key", {"key": "enter", "observe": False})
         assert not keyed.is_error, keyed
         assert "openlolo_end_session" in keyed.structured_content["when_done"]

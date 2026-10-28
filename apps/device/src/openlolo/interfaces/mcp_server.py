@@ -143,7 +143,7 @@ def create_server(
         instructions=(
             "When you have finished with the phone (done, failed or giving up), call openlolo_end_session before "
             "replying: it ends your control and turns off the phone's 'being controlled' icon. Control is taken "
-            "by your first action and otherwise lapses only after 90 s without an action or screenshot; a later "
+            "by openlolo_start_session or your first action and otherwise lapses only after 90 s without an action or screenshot; a later "
             "action takes it again. "
             "Control only the owner-bound phone through the local OpenLolo API. Start with status, capabilities "
             "and a screenshot. Status reports the CoreDevice connection state; USB or Wi-Fi transport is the "
@@ -266,6 +266,11 @@ def create_server(
         return await run(CONTROL_SCOPE, call, when_done=True)
 
     @server.tool(annotations=CONTROL)
+    async def openlolo_start_session(operation_id: OperationId = None) -> CallToolResult:
+        """Optional: take control of the phone before your first action (the first action takes it anyway). CONTROL_BUSY means another client holds it. Call openlolo_end_session when you have finished."""
+        return await run(CONTROL_SCOPE, lambda p: p.control("acquire", operation(operation_id)))
+
+    @server.tool(annotations=CONTROL)
     async def openlolo_end_session(operation_id: OperationId = None) -> CallToolResult:
         """Call when you have finished with the phone, whether the task succeeded, failed or was abandoned: ends your control now and turns off the phone's 'being controlled' icon. Safe to call when control already lapsed. A later action takes control again."""
         return await run(CONTROL_SCOPE, lambda p: p.control("release", operation(operation_id)))
@@ -275,7 +280,7 @@ def create_server(
         command: Literal["acquire", "release", "resume"],
         operation_id: OperationId = None,
     ) -> CallToolResult:
-        """Control is taken by your first action and lapses after 90 s without activity; release is the same as openlolo_end_session. Acquire is optional and does not unpause; resume only to unpause on purpose."""
+        """Control is taken by your first action and lapses after 90 s without activity; acquire and release are the same as openlolo_start_session and openlolo_end_session. Acquire is optional and does not unpause; resume only to unpause on purpose."""
         return await run(CONTROL_SCOPE, lambda p: p.control(command, operation(operation_id)))
 
     @server.tool(annotations=CONTROL)
