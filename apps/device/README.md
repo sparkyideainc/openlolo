@@ -153,7 +153,10 @@ resolution on development machines; `uv sync --extra device` installs it locally
   Ctrl/Shift/Alt/Cmd chords are available. Named shortcuts require per-device
   owner-recorded validation. Hardware buttons: home, lock, volume up/down, mute, siri.
 - Input is authenticated by the phone only while a media stream the worker started is
-  alive; the phone shows its screen-recording indicator during input.
+  alive. The worker keeps that stream open for as long as a control lease lives, so the
+  phone shows its screen-recording indicator for the whole session, including between
+  actions (`hold_stream_with_lease`). Screenshots decode one keyframe the phone sends on
+  request; nothing is decoded between them.
 - A dispatched operation interrupted by cancellation or a crash is `OUTCOME_UNKNOWN`.
   It is never replayed automatically. Inspect the phone and choose a new action.
 - Images and typed content are not journaled or logged. The journal stores keyed

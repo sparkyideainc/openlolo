@@ -120,6 +120,14 @@ class FakeManager:
         self.calls.append(("gesture", generation, len(points)))
         return {"reports": len(points), "median_interval_ms": 33, "max_gap_ms": 40}
 
+    def hold_stream(self, hold_id, ttl):
+        self.calls.append(("hold", hold_id, ttl))
+        return {"held": True}
+
+    def release_stream(self, hold_id):
+        self.calls.append(("release", hold_id))
+        return {"released": True}
+
 
 async def test_worker_requires_persisted_binding_and_never_pairs_from_capture(runtime):
     manager = FakeManager()
@@ -227,3 +235,18 @@ async def test_worker_restart_in_the_same_boot_skips_the_search(runtime, monkeyp
     await DeviceWorker(runtime.config, first).start()
     await DeviceWorker(runtime.config, second).start()
     assert first.searched is True and second.searched is False
+
+
+async def test_worker_hold_ops_validate_and_reach_the_manager(runtime):
+    manager = FakeManager()
+    worker = DeviceWorker(runtime.config, manager)
+    assert await worker.dispatch({"op": "hold_stream", "hold_id": "hold-0001", "ttl": 45}) == {"held": True}
+    assert await worker.dispatch({"op": "release_stream", "hold_id": None}) == {"released": True}
+    assert manager.calls == [("hold", "hold-0001", 45.0), ("release", None)]
+    for bad in (
+        {"op": "hold_stream", "hold_id": "hold-0001", "ttl": "45"},
+        {"op": "hold_stream", "hold_id": "hold-0001", "ttl": True},
+        {"op": "release_stream", "hold_id": 7},
+    ):
+        with raises_code("INVALID_REQUEST"):
+            await worker.dispatch(bad)

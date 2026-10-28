@@ -50,6 +50,12 @@ class CoreDeviceClient:
     async def release_all(self):
         await rpc(self.socket, {"op": "release"}, 0.8)
 
+    async def hold_stream(self, hold_id, ttl):
+        return await rpc(self.socket, {"op": "hold_stream", "hold_id": hold_id, "ttl": ttl}, 3)
+
+    async def release_stream(self, hold_id=None):
+        return await rpc(self.socket, {"op": "release_stream", "hold_id": hold_id}, 3)
+
     async def health(self):
         return await rpc(self.socket, {"op": "status"})
 

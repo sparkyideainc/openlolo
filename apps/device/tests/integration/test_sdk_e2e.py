@@ -152,8 +152,13 @@ async def test_pinned_certificate_mismatch_sends_nothing(box, tmp_path):
     runtime, url, counter = box
     cache = tmp_path / "sdk"
     owner = asyncio.create_task(approver(runtime))
+
+    def first_run():
+        with phone(url, cache) as p:
+            p.connect()
+
     try:
-        await asyncio.to_thread(lambda: phone(url, cache).connect().close())
+        await asyncio.to_thread(first_run)
     finally:
         owner.cancel()
     (cached,) = cache.glob("*.json")

@@ -398,3 +398,57 @@ async def test_requests_count_as_activity_and_are_refused_while_turning_off(runt
     with pytest.raises(OpenLoloError):
         runtime.phone.action(str(uuid4()), "owner", lease, Action(kind="key", key="enter"))
     runtime.coordinator.closing = False
+
+
+async def until(predicate, timeout=2):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+async def test_lease_holds_the_stream_until_it_expires(runtime, monkeypatch):
+    from openlolo.application import coordinator as coordinator_module
+
+    monkeypatch.setattr(coordinator_module, "HOLD_RENEW_SECONDS", 0.05)
+    coordinator, device = runtime.coordinator, runtime.phone.device
+    coordinator.lease_seconds = 0.3
+    await coordinator.acquire("owner")
+    hold_id = coordinator.lease.hold_id
+    assert hold_id not in coordinator.lease.token
+    await until(lambda: device.hold_id == hold_id)
+    assert ("hold", hold_id, coordinator_module.HOLD_TTL_SECONDS) in device.holds
+    # Renewed while the lease lives, also with no activity (an AI thinking).
+    await until(lambda: device.holds.count(("hold", hold_id, coordinator_module.HOLD_TTL_SECONDS)) >= 3)
+    await until(lambda: coordinator.lease is None)  # expired after 0.3 s of quiet
+    await until(lambda: device.hold_id is None)
+    assert device.holds[-1] == ("release", hold_id)
+
+
+async def test_release_and_pause_and_shutdown(runtime):
+    coordinator, device = runtime.coordinator, runtime.phone.device
+    status = await coordinator.acquire("owner")
+    await until(lambda: device.hold_id is not None)
+    await coordinator.pause()  # paused control is still control: the indicator stays
+    await asyncio.sleep(0.05)
+    assert device.hold_id is not None
+    coordinator.resume("owner", status["lease_token"])
+    await coordinator.drop_control()
+    await until(lambda: device.hold_id is None)
+    await coordinator.acquire("other")
+    await until(lambda: device.hold_id is not None)
+    await coordinator.close()
+    assert device.hold_id is None and device.holds[-1] == ("release", None)
+
+
+async def test_a_failing_worker_never_touches_the_lease(runtime, monkeypatch):
+    coordinator, device = runtime.coordinator, runtime.phone.device
+    calls = []
+
+    async def broken(hold_id, ttl):
+        calls.append(hold_id)
+        raise OSError("worker socket gone")
+
+    monkeypatch.setattr(device, "hold_stream", broken)
+    await coordinator.acquire("owner")
+    await until(lambda: calls)
+    assert coordinator.live()

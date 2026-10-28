@@ -41,7 +41,7 @@ REJECTED_INSTRUCTIONS = {
     "lapse (see status.control.remaining_seconds) and retry, or report it.",
     "LEASE_EXPIRED": "Control lapsed after a pause in activity; nothing ran. The screen may have changed: "
     "take a fresh screenshot, then act again. The next action takes control if the phone is free.",
-    "PAUSED": "Input is paused; nothing ran. Only resume through openlolo_control when the user intends it.",
+    "PAUSED": "Input is paused; nothing ran. Call openlolo_start_session only when the user wants input to continue.",
 }
 # A token from before the lease lapsed while another client took the phone: same advice.
 REJECTED_INSTRUCTIONS["CONTROL_NOT_OWNED"] = REJECTED_INSTRUCTIONS["LEASE_EXPIRED"]

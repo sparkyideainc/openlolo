@@ -53,12 +53,18 @@ class Config(StrictModel):
     # Stop the HID media stream before each screenshot. Kept for iOS builds where a running
     # stream stalls the screenshot service; unset to let the stream stay up across screenshots.
     hid_stop_before_capture: bool = True
+    # Keep the media stream (and the phone's screen-recording indicator) open for as long as a
+    # control lease lives, including between actions. Stream screenshot source only.
+    hold_stream_with_lease: bool = True
     # Screenshot source. "png": discrete full-resolution PNG from screencaptureservice (~2.8s,
-    # lossless). "stream": decode the phone's mirroring H.265 on the Pi and serve the latest frame
-    # (~0.1s, slightly lossy, needs PyAV). "stream" reuses the HID authentication stream.
+    # lossless). "stream": decode a keyframe of the phone's mirroring H.265 on the Pi, asked for
+    # per screenshot (~0.1-0.3s, slightly lossy, needs PyAV). "stream" reuses the HID
+    # authentication stream.
     screenshot_source: Literal["png", "stream"] = "stream"
-    stream_start_seconds: float = Field(default=3, ge=0.2, le=15)  # Wait for the first decoded frame.
-    stream_frame_ttl: float = Field(default=1.0, ge=0.1, le=10)  # Refuse a decoded frame older than this.
+    stream_start_seconds: float = Field(default=3, ge=0.2, le=15)  # Wait for the requested keyframe.
+    # Unused since screenshots decode a keyframe asked for by each request; still accepted so
+    # box.toml files written by older releases load.
+    stream_frame_ttl: float = Field(default=1.0, ge=0.1, le=10)
     stream_jpeg_quality: int = Field(default=60, ge=1, le=95)  # JPEG quality for streamed frames.
     # Where the authentication video stream is sent: "device" points it back at the phone's own
     # tunnel address so no RTP crosses the tunnel; "drain" receives and discards it on the

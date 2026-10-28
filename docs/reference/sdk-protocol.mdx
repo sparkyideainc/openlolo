@@ -116,8 +116,11 @@ Content-Type: application/json
 - Limits:
   - Request bodies: at most 64 KiB.
   - 120 calls per minute per client. `RATE_LIMITED` means the call did not run.
-  - Control lapses after 90 s without activity. Call `openlolo_control` with `command=release`
-    when done.
+  - Control lapses after 90 s without activity. `openlolo_start_session` takes control up front
+    (optional: the first action takes it too). Call `openlolo_end_session` when done: it ends
+    control and turns off the phone's "being controlled" icon at once. Successful actions repeat
+    this in a `when_done` field.
+  - `openlolo_pause` stops input for every client until someone calls `openlolo_start_session`.
 
 ## curl walkthrough (remote entry)
 

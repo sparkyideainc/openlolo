@@ -82,7 +82,33 @@ class FakeSession:
         self.closed = False
         self.probes = 0
         self.idle_checks = 0
+        self.stream_held = False
+        self.stream_running = False
+        self.stream_opens = 0
+        self.stream_stops = 0
+        self.open_error = None
+        self.open_delay = 0.0
         FakeSession.instances.append(self)
+
+    @property
+    def input_open(self):
+        return self.hid_active
+
+    async def hold_stream(self):
+        self.events.append("hold_stream")
+        if self.open_delay:
+            await asyncio.sleep(self.open_delay)
+        if self.open_error is not None:
+            raise self.open_error
+        self.stream_opens += 1
+        self.stream_running = True
+
+    async def stop_hid(self):
+        self.events.append("stop_hid")
+        self.stream_stops += 1
+        self.stream_running = False
+        self.hid_active = False
+        return 0
 
     async def prepare(self, auto_mount, on_state):
         if FakeSession.prepare_results:
@@ -915,5 +941,135 @@ async def test_no_timer_searches_by_default(manager, clock):
         await asyncio.sleep(0.3)  # Longer than the 0.05-0.2 s delays that do fire in the safety-net test.
         await settle(manager, 200)
         assert manager.windows == windows  # Only triggers open windows: boot, cable, press, page.
+    finally:
+        await manager.close()
+
+
+# ----- stream hold (screen-recording indicator for the control lease) -------------------------
+
+
+async def until(predicate, timeout=2):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+async def held_manager(manager):
+    await manager.start()
+    await manager.connect(BINDING)
+    await wait_state(manager, State.CONNECTED)
+    return FakeSession.instances[-1]
+
+
+async def test_hold_opens_the_stream_and_release_closes_it(manager):
+    session = await held_manager(manager)
+    try:
+        assert manager.status()["connection"]["indication"] == "off"
+        assert manager.hold_stream("hold-0001", 45)["held"]
+        await until(lambda: session.stream_running)
+        assert session.stream_held and manager.status()["connection"]["indication"] == "on"
+        manager.hold_stream("hold-0001", 45)  # a renewal opens nothing new
+        await settle(manager)
+        assert session.stream_opens == 1
+        manager.release_stream("someone-else")  # an unknown ID changes nothing
+        await settle(manager)
+        assert session.stream_running
+        manager.release_stream("hold-0001")
+        await until(lambda: not session.stream_running)
+        assert not session.stream_held and manager.status()["connection"]["indication"] == "off"
+    finally:
+        await manager.close()
+
+
+async def test_hold_lapses_at_its_deadline(manager, clock):
+    session = await held_manager(manager)
+    try:
+        manager.hold_stream("hold-0001", 45)
+        await until(lambda: session.stream_running)
+        clock.advance(46)  # the API stopped renewing (it crashed)
+        manager._pulse()
+        await until(lambda: not session.stream_running)
+        assert manager.status()["connection"]["indication"] == "off"
+    finally:
+        await manager.close()
+
+
+async def test_release_during_a_slow_open_closes_the_stream_when_it_lands(manager):
+    session = await held_manager(manager)
+    try:
+        session.open_delay = 0.2
+        manager.hold_stream("hold-0001", 45)
+        await until(lambda: "hold_stream" in session.events)
+        assert manager.status()["connection"]["indication"] == "opening"
+        manager.release_stream("hold-0001")
+        await until(lambda: session.stream_stops == 1)
+        assert not session.stream_running and session.stream_opens == 1
+    finally:
+        await manager.close()
+
+
+async def test_failed_open_reports_unavailable_and_retries(manager, monkeypatch):
+    monkeypatch.setattr(manager_module, "HOLD_RETRY", (0.1,))
+    session = await held_manager(manager)
+    try:
+        session.open_error = OpenLoloError("HID_UNAVAILABLE", "Quit the app using the camera")
+        manager.hold_stream("hold-0001", 45)
+        await until(lambda: manager.status()["connection"]["indication"] == "unavailable")
+        assert manager.status()["connection"]["indication_error"]["code"] == "HID_UNAVAILABLE"
+        session.open_error = None
+        await until(lambda: session.stream_running)
+        assert session.events.count("hold_stream") == 2
+        assert manager.status()["connection"]["indication_error"] is None
+    finally:
+        await manager.close()
+
+
+async def test_hold_never_opens_while_a_capture_holds_the_io_lock(manager):
+    session = await held_manager(manager)
+    try:
+        async with manager.io_lock:  # a capture between its stream stop and its PNG capture
+            manager.hold_stream("hold-0001", 45)
+            await settle(manager)
+            assert "hold_stream" not in session.events
+        await until(lambda: session.stream_running)
+    finally:
+        await manager.close()
+
+
+async def test_hold_follows_the_phone_to_a_new_session(manager):
+    first = await held_manager(manager)
+    try:
+        manager.hold_stream("hold-0001", 45)
+        await until(lambda: first.stream_running)
+        FakeTunnel.instances[-1].closed.set()  # transport lost; the supervisor reconnects
+        await until(lambda: len(FakeSession.instances) == 2 and FakeSession.instances[-1].stream_running)
+        assert first.closed and not first.stream_held
+    finally:
+        await manager.close()
+
+
+async def test_hold_rejects_bad_requests_and_disconnect_drops_it(manager):
+    session = await held_manager(manager)
+    try:
+        with raises_code("INVALID_REQUEST"):
+            manager.hold_stream("short", 45)
+        with raises_code("INVALID_REQUEST"):
+            manager.hold_stream("hold-0001", 600)
+        manager.hold_stream("hold-0001", 45)
+        await until(lambda: session.stream_running)
+        await manager.disconnect()
+        assert manager.hold_id is None and manager.status()["connection"]["indication"] == "off"
+    finally:
+        await manager.close()
+
+
+async def test_no_hold_with_the_png_source_or_when_turned_off(manager):
+    manager.config.hold_stream_with_lease = False
+    session = await held_manager(manager)
+    try:
+        manager.hold_stream("hold-0001", 45)
+        await settle(manager)
+        assert "hold_stream" not in session.events
+        assert manager.status()["connection"]["indication"] == "off"
     finally:
         await manager.close()

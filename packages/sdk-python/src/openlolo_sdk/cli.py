@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"openlolo-sdk: {exc}", file=sys.stderr)
         return 2
     finally:
-        phone.close()
+        phone._close()
     return 0
 
 

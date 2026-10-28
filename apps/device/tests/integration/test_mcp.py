@@ -16,7 +16,7 @@ async def bridge_for(runtime, **kwargs):
 
 
 async def acquire(client):
-    result = await client.call_tool("openlolo_control", {"command": "acquire", "operation_id": str(uuid4())})
+    result = await client.call_tool("openlolo_start_session", {"operation_id": str(uuid4())})
     assert not result.is_error, result
     assert "lease_token" not in json.dumps(result.structured_content)
 
@@ -105,7 +105,7 @@ async def test_mcp_observe_act_observe_dedup_and_validation(runtime, mode):
 async def test_mcp_generated_operation_ids_settle_timing_and_app_query(runtime):
     bridge = await bridge_for(runtime)
     async with Client(create_server(bridge)) as client:
-        acquired = await client.call_tool("openlolo_control", {"command": "acquire"})
+        acquired = await client.call_tool("openlolo_start_session", {})
         assert not acquired.is_error, acquired
         schema = next(t for t in (await client.list_tools()).tools if t.name == "openlolo_tap").input_schema
         assert "operation_id" not in schema.get("required", [])
@@ -248,6 +248,48 @@ async def test_bridge_screenshots_keep_control_and_release_hands_over(runtime):
     assert other.lease is not None and runtime.coordinator.lease is not None
     await holder.close()
     await other.close()
+    assert runtime.coordinator.lease is None
+
+
+async def test_session_tools_and_actions_remind_the_model_to_end(runtime):
+    bridge = await bridge_for(runtime)
+    server = create_server(bridge)
+    # The rule leads the instructions: some clients keep only their start.
+    assert "openlolo_end_session" in (server.instructions or "")[:200]
+    async with Client(server) as client:
+        started = await client.call_tool("openlolo_start_session", {})
+        assert not started.is_error, started
+        assert runtime.coordinator.lease is not None and bridge.lease is not None
+        keyed = await client.call_tool("openlolo_key", {"key": "enter", "observe": False})
+        assert not keyed.is_error, keyed
+        assert "openlolo_end_session" in keyed.structured_content["when_done"]
+        text = next(b.text for b in keyed.content if b.type == "text")
+        assert "when_done" in text  # The model reads the text block, not structure.
+        assert runtime.coordinator.lease is not None
+        # Reads carry no reminder: they never take control.
+        status = await client.call_tool("openlolo_status", {})
+        assert "when_done" not in status.structured_content
+        ended = await client.call_tool("openlolo_end_session", {})
+        assert not ended.is_error, ended
+        assert runtime.coordinator.lease is None and bridge.lease is None
+        # Ending again, or after a lapse, is not an error.
+        again = await client.call_tool("openlolo_end_session", {})
+        assert not again.is_error and again.structured_content["released"] is True
+
+
+async def test_pause_holds_until_start_session(runtime):
+    bridge = await bridge_for(runtime)
+    async with Client(create_server(bridge)) as client:
+        assert not (await client.call_tool("openlolo_key", {"key": "enter", "observe": False})).is_error
+        assert not (await client.call_tool("openlolo_pause", {})).is_error
+        refused = await client.call_tool("openlolo_key", {"key": "enter", "observe": False})
+        assert refused.is_error and refused.structured_content["error"]["code"] == "PAUSED"
+        assert "openlolo_start_session" in refused.structured_content["error"]["instruction"]
+        started = await client.call_tool("openlolo_start_session", {})
+        assert not started.is_error, started
+        assert started.structured_content["control"]["paused"] is False and not runtime.coordinator.paused
+        assert not (await client.call_tool("openlolo_key", {"key": "enter", "observe": False})).is_error
+        assert not (await client.call_tool("openlolo_end_session", {})).is_error
     assert runtime.coordinator.lease is None
 
 

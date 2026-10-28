@@ -3,11 +3,18 @@ import contextlib
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openlolo.domain.errors import OpenLoloError
 
 log = logging.getLogger("openlolo.coordinator")
+
+# The device worker keeps the phone's media stream (and its screen-recording indicator) open while
+# a hold lives. The hold is renewed this often while the lease lives and lapses this long after
+# the last renewal, so a crashed API process cannot leave the indicator on.
+HOLD_RENEW_SECONDS = 20.0
+HOLD_TTL_SECONDS = 45.0
+HOLD_CALL_SECONDS = 3.0
 
 
 @dataclass
@@ -15,6 +22,8 @@ class Lease:
     owner: str
     token: str
     expires: float
+    # Names this lease's stream hold in the device worker; never the token.
+    hold_id: str = field(default_factory=lambda: secrets.token_hex(16))
 
 
 @dataclass
@@ -44,10 +53,12 @@ class Coordinator:
         self.pending = {}
         self.current = None
         self.running = None
-        self.runner = self.watcher = None
+        self.runner = self.watcher = self.holder = None
         self.release_error = None
         # Set on acquire and drop; activity only moves the deadline, which the watcher re-reads.
         self.changed = asyncio.Event()
+        # The same, for the stream-hold task (one waiter per event).
+        self.hold_changed = asyncio.Event()
         # Serializes drop and acquire so a drop's stop_input cannot cancel the next holder's work.
         self.control_lock = asyncio.Lock()
         # Auto sleep: called on every accepted request; ``closing`` refuses new work once the box
@@ -66,6 +77,7 @@ class Coordinator:
         await self.release()
         self.runner = asyncio.create_task(self._loop())
         self.watcher = asyncio.create_task(self._watch())
+        self.holder = asyncio.create_task(self._hold())
 
     async def release(self):
         try:
@@ -125,6 +137,7 @@ class Coordinator:
                 return self.lease_status(owner, include_token=True)
             self.lease = Lease(owner, secrets.token_urlsafe(32), time.monotonic() + self.lease_seconds)
             self.changed.set()
+            self.hold_changed.set()
             return self.lease_status(owner, include_token=True)
 
     def lease_status(self, owner=None, include_token=False):
@@ -151,6 +164,7 @@ class Coordinator:
     async def _drop(self):
         self.lease = None
         self.changed.set()
+        self.hold_changed.set()
         await self.stop_input()
 
     async def stop_input(self):
@@ -293,13 +307,57 @@ class Coordinator:
                 # A failing release must not stop expiry for the next lease.
                 log.exception("control lease expiry failed")
 
+    async def _hold(self):
+        """Mirror the lease into the device worker's stream hold: hold on create, renew while
+        live, release on drop. Failures are logged and retried at the next renewal; they never
+        touch the lease. Starts by clearing a hold an earlier API process may have left."""
+        held = None
+        device = self.device
+        if not hasattr(device, "hold_stream") or not hasattr(device, "release_stream"):
+            return
+        await self._hold_call(device.release_stream(None), "release")
+        while True:
+            self.hold_changed.clear()
+            lease = self.lease
+            if lease is not None and self.live(lease):
+                if held is not None and held != lease.hold_id:
+                    await self._hold_call(device.release_stream(held), "release")
+                if await self._hold_call(device.hold_stream(lease.hold_id, HOLD_TTL_SECONDS), "hold"):
+                    held = lease.hold_id
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self.hold_changed.wait(), HOLD_RENEW_SECONDS)
+                continue
+            if held is not None:
+                if await self._hold_call(device.release_stream(held), "release"):
+                    held = None
+                else:
+                    # The worker drops it at its deadline anyway; try again shortly.
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self.hold_changed.wait(), HOLD_RENEW_SECONDS)
+                    continue
+            await self.hold_changed.wait()
+
+    async def _hold_call(self, call, name) -> bool:
+        try:
+            await asyncio.wait_for(call, HOLD_CALL_SECONDS)
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("stream %s failed: %s", name, type(exc).__name__)
+            return False
+
     async def close(self):
         await self.pause()
-        for task in (self.watcher, self.runner):
+        self.lease = None  # Shutting down: control ends even though a pause would keep it.
+        for task in (self.holder, self.watcher, self.runner):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+        release_stream = getattr(self.device, "release_stream", None)
+        if release_stream is not None:
+            await self._hold_call(release_stream(None), "release")
         while not self.queue.empty():
             work = self.queue.get_nowait()
             work.future.cancel()
