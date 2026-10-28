@@ -10,7 +10,7 @@ Steps:
   swipe:x,y,x2,y2[,seconds[,hold]]
   launch:<bundle_id>          url:<url>[|<bundle_id>]   link:<bundle>|<link>|k=v|...
   type:<ascii>  send:<text>   key:cmd+l   shortcut:<name>   button:home|lock|...
-  clip  apps[:query]  profiles  profile:<bundle>  status  sleep:<seconds>  pause  release
+  clip  apps[:query]  profiles  profile:<bundle>  status  sleep:<seconds>  pause  end_session
 Each step prints its outcome; a failing step prints the error code and the run continues.
 """
 
@@ -52,8 +52,8 @@ def run_step(phone: Phone, step: str, out: Path) -> str:
         return json.dumps(phone.status())[:600]
     if kind == "pause":
         phone.pause()
-    elif kind == "release":
-        phone.release()
+    elif kind == "end_session":
+        phone.end_session()
     elif kind == "launch":
         phone.open_app(arg)
     elif kind == "url":

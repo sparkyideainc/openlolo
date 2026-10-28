@@ -196,10 +196,10 @@ class Phone:
         return self
 
     def close(self) -> None:
-        """Release control if this script holds it, then close the connection."""
+        """End the session if this script holds control, then close the connection."""
         try:
             if self.acted:
-                self.release()
+                self.end_session()
         except (OpenLoloError, httpx.HTTPError):
             pass
         finally:
@@ -343,17 +343,18 @@ class Phone:
         return self
 
     def pause(self) -> "Phone":
-        """Stop input on the box now; it stays paused until someone resumes."""
+        """Stop input on the box now; it stays stopped for every client until someone calls ``start_session()``."""
         self._mutate("openlolo_pause", {"operation_id": str(uuid4())})
         return self
 
-    def resume(self) -> "Phone":
-        self._mutate("openlolo_control", {"command": "resume", "operation_id": str(uuid4())})
+    def start_session(self) -> "Phone":
+        """Take control (optional: the first action takes it too); also continues after ``pause()``."""
+        self._mutate("openlolo_start_session", {"operation_id": str(uuid4())})
         return self
 
-    def release(self) -> "Phone":
-        """Give up control so another client can act; ``close()`` does this too."""
-        self._mutate("openlolo_control", {"command": "release", "operation_id": str(uuid4())})
+    def end_session(self) -> "Phone":
+        """End control so another client can act and the phone's icon goes off; ``close()`` does this too."""
+        self._mutate("openlolo_end_session", {"operation_id": str(uuid4())})
         self.acted = False
         return self
 

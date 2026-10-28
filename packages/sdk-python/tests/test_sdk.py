@@ -173,7 +173,7 @@ def test_first_run_approves_caches_privately_and_second_run_does_not_ask(box, tm
         "openlolo_swipe",
         "openlolo_button",
     ]
-    assert names[-1] == "openlolo_control"  # close() releases control.
+    assert names[-1] == "openlolo_end_session"  # close() releases control.
     launch, typed, tap, swipe = (args for _, args in box.calls[:4])
     assert launch["bundle_id"] == "com.apple.mobilenotes"
     assert typed["text"] == "hello"

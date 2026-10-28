@@ -42,7 +42,7 @@ class ControlBusy(OpenLoloError):
 
 
 class Paused(OpenLoloError):
-    """Input is paused on the box; call ``resume()`` only to unpause on purpose."""
+    """Input is paused on the box; call ``start_session()`` only to continue on purpose."""
 
 
 class RateLimited(OpenLoloError):

@@ -183,9 +183,7 @@ async def test_discovery_registration_consent_and_tool_scopes(remote):
         assert not shot.is_error
         image = next(b for b in shot.content if b.type == "image")
         assert base64.b64decode(image.data).startswith(b"\xff\xd8")
-        denied = await client.call_tool(
-            "openlolo_control", {"command": "acquire", "operation_id": str(uuid4())}
-        )
+        denied = await client.call_tool("openlolo_start_session", {"operation_id": str(uuid4())})
         assert denied.is_error and denied.structured_content["error"]["code"] == "SCOPE_REQUIRED"
         assert (await client.call_tool("openlolo_pause", {"operation_id": str(uuid4())})).is_error is False
     assert runtime.coordinator.lease is None
@@ -264,9 +262,7 @@ async def test_control_scope_flow_rotation_reuse_and_revocation(remote, caplog):
         again = await tokens(c, client_id, code, verifier)
         client, http = await connect(app, again["access_token"])
         async with http, client:
-            acquired = await client.call_tool(
-                "openlolo_control", {"command": "acquire", "operation_id": str(uuid4())}
-            )
+            acquired = await client.call_tool("openlolo_start_session", {"operation_id": str(uuid4())})
             assert not acquired.is_error
             assert app.provider.revoke_client(client_id)
             await app.gateway.sweep()

@@ -68,9 +68,9 @@ Consequence: inside one 90 s lease the indicator goes off whenever the agent pau
 
 MCP is stateless HTTP (`interfaces/mcp_http.py:959`), so the box has no MCP connection to follow, and an AI sends nothing while its model thinks. The only session the box knows is the control lease, and its rules stay as today:
 
-- Starts with `openlolo_start_session` (or `openlolo_control acquire`) or the client's first action (`LocalPhone.ensure_control`, `interfaces/local_phone.py:213`).
+- Starts with `openlolo_start_session` or the client's first action (`LocalPhone.ensure_control`, `interfaces/local_phone.py:213`).
 - Renewed by every action or screenshot from the holder (`coordinator.touch`, `accept`). Nothing else renews it.
-- Ends `lease_seconds` = 90 s after the holder's last call, on `openlolo_end_session` (or `openlolo_control release`), or when the owner revokes the client on the box page (`interfaces/mcp_http.py:607`).
+- Ends `lease_seconds` = 90 s after the holder's last call, on `openlolo_end_session`, or when the owner revokes the client on the box page (`interfaces/mcp_http.py:607`).
 
 "Indicator on for the whole session" therefore means "stream held while the lease is live". Thinking time is covered as long as the gap between two calls stays under 90 s. Success criterion 10 measures real gaps; the default changes only if they run past it.
 
@@ -80,7 +80,7 @@ MCP gives the server no "turn finished" or "still thinking" signal (Codex review
 
 | Item | Decision |
 |---|---|
-| Tools | `openlolo_start_session` and `openlolo_end_session`, no arguments (owner chose the names 2026-10-28): the same as `openlolo_control acquire` and `release`, which stay for the SDK. Start stays optional (the first action takes control); end is idempotent and fine after a lapse. |
+| Tools | `openlolo_start_session` and `openlolo_end_session`, no arguments (owner chose the names 2026-10-28); they replace `openlolo_control`. Start stays optional (the first action takes control) and is also the only way to continue after `openlolo_pause`, so resume is folded into it. End is idempotent and fine after a lapse. The Python SDK uses the same names: `start_session()`, `end_session()`, `pause()`. |
 | Instructions | The end rule is the first sentence of the server instructions (some clients keep only the start). |
 | Reminder | Every successful phone action (and `openlolo_open_link`, `openlolo_full_page`) carries `when_done`: "When you have finished with the phone, call openlolo_end_session before replying." Reads and errors do not. |
 | Later | Host hooks (Claude Code `Stop`, Codex `Stop`, Cursor `stop`) can call it without the model; that needs per-run ownership first, because control is per OAuth client, not per chat. Not in this PR. |

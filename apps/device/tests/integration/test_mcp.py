@@ -16,7 +16,7 @@ async def bridge_for(runtime, **kwargs):
 
 
 async def acquire(client):
-    result = await client.call_tool("openlolo_control", {"command": "acquire", "operation_id": str(uuid4())})
+    result = await client.call_tool("openlolo_start_session", {"operation_id": str(uuid4())})
     assert not result.is_error, result
     assert "lease_token" not in json.dumps(result.structured_content)
 
@@ -105,7 +105,7 @@ async def test_mcp_observe_act_observe_dedup_and_validation(runtime, mode):
 async def test_mcp_generated_operation_ids_settle_timing_and_app_query(runtime):
     bridge = await bridge_for(runtime)
     async with Client(create_server(bridge)) as client:
-        acquired = await client.call_tool("openlolo_control", {"command": "acquire"})
+        acquired = await client.call_tool("openlolo_start_session", {})
         assert not acquired.is_error, acquired
         schema = next(t for t in (await client.list_tools()).tools if t.name == "openlolo_tap").input_schema
         assert "operation_id" not in schema.get("required", [])
@@ -275,6 +275,22 @@ async def test_session_tools_and_actions_remind_the_model_to_end(runtime):
         # Ending again, or after a lapse, is not an error.
         again = await client.call_tool("openlolo_end_session", {})
         assert not again.is_error and again.structured_content["released"] is True
+
+
+async def test_pause_holds_until_start_session(runtime):
+    bridge = await bridge_for(runtime)
+    async with Client(create_server(bridge)) as client:
+        assert not (await client.call_tool("openlolo_key", {"key": "enter", "observe": False})).is_error
+        assert not (await client.call_tool("openlolo_pause", {})).is_error
+        refused = await client.call_tool("openlolo_key", {"key": "enter", "observe": False})
+        assert refused.is_error and refused.structured_content["error"]["code"] == "PAUSED"
+        assert "openlolo_start_session" in refused.structured_content["error"]["instruction"]
+        started = await client.call_tool("openlolo_start_session", {})
+        assert not started.is_error, started
+        assert started.structured_content["control"]["paused"] is False and not runtime.coordinator.paused
+        assert not (await client.call_tool("openlolo_key", {"key": "enter", "observe": False})).is_error
+        assert not (await client.call_tool("openlolo_end_session", {})).is_error
+    assert runtime.coordinator.lease is None
 
 
 async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):
