@@ -75,7 +75,7 @@ pull request.
 
 ## License
 
-MIT for this repository ([LICENSE](LICENSE)), except `apps/device`, which is
-GPL-3.0 ([apps/device/LICENSE](apps/device/LICENSE)) because it links to
-[pymobiledevice3](https://github.com/doronz88/pymobiledevice3). See
+MIT ([LICENSE](LICENSE)). The box's CoreDevice worker runs on
+[pymobiledevice3](https://github.com/doronz88/pymobiledevice3), which is GPL-3.0, so a worker
+distributed together with it is distributed under GPL-3.0 as a whole. See
 [THIRD_PARTY_NOTICES.md](apps/device/THIRD_PARTY_NOTICES.md).
