@@ -462,7 +462,7 @@ async def test_consent_page_offers_box_page_approval(box):
         assert "<svg" in text and "value='deny'" in text
         # The box page is the only way to approve: no PIN, no credential, no duration on this page.
         assert "name='pin'" not in text and "name='credential'" not in text and "name='window'" not in text
-        assert all(words in text for words in SCOPE_WORDS.values())
+        assert all(words in text for pair in SCOPE_WORDS.values() for words in pair)
         assert STATUS_PATH in text
 
         csp = page.headers["content-security-policy"]

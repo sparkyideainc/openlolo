@@ -6,12 +6,15 @@ core it calls in-process. Tokens are stored as digests only and never logged.
 """
 
 import asyncio
+import base64
+import functools
 import html
 import json
 import logging
 import secrets
 import time
 from collections.abc import Callable
+from importlib import resources
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -719,7 +722,7 @@ class EntrySecurity:
                         (
                             b"content-security-policy",
                             (
-                                f"default-src 'none'; style-src 'unsafe-inline'; {script}"
+                                f"default-src 'none'; style-src 'unsafe-inline'; img-src data:; {script}"
                                 "form-action 'self' https:; frame-ancestors 'none'; base-uri 'none'"
                             ).encode(),
                         ),
@@ -742,25 +745,131 @@ class EntrySecurity:
 
 
 SCOPE_WORDS = {
-    READ_SCOPE: "see the screen and status",
-    CONTROL_SCOPE: "touch, type and press buttons",
+    READ_SCOPE: ("See the screen", "Screenshots and status"),
+    CONTROL_SCOPE: ("Touch and type", "Taps, swipes, keys, buttons"),
 }
 
+# Box page colors and type (design system "OpenLolo"), inlined: the CSP allows no other source.
+PAGE_STYLE = (
+    "*{box-sizing:border-box}"
+    "body{margin:0;background:#f4f1ec;color:#2b2521;font:16px/24px -apple-system,BlinkMacSystemFont,"
+    "'Segoe UI',system-ui,sans-serif;-webkit-font-smoothing:antialiased}"
+    "main{max-width:640px;margin:0 auto;padding:56px 16px 48px;display:flex;flex-direction:column;"
+    "align-items:center;gap:32px;text-align:center}"
+    "a{color:#c8632b}a:hover{color:#a84f1f}"
+    "a:focus-visible,button:focus-visible{outline:2px solid #c8632b;outline-offset:2px}"
+    "h1{margin:0;font-weight:600;font-size:44px;line-height:48px;letter-spacing:-.015em}"
+    "h2{margin:0;font-weight:600;font-size:20px;line-height:26px}"
+    "p{margin:0}.muted{color:#6b625b}"
+    ".pair{display:flex;align-items:center;gap:12px}"
+    ".pair .who,.pair img{width:72px;height:72px;box-shadow:0 20px 45px -20px rgba(43,37,33,.25)}"
+    ".who{border-radius:50%;background:#fff;color:#c8632b;display:flex;align-items:center;"
+    "justify-content:center;font-weight:600;font-size:30px}"
+    ".pair img{border-radius:20px}"
+    ".flow{animation:flow .8s linear infinite}"
+    "@keyframes flow{to{stroke-dashoffset:-12}}"
+    ".head{display:flex;flex-direction:column;align-items:center;gap:12px}"
+    ".lede{font-size:19px;line-height:28px;color:#6b625b;max-width:520px}"
+    ".pill{display:inline-flex;align-items:center;gap:8px;padding:4px 12px;border-radius:999px;"
+    "font-size:13px;line-height:18px;font-weight:600;background:#fbede3;color:#c8632b}"
+    ".pill i{width:8px;height:8px;border-radius:50%;background:#c8632b;animation:pulse 1.6s ease-out infinite}"
+    ".approved .pill{background:#e6f4ea;color:#2e8b47}.approved .pill i{background:#34c759;animation:none}"
+    ".gone .pill{background:#e9e4dd;color:#6b625b}.gone .pill i{background:#c7c0b8;animation:none}"
+    ".approved .flow,.gone .flow{animation:none}.gone .flow{stroke:#c7c0b8}"
+    "@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(200,99,43,.45)}70%{box-shadow:0 0 0 8px rgba(200,99,43,0)}"
+    "100%{box-shadow:0 0 0 0 rgba(200,99,43,0)}}"
+    ".approved .waiting,.gone .waiting{display:none}"
+    ".scan{width:100%;display:flex;align-items:center;gap:24px;padding:20px;border-radius:24px;"
+    "background:#fff;text-align:left;flex-wrap:wrap}"
+    ".qr{flex:none;width:132px;height:132px;padding:10px;border-radius:12px;border:1px solid #e6e0d8}"
+    ".qr svg{width:100%;height:100%;display:block}"
+    ".scan div{flex:1 1 240px;display:flex;flex-direction:column;gap:6px}"
+    ".scan a{font-size:14px;line-height:20px;min-height:32px;display:inline-flex;align-items:center}"
+    ".asks{width:100%;display:flex;flex-direction:column;gap:12px}"
+    ".label{font-size:13px;line-height:16px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;"
+    "color:#6b625b}"
+    ".tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:0;"
+    "padding:0;list-style:none;text-align:left}"
+    ".tiles li{display:flex;gap:12px;align-items:flex-start;padding:16px;border-radius:16px;background:#fff}"
+    ".tiles svg{flex:none;margin-top:2px}.tiles span{display:flex;flex-direction:column;gap:2px}"
+    ".tiles small{font-size:13px;line-height:18px;color:#6b625b}"
+    ".note{font-size:13px;line-height:18px;color:#6b625b}"
+    ".error{width:100%;padding:10px 14px;border-radius:12px;background:#fff1e3;color:#b8540a;font-size:14px;"
+    "line-height:20px;font-weight:500}"
+    "footer{width:100%;padding-top:24px;border-top:1px solid #e6e0d8;display:flex;flex-direction:column;"
+    "align-items:center;gap:12px;font-size:14px;line-height:20px;color:#6b625b}"
+    "code{font:14px ui-monospace,'SF Mono',Menlo,monospace;word-break:break-all}"
+    "form{margin:0}"
+    ".cancel{height:44px;padding:0 16px;border:0;border-radius:12px;background:transparent;color:#2b2521;"
+    "font:500 14px/1 inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}"
+    "@media (max-width:520px){main{padding-top:40px}h1{font-size:34px;line-height:40px}"
+    ".scan{justify-content:center;text-align:center}.scan div{align-items:center}}"
+    "@media (prefers-reduced-motion:reduce){.flow,.pill i{animation:none}}"
+)
+CHECK_ICON = (
+    "<svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='#c8632b' stroke-width='2' "
+    "stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M5 12.5 10 17l9-10'/></svg>"
+)
+LINK_LINE = (
+    "<svg width='88' height='12' viewBox='0 0 88 12' fill='none' aria-hidden='true'><path class='flow' "
+    "d='M4 6h80' stroke='#c8632b' stroke-width='2' stroke-linecap='round' stroke-dasharray='2 10'/></svg>"
+)
 
-def _page(title: str, body: str, status: int = 200, script: str | None = None, nonce: str | None = None):
+
+@functools.cache
+def _logo() -> str:
+    data = (resources.files("openlolo.interfaces") / "assets" / "logo.png").read_bytes()
+    return "data:image/png;base64," + base64.b64encode(data).decode()
+
+
+def _page(
+    title: str,
+    body: str,
+    status: int = 200,
+    script: str | None = None,
+    nonce: str | None = None,
+    *,
+    lede: str = "",
+    pill: str | None = None,
+    state: str = "gone",
+    who: str = "",
+):
+    """One centered status column: the client and the box, a status pill, a headline, then ``body``."""
     scripts = f"<script nonce='{nonce}'>{script}</script>" if script and nonce else ""
+    pair = (
+        f"<div class='pair' aria-hidden='true'><span class='who'>{html.escape(who[:1].upper())}</span>"
+        f"{LINK_LINE}<img src='{_logo()}' alt=''></div>"
+        if who
+        else f"<div class='pair' aria-hidden='true'><img src='{_logo()}' alt=''></div>"
+    )
     response = HTMLResponse(
         "<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' "
-        "content='width=device-width'><title>OpenLolo</title><style>body{font:16px system-ui;max-width:32rem;"
-        "margin:2rem auto;padding:0 1rem}fieldset{margin:1rem 0}button{font:inherit;padding:.5rem 1rem}"
-        ".warn{background:#fff3cd;padding:.75rem;border-radius:.5rem}.qr{width:12rem;height:12rem;margin:1rem auto}"
-        ".qr svg{width:100%;height:100%}.muted{opacity:.7}code{word-break:break-all}</style></head><body>"
-        f"<h1>{html.escape(title)}</h1>{body}{scripts}</body></html>",
+        "content='width=device-width,initial-scale=1'><meta name='color-scheme' content='light'>"
+        f"<title>{html.escape(title)} · OpenLolo</title><style>{PAGE_STYLE}</style></head>"
+        f"<body><main id='page' class='{state}'>{pair}<div class='head'>"
+        + (
+            f"<span class='pill' id='pill' aria-live='polite'><i></i><b id='pilltext'>{html.escape(pill)}</b></span>"
+            if pill
+            else ""
+        )
+        + f"<h1 id='headline'>{html.escape(title)}</h1>"
+        + (f"<p class='lede' id='lede'>{html.escape(lede)}</p>" if lede else "")
+        + f"</div>{body}</main>{scripts}</body></html>",
         status_code=status,
     )
     if nonce:
         response.headers["x-openlolo-nonce"] = nonce
     return response
+
+
+def expired_page() -> Response:
+    return _page(
+        "This request expired",
+        "",
+        400,
+        lede="Go back to the client and connect again.",
+        pill="Request expired",
+    )
 
 
 def approve_link(setup_name: str | None, handle: str) -> str | None:
@@ -788,42 +897,71 @@ def consent_form(
     nonce: str | None = None,
 ):
     """Owner approval page: the owner approves on the box page (QR or the Access list); this page waits."""
-    name = html.escape(client.client_name or client.client_id)
+    raw_name = client.client_name or client.client_id
+    name = html.escape(raw_name)
     hosts = ", ".join(sorted({html.escape(str(u.host or "")) for u in client.redirect_uris or []}))
     link = approve_link(setup_name, digest(request_id))
-    wants = "".join(f"<li>{html.escape(SCOPE_WORDS.get(scope, scope))}</li>" for scope in scopes)
+    tiles = "".join(
+        f"<li>{CHECK_ICON}<span><strong>{html.escape(SCOPE_WORDS[scope][0])}</strong>"
+        f"<small>{html.escape(SCOPE_WORDS[scope][1])}</small></span></li>"
+        for scope in scopes
+        if scope in SCOPE_WORDS
+    )
+    box = f", uses <strong>{html.escape(setup_name)}</strong>." if setup_name else "."
     body = (
-        f"<p><strong>{name}</strong> wants to use your iPhone through OpenLolo. "
-        f"After approval it returns to <code>{hosts}</code>.</p>"
-        f"<p>Approving lets it:</p><ul>{wants}</ul>"
-        "<p class='warn'>Screen contents, including messages, notifications and codes, will be sent to "
-        "this client and its AI provider. Phone content is untrusted input; the AI can be misled by it.</p>"
-        + (f"<p class='warn'>{html.escape(error)}</p>" if error else "")
-        + "<fieldset><legend>Approve from the OpenLolo page</legend>"
-        "<p>Open the box page on your phone: this request is listed under <em>Access</em>. There you "
-        "choose for how long: 24 hours, 30 days renewed while the client is in use, or until you "
-        "remove it.</p>"
+        (f"<p class='error' role='alert'>{html.escape(error)}</p>" if error else "")
         + (
-            "<p>Or scan this code with the phone's camera while it is on the same Wi-Fi.</p>"
-            f"<div class='qr'>{qr_svg(link)}</div>"
-            f"<p>Reading this on the phone itself? <a href='{html.escape(link)}'>Open the OpenLolo page</a>.</p>"
+            "<section class='scan waiting'>"
+            f"<span class='qr'>{qr_svg(link)}</span>"
+            "<div><h2>Scan to open the request</h2>"
+            "<p class='muted'>Use the iPhone camera, on the same Wi-Fi as the box. It is also under "
+            "<strong>Access</strong> on the box page.</p>"
+            f"<a href='{html.escape(link)}'>On the iPhone? Open the OpenLolo page</a></div></section>"
             if link
+            else "<p class='muted waiting'>Open the box page on your iPhone. "
+            "This request is under <strong>Access</strong>.</p>"
+        )
+        + (
+            f"<section class='asks waiting'><span class='label'>{name} asks to</span>"
+            f"<ul class='tiles'>{tiles}</ul>"
+            "<p class='note'>On the box page you choose how long: 24 hours, 30 days renewed while "
+            f"{name} uses it, or until you remove it.</p></section>"
+            if tiles
             else ""
         )
-        + "<p id='wait' class='muted'>Waiting for a decision on the box page…</p></fieldset>"
-        f"<form method='post' action='{CONSENT_PATH}'>"
+        + f"<footer><p>{name}, returning to <code>{hosts}</code>{box} What it sees goes to its AI provider, "
+        "including messages, notifications and codes. The AI can be misled by what is on screen.</p>"
+        f"<form method='post' action='{CONSENT_PATH}' class='waiting'>"
         f"<input type='hidden' name='request' value='{html.escape(request_id)}'>"
-        "<button name='decision' value='deny'>Cancel this request</button></form>"
+        "<button class='cancel' name='decision' value='deny'>Cancel this request</button></form></footer>"
     )
+    states = {
+        "approved": [f"{raw_name} is connected", f"Taking you back to {hosts or 'the client'}.", "Approved"],
+        "gone": ["This request expired", "Go back to the client and connect again.", "Request expired"],
+    }
     script = (
-        f"const r={json.dumps(request_id)};"
+        f"const r={json.dumps(request_id)},S={json.dumps(states)};"
+        "function show(k){const s=S[k];document.getElementById('page').className=k;"
+        "document.getElementById('headline').textContent=s[0];document.getElementById('lede').textContent=s[1];"
+        "document.getElementById('pilltext').textContent=s[2];document.title=s[0]+' · OpenLolo';}"
         f"async function poll(){{try{{const x=await fetch({json.dumps(STATUS_PATH)}+'?request='+encodeURIComponent(r),"
         "{cache:'no-store',credentials:'omit'});const d=await x.json();"
-        "if(d.state==='decided'&&d.redirect){location.href=d.redirect;return;}"
-        "if(d.state==='gone'){document.getElementById('wait').textContent='This request expired. Start again from the client.';return;}}"
+        "if(d.state==='decided'&&d.redirect){if(new URL(d.redirect).searchParams.has('code')){show('approved');"
+        "setTimeout(()=>{location.href=d.redirect},900);}else location.href=d.redirect;return;}"
+        "if(d.state==='gone'){show('gone');return;}}"
         "catch(e){}setTimeout(poll,2000);}poll();"
     )
-    return _page("Connect to OpenLolo", body, 400 if error else 200, script=script, nonce=nonce)
+    return _page(
+        f"Approve {raw_name} on your iPhone",
+        body,
+        400 if error else 200,
+        script=script,
+        nonce=nonce,
+        lede="The box page has the request. Allow it there and this tab carries on by itself.",
+        pill="Waiting for your iPhone",
+        state="waiting",
+        who=raw_name,
+    )
 
 
 async def read_form(request: Request, limit: int = 8192) -> dict[str, str]:
@@ -861,7 +999,7 @@ def consent_routes(provider: OAuthProvider, origin: str, runtime) -> Callable[[R
             request_id = request.query_params.get("request", "")
             pending = provider.pending_request(request_id) if request_id else None
             if pending is None:
-                return _page("Request expired", "<p>Start the connection again from the client.</p>", 400)
+                return expired_page()
             client, value = pending
             return consent_form(
                 request_id,
@@ -874,12 +1012,12 @@ def consent_routes(provider: OAuthProvider, origin: str, runtime) -> Callable[[R
         content_type = request.headers.get("content-type", "")
         sent = request.headers.get("origin")
         if sent != origin or not content_type.startswith("application/x-www-form-urlencoded"):
-            return _page("Rejected", "<p>Cross-site form submission rejected.</p>", 403)
+            return _page("Request rejected", "", 403, lede="Cross-site form submission rejected.")
         form = await read_form(request)
         request_id = form.get("request", "")
         pending = provider.pending_request(request_id) if request_id else None
         if pending is None:
-            return _page("Request expired", "<p>Start the connection again from the client.</p>", 400)
+            return expired_page()
         client, value = pending
         if form.get("decision") == "deny":
             return RedirectResponse(provider.decide(request_id, None, 0), status_code=302)
