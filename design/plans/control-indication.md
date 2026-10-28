@@ -1,6 +1,6 @@
 # Control indication: screen-recording indicator for the whole session, and a notice when control starts
 
-**Status: PR 1 implemented 2026-10-27 on `jingerpie/control-inidication` (owner said proceed), after a Codex review and owner feedback the same day (notification skipped; indicator held for the lease; lease rules unchanged). Unit, contract and integration tests pass (408 + 1 skipped without the device extra). Not yet run on hardware: the bench box was offline when the code was written. PR 2 not started.**
+**Status: PR 1 implemented 2026-10-27 on `jingerpie/control-inidication` (owner said proceed), after a Codex review and owner feedback the same day (notification skipped; indicator held for the lease; lease rules unchanged). Unit, contract and integration tests pass (408 + 1 skipped without the device extra). First bench run 2026-10-27/28 (Radxa, Wi-Fi, iOS 27.0.1): a 10 min still-screen hold never dropped; warm screenshots 0.27-0.33 s with frames 0.07-0.16 s old; held through 60 s gaps; off at once on release. The icon (an iPad-like symbol at top left, not a purple dot) did not show at all until the owner restarted the phone; after the restart it follows the stream. In a real AI run the model never released, so both leases ran the full 90 s: `openlolo_end_session` was added to this PR (see "Ending the session"). PR 2 not started.**
 
 The owner asked for two things while the phone is being controlled:
 
@@ -70,9 +70,22 @@ MCP is stateless HTTP (`interfaces/mcp_http.py:959`), so the box has no MCP conn
 
 - Starts with `openlolo_control acquire` or the client's first action (`LocalPhone.ensure_control`, `interfaces/local_phone.py:213`).
 - Renewed by every action or screenshot from the holder (`coordinator.touch`, `accept`). Nothing else renews it.
-- Ends `lease_seconds` = 90 s after the holder's last call, on `openlolo_control release`, or when the owner revokes the client on the box page (`interfaces/mcp_http.py:607`).
+- Ends `lease_seconds` = 90 s after the holder's last call, on `openlolo_end_session` (or `openlolo_control release`), or when the owner revokes the client on the box page (`interfaces/mcp_http.py:607`).
 
 "Indicator on for the whole session" therefore means "stream held while the lease is live". Thinking time is covered as long as the gap between two calls stays under 90 s. Success criterion 10 measures real gaps; the default changes only if they run past it.
+
+### Ending the session
+
+MCP gives the server no "turn finished" or "still thinking" signal (Codex review and search, 2026-10-28): `Mcp-Session-Id` spans a connection, not a chat (Claude Desktop and claude.ai reuse one across chats, claude-code #41836); GET SSE, DELETE, ping, progress and tasks describe transport or single requests; the 2026-07-28 revision removes sessions and ping. So the AI has to end control itself, and the 90 s lapse stays as the fallback. A shorter lapse (15 s) would cut control mid-thought: the first bench task had a 29 s gap, and a lapse costs a refused step, a cold screenshot and an icon blink.
+
+| Item | Decision |
+|---|---|
+| Tool | `openlolo_end_session`, no arguments: same as `openlolo_control release` (idempotent, fine after a lapse). |
+| Instructions | The end rule is the first sentence of the server instructions (some clients keep only the start). |
+| Reminder | Every successful phone action (and `openlolo_open_link`, `openlolo_full_page`) carries `when_done`: "When you have finished with the phone, call openlolo_end_session before replying." Reads and errors do not. |
+| Later | Host hooks (Claude Code `Stop`, Codex `Stop`, Cursor `stop`) can call it without the model; that needs per-run ownership first, because control is per OAuth client, not per chat. Not in this PR. |
+
+### Stream decisions
 
 | Item | Decision |
 |---|---|
@@ -154,6 +167,7 @@ Ground truth for the indicator is an external camera on the phone's status bar, 
 8. **Phone battery and heat**: 30 min held lease (renewed) vs no lease, same brightness and content, 2 runs each. Reported for the owner to set a budget before merge.
 9. **Unit and fake-worker tests**: hold create/renew/expire/release idempotency; release before a slow open finishes; old-session teardown vs new open; `idle_check` never closes a held stream; input timeout keeps the stream; reopen schedule and stop on hold loss; PNG fallback never overlaps an open; request fulfilled only by post-request keyframe output; zero-output decode; decode error recovery; queue and fragment bounds; `stop()` during native decode. One small recorded HEVC fixture checks the real decoder path without a phone.
 10. **Gaps between calls**: from the journal and worker logs, the time between consecutive calls of one client over 10 real agent tasks (at least 2 clients, for example Claude Code and Claude Desktop). Report the distribution and how many gaps exceed 90 s, which is how many times the indicator would have gone off mid-task.
+11. **AI ends the session**: over the same 10 tasks, how many end with `openlolo_end_session` (journal) versus the 90 s lapse.
 
 ## Open questions
 

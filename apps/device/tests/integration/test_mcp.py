@@ -251,6 +251,29 @@ async def test_bridge_screenshots_keep_control_and_release_hands_over(runtime):
     assert runtime.coordinator.lease is None
 
 
+async def test_end_session_tool_releases_and_actions_remind_the_model(runtime):
+    bridge = await bridge_for(runtime)
+    server = create_server(bridge)
+    # The rule leads the instructions: some clients keep only their start.
+    assert "openlolo_end_session" in (server.instructions or "")[:200]
+    async with Client(server) as client:
+        keyed = await client.call_tool("openlolo_key", {"key": "enter", "observe": False})
+        assert not keyed.is_error, keyed
+        assert "openlolo_end_session" in keyed.structured_content["when_done"]
+        text = next(b.text for b in keyed.content if b.type == "text")
+        assert "when_done" in text  # The model reads the text block, not structure.
+        assert runtime.coordinator.lease is not None
+        # Reads carry no reminder: they never take control.
+        status = await client.call_tool("openlolo_status", {})
+        assert "when_done" not in status.structured_content
+        ended = await client.call_tool("openlolo_end_session", {})
+        assert not ended.is_error, ended
+        assert runtime.coordinator.lease is None and bridge.lease is None
+        # Ending again, or after a lapse, is not an error.
+        again = await client.call_tool("openlolo_end_session", {})
+        assert not again.is_error and again.structured_content["released"] is True
+
+
 async def test_busy_or_paused_phone_rejects_before_dispatch(runtime):
     holder = await bridge_for(runtime)
     await holder.control("acquire", str(uuid4()))
