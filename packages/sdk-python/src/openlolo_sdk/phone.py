@@ -195,8 +195,9 @@ class Phone:
         self.auth.token()
         return self
 
-    def close(self) -> None:
-        """End the session if this script holds control, then close the connection."""
+    def _close(self) -> None:
+        """End the session if this script holds control, then close the connection. Leaving the
+        ``with`` block does this; a script that keeps a Phone open calls ``end_session()``."""
         try:
             if self.acted:
                 self.end_session()
@@ -209,7 +210,14 @@ class Phone:
         return self
 
     def __exit__(self, *exc) -> None:
-        self.close()
+        self._close()
+
+    def __del__(self) -> None:
+        # Without ``with``: free the connection when the Phone is dropped. No network call here;
+        # the box ends control 90 s after the last action.
+        http = self.__dict__.get("http")
+        if http is not None:
+            http.close()
 
     # -- reading -------------------------------------------------------------------------
 
@@ -342,13 +350,8 @@ class Phone:
         time.sleep(seconds)
         return self
 
-    def pause(self) -> "Phone":
-        """Stop input on the box now; it stays stopped for every client until someone calls ``start_session()``."""
-        self._mutate("openlolo_pause", {"operation_id": str(uuid4())})
-        return self
-
     def start_session(self) -> "Phone":
-        """Take control (optional: the first action takes it too); also continues after ``pause()``."""
+        """Take control (optional: the first action takes it too); also continues after an AI paused input."""
         self._mutate("openlolo_start_session", {"operation_id": str(uuid4())})
         return self
 

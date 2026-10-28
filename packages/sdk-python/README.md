@@ -60,8 +60,9 @@ without asking again. Without a terminal (cron, CI) the SDK never waits for appr
   runs each id at most once. If that fails too, the SDK reads the journal and raises
   `OutcomeUnknown`: check the screen, do not replay.
 - **Rate limit.** 120 calls a minute; `RATE_LIMITED` is retried after 1, 2 and 4 s.
-- **Control.** The first action takes control; it lapses after 90 s without activity.
-  `close()` (or leaving the `with` block) releases it. `ControlBusy` means another client has it.
+- **Control.** The first action takes control (or `start_session()`); it lapses after 90 s without
+  activity. Leaving the `with` block ends it, as does `end_session()`. `ControlBusy` means another
+  client has it. `Paused` means an AI paused input; `start_session()` continues on purpose.
 
 ## Command line
 
