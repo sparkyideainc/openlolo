@@ -1,6 +1,6 @@
 """Which app is in front, observed through the DVT instruments service (needs the DDI).
 
-Observation only: nothing here authorizes or refuses input (docs/plans/app-permissions.md).
+Observation only: nothing here authorizes or refuses input (design/plans/app-permissions.md).
 
 ``DeviceInfo.proclist()`` marks each process ``foregroundRunning``; on the iOS 27 bench it was
 right for launches, icon taps, links into Safari and Home, but took 460 ms (p50) to 1.2 s for

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Foreground observer bench (docs/plans/app-permissions.md, PR 1). Runs on the box against the
+"""Foreground observer bench (design/plans/app-permissions.md, PR 1). Runs on the box against the
 device worker socket; needs ``foreground_observer`` set to "demand" or "poll" in box.toml.
 
     sudo -u openlolo-device <venv>/bin/python scripts/foreground_bench.py watch --seconds 60

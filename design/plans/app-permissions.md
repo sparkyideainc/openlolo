@@ -1,7 +1,8 @@
 # Plan: app permissions enforced by the box
 
-Status: PR 1 (observer + bench) on `jingerpie/app-permissions`, 2026-10-20. Design agreed between
-Claude and Codex; PRs 2-4 not started. Base: `main` at `619d3b3`.
+**Status: plan, 2026-10-28. PR 1 (observer + bench, nothing enforced) on
+`jingerpie/app-permissions`, draft PR #18, based on `main` 1931bd6. Design agreed between Claude
+and Codex; the speed spike (section 3) found no cheaper foreground query. PRs 2-4 not started.**
 
 ## Why
 
@@ -32,7 +33,7 @@ the agent was told. So the owner's app policy must be enforced by the box, not b
   needs physical proof: the page shows an immutable proposal (bound phone, current revision,
   complete resulting policy), then the owner presses the top button the shown number of times
   (random 5-8) and holds. This reuses the mechanics of the reset challenge
-  (docs/plans/lolo-pocket-modes.md), not its state machine. One arbiter routes button events
+  (design/plans/lolo-pocket-modes.md), not its state machine. One arbiter routes button events
   between reset, policy confirmation and normal modes.
 - While a proposal is pending, remote input and remote content reads (screenshots, full page,
   clipboard, automatic observations) stop, acknowledged by the worker, and stay stopped until the

@@ -26,7 +26,7 @@ screenshot_source = "stream"
 hold_stream_with_lease = true  # Keep the stream (and the phone's screen-recording indicator) on for the whole control lease.
 stream_jpeg_quality = 60
 tunnel_mode = "userspace"   # "kernel" needs CAP_NET_ADMIN and /dev/net/tun in the worker unit.
-# Foreground app observer for the app permissions bench (docs/plans/app-permissions.md).
+# Foreground app observer for the app permissions bench (design/plans/app-permissions.md).
 # Observation only; "demand" or "poll" also enables the worker op `foreground`.
 # foreground_observer = "off"
 # Remote MCP entry for AI clients. Set to the public HTTPS origin your tunnel serves

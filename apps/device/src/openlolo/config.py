@@ -74,7 +74,7 @@ class Config(StrictModel):
     # Linux kernel; needs CAP_NET_ADMIN and /dev/net/tun in the worker unit, but keeps the
     # media stream's packets out of the Python process.
     tunnel_mode: Literal["userspace", "kernel"] = "userspace"
-    # Foreground app observer (docs/plans/app-permissions.md); observation only, nothing is refused.
+    # Foreground app observer (design/plans/app-permissions.md); observation only, nothing is refused.
     # "demand": query the DVT process list when asked; "poll": also poll start-to-start while
     # requests keep coming. Either way the connection closes after foreground_idle_seconds.
     foreground_observer: Literal["off", "demand", "poll"] = "off"
