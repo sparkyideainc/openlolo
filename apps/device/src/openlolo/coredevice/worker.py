@@ -27,6 +27,7 @@ BOUND_OPS = {
     "clipboard_get",
     "clipboard_set",
     "device_info",
+    "foreground",
 }
 # Longest ``usb_events`` long poll; the client's RPC timeout covers it.
 USB_EVENTS_MAX = 25
@@ -151,6 +152,8 @@ class DeviceWorker:
             return await self.manager.clipboard_get(binding)
         if op == "clipboard_set":
             return await self.manager.clipboard_set(binding, str(request.get("text", "")))
+        if op == "foreground":
+            return await self.manager.foreground(binding, bool(request.get("fresh", False)))
         return await self.manager.device_info(binding)
 
 
